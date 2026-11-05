@@ -1,0 +1,64 @@
+/* Funkin' Studio | Navy Comfort Theme
+   Customize the variables below. Loaded after the base/layout CSS. */
+:root {
+  color-scheme: dark;
+  --bg: #002b66;
+  --panel: #103b70;
+  --line: #42638a;
+  --txt: #e6edf7;
+  --muted: #c3d4eb;
+  --accent: #94c5dd;
+  --studio-button: #183f70;
+  --studio-button-hover: #285382;
+  --studio-important: #994e3d;
+  --studio-important-hover: #ad5e4a;
+  --studio-important-shadow: #66352d;
+  --studio-canvas: #d8dce2;
+}
+body { background: var(--bg); color: var(--txt); }
+.panel { background: var(--panel); border-color: var(--line); box-shadow: 0 2px 8px rgba(0,15,43,.14); }
+h1,h2,h3 { color: var(--txt); }
+small,.tiny,label,#status,.studio-section-note { color: var(--muted); }
+input,select,textarea,button { color: var(--txt); background: #173e70; border-color: #54749a; }
+input::placeholder,textarea::placeholder { color: #b4c5da; }
+button { background: var(--studio-button); color: #fff; transition: background-color .12s ease,border-color .12s ease; }
+button:hover:not(:disabled) { background: var(--studio-button-hover); border-color: #a4c2dc; }
+button:active:not(:disabled) { background: #123358; }
+button:disabled { opacity: .52; cursor: not-allowed; }
+button.primary,.primary,.studio-button { background: var(--studio-important); color: #fff; border-color: #8b4838; box-shadow: 0 1px 0 var(--studio-important-shadow); border-radius: 12px; font-weight: 700; }
+button.primary:hover:not(:disabled),.primary:hover:not(:disabled),.studio-button:hover:not(:disabled) { background: var(--studio-important-hover); color: #fff; border-color: #c78070; }
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible { outline: 3px solid #a4d9f2; outline-offset: 2px; }
+.item.active { background: #315d89; color: #fff; }
+.item:hover { background: #29517f; color: #fff; }
+.sprite-tile,.spTile { background: #173e70; border-color: var(--line); color: var(--txt); }
+.sprite-tile.selected,.spTile.active { background: #315d89; border-color: #b3d9ec; }
+.sprite-tile canvas { background: var(--studio-canvas); }
+#studioHud { background: rgba(4,36,78,.98); border-color: var(--line); box-shadow: 0 2px 12px rgba(0,14,40,.2); }
+#langMenu { background: var(--panel); border-color: var(--line); }
+#studioHome,#funkinWelcome,#renderWelcome { background: #002b66; }
+#studioHome .welcome-inner,#funkinWelcome .welcome-inner,#renderWelcome .welcome-inner { background: #103b70; border: 1px solid var(--line); border-radius: 20px; padding: clamp(20px,4vw,34px); box-shadow: 0 14px 34px rgba(0,14,42,.22); }
+#studioHome .welcome-inner { max-width: 730px; }
+#studioHome h1 { font-size: clamp(24px,4vw,32px); letter-spacing: -.025em; }
+.render-choice { background: var(--studio-important); border: 1px solid #b77a6d; border-radius: 14px; min-height: 112px; gap: 9px; box-shadow: 0 1px 0 var(--studio-important-shadow); }
+.render-choice:hover:not(:disabled) { background: var(--studio-important-hover); border-color: #e0a395; }
+.render-choice strong { color: #fff; }
+.render-choice small { color: #f4d9d1; }
+.studio-files,.studio-display-options,.studio-inspector-group { background: #0c3466; border-color: var(--line); }
+.studio-files > summary,.studio-display-options > summary,.studio-inspector-group > summary { background: #173e70; color: var(--txt); }
+.studio-files[open] > summary,.studio-inspector-group[open] > summary { border-color: var(--line); }
+.studio-canvas-wrap { background: var(--studio-canvas); border: 1px solid #7892ad; }
+/* Canvas backgrounds affect preview only, not exported artwork. */
+#stage,#spCanvas,#symCanvas,#offCanvas { background: var(--studio-canvas) !important; background-image: none !important; border: 1px solid #7892ad; }
+#animateWorkspace,#sparrowWorkspace,#offsetWorkspace { gap: 16px; }
+#layers { background: #0c3466; border-color: var(--line); }
+#timeline { accent-color: #94c5dd; }
+@media (max-width: 800px) {
+  #animateWorkspace,#sparrowWorkspace,#offsetWorkspace { gap: 10px; }
+  #studioHome .welcome-inner { max-height: 90dvh; overflow: auto; }
+}
+@media (max-width: 520px) {
+  #studioHome,#funkinWelcome,#renderWelcome { padding: 12px; }
+  #studioHome .welcome-inner,#funkinWelcome .welcome-inner,#renderWelcome .welcome-inner { padding: 20px; }
+  .render-choice { min-height: 90px; }
+  #studioHud button { min-height: 36px; }
+}

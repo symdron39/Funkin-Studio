@@ -1,0 +1,273 @@
+/* ホーム画面/ダイアログ、旧形式パネル、v2.7 レイアウト刷新、レスポンシブ調整。 */
+#funkinWelcome {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  background: rgba(8, 11, 17, 0.98);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+#funkinWelcome[hidden] {
+  display: none !important;
+}
+#funkinWelcome .welcome-inner {
+  max-width: 650px;
+  width: 100%;
+  background: #191d25;
+  border: 1px solid #3d4b5c;
+  border-radius: 16px;
+  padding: 22px;
+}
+#studioHome {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  background: rgba(8, 11, 17, 0.98);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+#studioHome[hidden] {
+  display: none !important;
+}
+#studioHome .welcome-inner {
+  max-width: 650px;
+  width: 100%;
+  background: #191d25;
+  border: 1px solid #3d4b5c;
+  border-radius: 16px;
+  padding: 22px;
+}
+
+/* Editing controls follow the loaded Animation.json schema. */
+#animateWorkspace[data-schema="legacy"] .modern-only {
+  display: none !important;
+}
+#animateWorkspace[data-schema="modern"] #legacyEditPanel {
+  display: none !important;
+}
+#animateWorkspace[data-schema="legacy"] #legacyEditPanel {
+  display: block !important;
+  grid-column: 1/-1;
+}
+#animateWorkspace[data-schema="legacy"] #anFrameLabels {
+  display: none !important;
+}
+#legacyEditPanel[hidden] {
+  display: none !important;
+}
+#legacyEditPanel .legacy-help {
+  margin: 6px 0 12px;
+}
+#legacyEditPanel .legacy-matrix {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+@media (max-width: 600px) {
+  #legacyEditPanel .legacy-matrix {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* v2.7.0: presentation-only layout refresh. Existing IDs, data and handlers remain unchanged. */
+:root {
+  --bg: #10141c;
+  --panel: #1a2230;
+  --line: #334154;
+  --txt: #eef4fc;
+  --muted: #aab8c9;
+  --accent: #5de2b4;
+}
+body {
+  line-height: 1.5;
+}
+.panel {
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.1);
+}
+#animateWorkspace {
+  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 1fr);
+  align-items: start;
+  gap: 14px;
+  max-width: 1600px;
+  margin: auto;
+}
+#animateWorkspace[data-schema="legacy"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+#animateWorkspace[data-schema="legacy"] > .studio-preview-panel {
+  width: 100%;
+}
+#animateWorkspace[data-schema="legacy"] #legacyEditPanel {
+  grid-column: 1/-1;
+}
+.studio-section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 8px;
+}
+.studio-section-heading h2 {
+  margin: 0;
+  font-size: 15px;
+}
+.studio-section-note {
+  font-size: 11px;
+  color: var(--muted);
+}
+.studio-files,
+.studio-display-options,
+.studio-inspector-group {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(12, 18, 27, 0.4);
+  margin: 10px 0;
+  overflow: hidden;
+}
+.studio-files > summary,
+.studio-display-options > summary,
+.studio-inspector-group > summary {
+  display: list-item;
+  list-style-position: inside;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--txt);
+  background: #222e3d;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.studio-files[open] > summary,
+.studio-inspector-group[open] > summary {
+  border-bottom: 1px solid var(--line);
+}
+.studio-file-content,
+.studio-option-content,
+.studio-group-body {
+  padding: 12px;
+}
+.studio-canvas-wrap {
+  padding: 6px;
+  background: #10151d;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+#stage {
+  height: min(48vh, 510px);
+  min-height: 270px;
+  touch-action: none;
+}
+.studio-transport {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.studio-transport button {
+  width: 100%;
+  min-height: 42px;
+  white-space: normal;
+}
+.studio-inspector h2 {
+  font-size: 16px;
+}
+.studio-subheading {
+  font-size: 13px;
+  margin: 14px 0 5px;
+}
+.studio-inspector .row > button,
+.studio-legacy-panel .row > button {
+  min-height: 39px;
+  white-space: normal;
+}
+.studio-save-row {
+  padding: 12px 0 2px;
+}
+#legacyEditPanel {
+  max-width: 100%;
+}
+#legacyEditPanel .studio-inspector-group {
+  margin: 12px 0;
+}
+#legacyEditPanel > summary {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--accent);
+}
+#studioHud {
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.25);
+}
+#studioHud .hudLogo {
+  overflow: hidden;
+}
+#studioHud .hudLogo strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (max-width: 800px) {
+  #animateWorkspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .studio-inspector {
+    grid-column: 1;
+  }
+  .panel {
+    padding: 12px;
+  }
+  #stage {
+    height: 40vh;
+    min-height: 240px;
+  }
+}
+@media (max-width: 520px) {
+  body {
+    padding-top: 60px;
+  }
+  #studioHud .hudLogo span[aria-hidden] {
+    display: none;
+  }
+  #studioHud .hudLogo strong {
+    font-size: 11px;
+  }
+  #studioHud .hudActions {
+    gap: 3px;
+  }
+  #studioHud button {
+    font-size: 11px;
+    padding: 7px 5px;
+  }
+  #animateWorkspace {
+    padding: 8px;
+    gap: 8px;
+  }
+  .studio-file-content,
+  .studio-group-body,
+  .studio-option-content {
+    padding: 10px;
+  }
+  .studio-transport {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  #stage {
+    height: 36vh;
+    min-height: 230px;
+  }
+  #legacyEditPanel .row {
+    gap: 6px;
+  }
+  #legacyEditPanel .row > button {
+    flex: 1 1 42%;
+  }
+}

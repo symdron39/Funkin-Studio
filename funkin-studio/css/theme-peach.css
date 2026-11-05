@@ -1,0 +1,59 @@
+/* Funkin' Studio: Peach UI v1.  Edit these variables to customize the theme.
+   Loaded last so it overrides older dark styles without changing editor logic. */
+:root {
+  color-scheme: light;
+  --bg: #f2c9bd;
+  --panel: #fff5f0;
+  --line: #b58c87;
+  --txt: #302c35;
+  --muted: #67575b;
+  --accent: #286f69;
+  --peach-control: #fffaf7;
+  --peach-soft: #f7e6df;
+  --peach-hover: #e8f2ee;
+}
+body { background: var(--bg); color: var(--txt); }
+.panel { background: var(--panel); border-color: #d8b5a9; box-shadow: 0 3px 12px rgba(80,43,43,.07); }
+h1,h2,h3 { color: var(--txt); }
+small,.tiny,label,#status,.studio-section-note { color: var(--muted); }
+input,select,button,textarea { background: var(--peach-control); color: var(--txt); border-color: #c7a79d; }
+button { transition: background-color .12s ease, border-color .12s ease; }
+button:hover:not(:disabled) { background: var(--peach-hover); border-color: var(--accent); }
+button:active:not(:disabled) { background: #d6e9e1; }
+button.primary,.primary { background: var(--accent); color: #fff; border-color: #1f5a55; }
+button.primary:hover:not(:disabled),.primary:hover:not(:disabled) { background: #205e59; color: #fff; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.item.active,.item:hover { background: #d6e9e1; color: #203b38; }
+.sprite-tile,.spTile { background: var(--peach-control); border-color: #d8b5a9; color: var(--txt); }
+.sprite-tile.selected,.spTile.active { background: #d6e9e1; border-color: var(--accent); }
+.sprite-tile canvas { background: #fff; }
+#studioHud { background: rgba(255,245,240,.97); border-color: #d8b5a9; box-shadow: 0 2px 12px rgba(75,46,46,.1); }
+#langMenu { background: var(--panel); border-color: var(--line); }
+#studioHome,#funkinWelcome,#renderWelcome { background: rgba(242,201,189,.97); }
+#studioHome .welcome-inner,#funkinWelcome .welcome-inner,#renderWelcome .welcome-inner { background: var(--panel); border: 1px solid #d8b5a9; border-radius: 22px; padding: clamp(20px,4vw,34px); box-shadow: 0 14px 40px rgba(83,53,53,.13); }
+#studioHome .welcome-inner { max-width: 730px; }
+#studioHome h1 { font-size: clamp(24px,4vw,32px); letter-spacing: -.035em; }
+.render-choice { background: #fffaf7; border: 1px solid #d8b5a9; border-radius: 15px; min-height: 118px; gap: 9px; }
+.render-choice:hover:not(:disabled) { background: var(--peach-hover); border-color: var(--accent); }
+.render-choice strong { color: var(--txt); }
+.render-choice small { color: var(--muted); }
+.studio-files,.studio-display-options,.studio-inspector-group { background: var(--peach-soft); border-color: #d8b5a9; }
+.studio-files > summary,.studio-display-options > summary,.studio-inspector-group > summary { background: #f6e1d9; color: var(--txt); }
+.studio-files[open] > summary,.studio-inspector-group[open] > summary { border-color: #d8b5a9; }
+.studio-canvas-wrap { background: #fff; border: 1px solid #d8b5a9; }
+/* Preview only: do not recolor the artwork or its pixels. */
+#stage,#spCanvas,#symCanvas,#offCanvas { background: #fff !important; background-image: none !important; border: 1px solid #e1d7d2; }
+#animateWorkspace { gap: 16px; }
+#sparrowWorkspace,#offsetWorkspace { gap: 16px; }
+#layers { background: #fffaf7; border-color: #d8b5a9; }
+#timeline { accent-color: var(--accent); }
+@media (max-width: 800px) {
+  #animateWorkspace,#sparrowWorkspace,#offsetWorkspace { gap: 10px; }
+  #studioHome .welcome-inner { max-height: 90dvh; overflow: auto; }
+}
+@media (max-width: 520px) {
+  #studioHome,#funkinWelcome,#renderWelcome { padding: 12px; }
+  #studioHome .welcome-inner,#funkinWelcome .welcome-inner,#renderWelcome .welcome-inner { padding: 20px; }
+  .render-choice { min-height: 90px; }
+  #studioHud button { min-height: 36px; }
+}
