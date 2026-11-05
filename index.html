@@ -16,53 +16,45 @@
     <link rel="manifest" href="./funkin-studio/site.webmanifest" />
   </head>
   <body>
+  <!--とても疲れました。なので欠陥やバグが多い可能性があります。-->
     <div id="studioHome" role="dialog" aria-modal="true">
       <div class="welcome-inner">
         <h1>Funkin' Modding Hub</h1>
         <p class="tiny">今日は、何をしよう。</p>
         <div class="render-choices">
           <button id="homeAnimate" class="render-choice">
-            <strong>Animate Editor</strong
-            ><small>AnimateAtlas / Sparrow</small></button
-          ><button id="homeFunkin" class="render-choice">
-            <strong>Funkin' Editor</strong
-            ><small>Character Editor / 今後実装予定</small></button
-          ><button id="homeOther" class="render-choice">
-            <strong>その他</strong
-            ><small>注意事項や、クレジットなどが記載されています。</small>
+            <strong>Animate Editor</strong>
+            <small>AnimateAtlas / Sparrow</small>
+          </button>
+          <button id="homeFunkin" class="render-choice">
+            <strong>Funkin' Editor</strong>
+            <small>Character Editor / 今後実装予定</small>
+          </button>
+          <button id="homeOther" class="render-choice">
+            <strong>その他</strong>
+            <small>注意事項や、クレジットなどが記載されています。</small>
           </button>
         </div>
       </div>
     </div>
-    <div
-      id="funkinWelcome"
-      hidden
-      role="dialog"
-      aria-modal="true"
-      aria-label="Funkin Editor"
-    >
+    <div id="funkinWelcome" hidden role="dialog" aria-modal="true" aria-label="Funkin Editor">
       <div class="welcome-inner">
         <h1>🎮 Funkin' Editor</h1>
         <p class="tiny">編集するツールを選択してください。</p>
         <button id="funkinBackHome" type="button">←メインメニューへ</button>
         <div class="render-choices">
           <button id="chooseCharacter" class="render-choice">
-            <strong>Character Editor</strong
-            ><small>V-Slice キャラクター / Offset</small></button
-          ><button class="render-choice" disabled>
-            <strong>Coming Soon</strong
-            ><small>今後実装予定</small>
+            <strong>Character Editor</strong>
+            <small>V-Slice キャラクター / Offset</small>
+          </button>
+          <button class="render-choice" disabled>
+            <strong>Coming Soon</strong>
+            <small>今後実装予定</small>
           </button>
         </div>
       </div>
     </div>
-    <div
-      id="renderWelcome"
-      hidden
-      role="dialog"
-      aria-modal="true"
-      aria-label="Animate"
-    >
+    <div id="renderWelcome" hidden role="dialog" aria-modal="true" aria-label="Animate">
       <div class="welcome-inner">
         <h1 style="font-size: 22px; margin: 0">アニメーションを編集</h1>
         <p class="tiny">
@@ -71,57 +63,29 @@
         <button id="backHome" type="button">←メインメニューへ</button>
         <div class="render-choices">
           <button class="render-choice" id="chooseAnimate">
-            <strong>AnimateAtlas</strong
-            ><small
-              >現在のエディタ / Animation.json + spritemap JSON + PNG</small
-            ><span style="color: var(--accent)">使用可能</span>
+            <strong>AnimateAtlas</strong>
+            <small>現在のエディタ / Animation.json + spritemap JSON + PNG</small>
+            <span style="color: var(--accent)">使用可能</span>
           </button>
           <button class="render-choice" id="chooseSparrow">
-            <strong>Sparrow</strong><small>XML + PNG</small
-            ><span style="color: var(--accent)">使用可能</span>
+            <strong>Sparrow</strong><small>XML + PNG</small>
+            <span style="color: var(--accent)">使用可能</span>
           </button>
         </div>
       </div>
-      <div
-      id="otherWelcome"
-      hidden
-      role="dialog"
-      aria-modal="true"
-      aria-label="Others"
-    >
-      <div class="welcome-inner">
-        <h1>🎮 Funkin' Editor</h1>
-        <p class="tiny">編集するツールを選択してください。</p>
-        <button id="funkinBackHome" type="button">←メインメニューへ</button>
-        <div class="render-choices">
-          <button id="chooseCharacter" class="render-choice">
-            <strong>Character Editor</strong
-            ><small>V-Slice キャラクター / Offset</small></button
-          ><button class="render-choice" disabled>
-            <strong>Coming Soon</strong
-            ><small>今後実装予定</small>
-          </button>
-        </div>
-      </div>
-    </div>
-      <div
-      id="renderWelcome"
-      hidden
-      role="dialog"
-      aria-modal="true"
-      aria-label="Animate"
-    >
+      <div id="otherWelcome" hidden role="dialog" aria-modal="true" aria-label="Others">
       <div class="welcome-inner">
         <h1>Other Menus</h1>
         <p class="tiny">クレジットなどのその他の掲載情報。</p>
         <button id="funkinBackHome" type="button">←メインメニューへ</button>
         <div class="render-choices">
           <button id="chooseCharacter" class="render-choice">
-            <strong>Character Editor</strong
-            ><small>V-Slice キャラクター / Offset</small></button
-          ><button class="render-choice" disabled>
-            <strong>Coming Soon</strong
-            ><small>今後実装予定</small>
+            <strong>Character Editor</strong>
+            <small>V-Slice キャラクター / Offset</small>
+          </button>
+          <button class="render-choice" disabled>
+            <strong>Coming Soon</strong>
+            <small>今後実装予定</small>
           </button>
         </div>
       </div>
@@ -129,30 +93,32 @@
     <header id="studioHud">
       <div class="hudLogo">
         <div>
-          <strong
-            >🎤🩵Funkin' Studio
-            <span style="color: var(--accent)">2.7.6</span></strong
-          ><small>Atlas Editor</small>
+          <strong>🎤🩵Funkin' Studio
+            <span style="color: var(--accent)">For 0.8.9</span>
+          </strong>
+          <small>Atlas Editor</small>
         </div>
       </div>
       <div class="hudActions">
-        <button
-          id="hudUndo"
-          disabled
-          title="元に戻す / Undo"
-          aria-label="元に戻す"
-        >
-          ↶</button
-        ><button
-          id="hudRedo"
-          disabled
-          title="やり直す / Redo"
-          aria-label="やり直す"
-        >
-          ↷</button
-        ><button id="goHome" type="button">⌂ Home</button
-        ><button id="changeRenderer" type="button">AnimateAtlas ▾</button
-        ><button id="languageButton" aria-label="Language">🌐</button>
+        <button id="hudUndo" disabled title="元に戻す / Undo" aria-label="元に戻す">
+          ↶
+        </button>
+
+        <button id="hudRedo" disabled title="やり直す / Redo" aria-label="やり直す">
+          ↷
+        </button>
+
+        <button id="goHome" type="button">
+          ⌂ Home
+        </button>
+
+        <button id="changeRenderer" type="button">
+          AnimateAtlas ▾
+        </button>
+
+        <button id="languageButton" aria-label="Language">
+          🌐
+        </button>
       </div>
       <div id="langMenu" hidden>
         <button data-lang="ja">日本語</button
