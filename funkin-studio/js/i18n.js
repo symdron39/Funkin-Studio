@@ -25,6 +25,7 @@
     使用可能: "Available",
     今後対応: "Coming soon",
     非推奨: "Dont Use",
+    "←メインメニューへ": "←Back to MainMenu",
     "Character Editor / 今後実装予定": "Character Editor / Coming soon",
     "今後実装予定": "Coming Soon",
     "今日は、何をしよう。": "What shall You do today?",

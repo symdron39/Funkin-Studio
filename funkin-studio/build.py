@@ -11,13 +11,13 @@ import mimetypes
 import re
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-OUTPUT = ROOT / 'dist' / 'Funkin_Studio.html'
+ROOT = Path(__file__).resolve().parent.parent
+OUTPUT = ROOT / 'funkin-studio' / 'dist' / 'Funkin_Studio.html'
 html = (ROOT / 'index.html').read_text(encoding='utf-8')
 
 
 def asset_path(href):
-    rel = href.lstrip('/')
+    rel = href.split('?', 1)[0].split('#', 1)[0].lstrip('/')
     path = (ROOT / rel).resolve()
     if not path.is_relative_to(ROOT) or not path.is_file():
         raise FileNotFoundError(f'Missing or unsafe local asset: {href}')
@@ -73,7 +73,7 @@ def inline_manifest(match):
     for icon in manifest.get('icons', []):
         src = icon.get('src')
         if src and not src.startswith(('data:', 'http:', 'https:')):
-            icon['src'] = data_uri(src)
+            icon['src'] = data_uri(str(Path(href).parent / src))
     encoded = base64.b64encode(json.dumps(manifest, ensure_ascii=False, separators=(',', ':')).encode('utf-8')).decode('ascii')
     return tag.replace(f'href="{href}"', f'href="data:application/manifest+json;base64,{encoded}"')
 
