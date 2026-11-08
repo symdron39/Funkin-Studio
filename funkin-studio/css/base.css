@@ -401,3 +401,8 @@ body {
   max-height: 350px;
   overflow: auto;
 }
+
+/* 各 State の root（<... data-state="id">）。StateManager が hidden を付け外しして切り替える */
+[data-state][hidden] {
+  display: none !important;
+}

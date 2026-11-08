@@ -1,17 +1,22 @@
 /* ============================================================
-   sparrow-editor.js — Sparrow Editor（Sparrow形式のアトラス: XML + PNG の編集）
+   states/sparrow/editor.js — Sparrow Editor（Sparrow形式のアトラス: XML + PNG の編集）のロジック
    ------------------------------------------------------------
    Sparrow形式: 1枚のPNGに複数のスプライトを詰め、各スプライトの位置を XML(TextureAtlas > SubTexture)に書いた形式。
    名前の末尾の連番を除いた部分を「アニメ名(prefix)」と呼び、同じ prefix のスプライトが1つのアニメになる。
      例: "BF idle0000", "BF idle0001" → アニメ名 "BF idle"
 
    できること: プレビュー再生 / 位置(frameX,frameY)の調整 / 名前変更・連番振り直し / 複製 / 削除 / 別アトラスとの結合 / XML・PNG書き出し
-   全体は1つの即時実行関数。window に公開しているのは refreshHudHistory と spResize のみ。
+
+   旧 sparrow-editor.js からの変更点（挙動は同じ）:
+     ・即時実行関数 → mountSparrowEditor(state) 関数。HTML が入ったあとの create() で呼ばれる
+     ・window.refreshHudHistory / window.spResize をやめ、return で onShow / undo / redo を返す
+     ・HUD の Undo/Redo は state.app.hud.setHistory(...) で更新（HUD 側のボタン配線は ui/Hud.js が持つ）
+     ・document / window のイベントは state.listen(...)（この画面が表示中のときだけ有効）
 
    目次: 1.状態変数 2.Undo/Redo 3.補助関数 4.描画 5.XMLの読み込み 6.アニメの切り替え・再生
          7.位置の調整 8.選択・名前変更・複製・削除 9.書き出しと結合
    ============================================================ */
-(() => {
+export function mountSparrowEditor(state) {
   // ============================================================
   // 1. 状態変数
   // ============================================================
@@ -52,18 +57,12 @@
       selectedIndices: items.map((o, i) => (selected.has(o) ? i : -1)).filter((i) => i >= 0),
     };
   }
-  // Undo/Redo ボタン（画面内 + ヘッダー）の有効・無効を更新。ヘッダーは Sparrow 画面のときだけ
+  // Undo/Redo ボタン（画面内 + ヘッダーHUD）の有効・無効を更新。HUD は、この画面が表示中のときだけ
   function updateHistoryButtons() {
-    let active = !$("sparrowWorkspace").hidden;
     $("spUndo").disabled = !undoStack.length;
     $("spRedo").disabled = !redoStack.length;
-    if (active) {
-      $("hudUndo").disabled = !undoStack.length;
-      $("hudRedo").disabled = !redoStack.length;
-    }
+    if (state.active) state.app.hud.setHistory(undoStack.length > 0, redoStack.length > 0);
   }
-  // openWorkspace("sparrow") から呼べるように window に公開
-  window.refreshHudHistory = updateHistoryButtons;
   // 変更の直前に呼ぶ: 今の状態を Undo 履歴へ積み、Redo 履歴は破棄する
   function checkpoint() {
     undoStack.push(snapshot());
@@ -95,16 +94,9 @@
     restore(redoStack.pop());
     alertStatus("Redo");
   };
-  // ヘッダーの Undo/Redo は、Sparrow 画面が表示されているときだけ Sparrow の履歴を操作する
-  $("hudUndo").onclick = () => {
-    if (!$("sparrowWorkspace").hidden) $("spUndo").click();
-  };
-  $("hudRedo").onclick = () => {
-    if (!$("sparrowWorkspace").hidden) $("spRedo").click();
-  };
   // ショートカット: Ctrl/Cmd+Z = Undo、Ctrl/Cmd+Shift+Z または Ctrl/Cmd+Y = Redo（入力欄にフォーカス中は無効）
-  document.addEventListener("keydown", (e) => {
-    if ($("sparrowWorkspace").hidden || !(e.ctrlKey || e.metaKey) || e.altKey) return;
+  state.listen(document, "keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
     let t = e.target;
     if (t && ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)) return;
     if (e.key.toLowerCase() === "z") {
@@ -145,7 +137,6 @@
     c.height = Math.max(1, Math.round(r.height * d));
     draw();
   }
-  window.spResize = resize;
   // thumbnailCache: サムネイルの使い回し用 / raf: 再描画の予約 / previewDrag: ドラッグ中の仮のずれ量
   let thumbnailCache = new Map(),
     raf = 0,
@@ -180,7 +171,10 @@
     ctx.clearRect(0, 0, w, h);
     let a = current(),
       o = a[index];
-    if (!o || !atlas) return;
+    if (!o || !atlas) {
+      $("spFrameInfo").textContent = "";
+      return;
+    }
     let sz = spriteSize(o),
       sw = o.fw || sz.w,
       sh = o.fh || sz.h,
@@ -434,6 +428,8 @@
     if (!arr.length) return alertStatus("Select sprites first");
     let p = $("spNewPrefix").value.trim();
     if (!p) return alertStatus("Enter a prefix");
+    // 末尾が数字だと連番として扱われ、別のアニメ名にまとめられてしまう
+    if (/\d$/.test(p)) return alertStatus("Prefix must not end with a number.");
     let proposal = new Map(
       arr.map((o, i) => [
         o,
@@ -456,6 +452,7 @@
     if (!source.length) return alertStatus("Select sprites first");
     let p = $("spNewPrefix").value.trim();
     if (!p) return alertStatus("Enter a new prefix");
+    if (/\d$/.test(p)) return alertStatus("Prefix must not end with a number.");
     let proposal = source.map((o, i) => ({
       ...o,
       name: p + String(i).padStart(4, "0"),
@@ -589,5 +586,19 @@
     }
   };
   // ウィンドウサイズが変わったら canvas を合わせ直す
-  window.addEventListener("resize", resize);
-})();
+  state.listen(window, "resize", resize);
+
+  return {
+    // 表示されたとき: HUD の履歴ボタンを合わせ、canvas のサイズを測り直す
+    onShow() {
+      updateHistoryButtons();
+      resize();
+    },
+    // 離れるとき: 再生を止める
+    onHide() {
+      if (playing) $("spPlay").click();
+    },
+    undo: () => $("spUndo").click(),
+    redo: () => $("spRedo").click(),
+  };
+}

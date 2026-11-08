@@ -2,6 +2,10 @@
 
 The web entry point is [`../index.html`](../index.html). Styles, scripts, and icons are stored in this directory.
 
+Every screen is its own `State` class (one file each) — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). New to JavaScript? Start with [`docs/JS_FOR_HAXE_DEVS.md`](docs/JS_FOR_HAXE_DEVS.md).
+
+> The source uses ES Modules, so open it through a server (`python -m http.server`) or GitHub Pages — `file://` won't work. The standalone build below works from `file://`.
+
 ## Build a standalone offline HTML
 
 From the repository root:

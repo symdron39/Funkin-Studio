@@ -1,103 +1,37 @@
 /* ============================================================
-   animate-editor.js — Animate Editor（AnimateAtlas）本体
+   states/animate/editor.js — Animate Editor（AnimateAtlas）本体のロジック
    ------------------------------------------------------------
    役割:
      Animate CC が書き出す AnimateAtlas（Animation.json + spritemap JSON + アトラスPNG）を読み込み、
-     プレビュー・編集・書き出しを行う。ホーム画面〜ワークスペースの画面切り替えもここ。
+     プレビュー・編集・書き出しを行う。
+
+   旧 animate-editor.js からの変更点（挙動は同じ）:
+     ・画面の切り替え（旧 section 1）は core/StateManager.js が担当するので、ここから削除
+     ・即時実行関数 (() => {...})() をやめ、mountAnimateEditor(state) という関数にした
+         → 画面の HTML が DOM に入ってから呼ばれる（create() の中）。$("stage") などが確実に見つかる
+     ・window.xxx での公開をやめ、末尾の return で「必要なものだけ」返す
+         → api（autosave・パーツ管理パネルが使う）/ onShow / onHide / undo / redo
+     ・document / window のイベントは state.listen(...) に変更
+         → 画面が表示されている間だけ有効になる。旧コードの「$("animateWorkspace").hidden なら無視」が不要に
 
    構造:
-     全体が1つの即時実行関数 (() => { ... })() で、中の変数は外から見えない。
-     他のファイルから使う必要のあるものだけ、window に公開している:
-       window.FunkinAnimate         … 状態と一部の関数（末尾。autosave.js が使う）
-       window.anHistoryActivate     … Undo/Redo ボタンの状態更新
-       window.frameLabelGet/Set/Remove/Refresh … フレームラベル操作
-       window.__fsGetRefs / __fsUnlinkAllSprite … スプライト参照チェック・配置解除（parts-manager.js が使う）
+     mountAnimateEditor の中の変数・関数は外から見えない（クロージャ）。
+     これは Haxe の「クラスの private フィールド」と同じ効果を、関数のスコープで実現している。
 
    目次（各セクションは「=====」の見出しで区切ってあります）:
-      1. 画面の切り替え              11. 要素一覧
-      2. 共通の道具と状態            12. キーフレーム操作
-      3. Undo / Redo                 13. フレーム移動・再生・ズーム
-      4. レガシー形式の対応          14. 要素の編集（回転・移動・重なり順）
-      5. モダン形式のデータ構造      15. 書き出し
-      6. フレームラベル              16. シンボル・アニメ・レイヤーの追加と削除
-      7. 要素の変換行列              17. スプライトの一覧と配置
-      8. ファイルの読み込み          18. スプライトの参照チェックと配置解除
-      9. プレビュー描画              19. アトラスの再構築
-     10. シンボルのナビゲーション    20. PNG追加と ZIP の書き出し・復元
+      2. 共通の道具と状態            11. 要素一覧
+      3. Undo / Redo                 12. キーフレーム操作
+      4. レガシー形式の対応          13. フレーム移動・再生・ズーム
+      5. モダン形式のデータ構造      14. 要素の編集（回転・移動・重なり順）
+      6. フレームラベル              15. 書き出し
+      7. 要素の変換行列              16. シンボル・アニメ・レイヤーの追加と削除
+      8. ファイルの読み込み          17. スプライトの一覧と配置
+      9. プレビュー描画              18. スプライトの参照チェックと配置解除
+     10. シンボルのナビゲーション    19. アトラスの再構築
+                                     20. PNG追加と ZIP の書き出し・復元
    ============================================================ */
-(() => {
-  // ============================================================
-  // 1. 画面の切り替え（ホーム → ウェルカム画面 → ワークスペース）
-  // ============================================================
-  // 画面の流れ:
-  //   studioHome(ホーム)
-  //     ├─ Animate/Sparrow を選ぶ → renderWelcome → animateWorkspace / sparrowWorkspace
-  //     └─ Funkin' を選ぶ        → funkinWelcome → offsetWorkspace (Character Editor)
-  //
-  // openWorkspace(mode): mode は "animate" | "sparrow" | "offset"。
-  //   指定したワークスペースだけ表示し、他は hidden にする。
-  //   HUD の Undo/Redo は一度無効にして、モードごとの履歴側(anHistoryActivate など)で再度有効化する。
-  function openWorkspace(mode) {
-    for (const id of ["animateWorkspace", "sparrowWorkspace", "offsetWorkspace"])
-      document.getElementById(id).hidden = id !== mode + "Workspace";
-    document.getElementById("renderWelcome").hidden = true;
-    const label = { animate: "AnimateAtlas", sparrow: "Sparrow", offset: "Offset Editor" }[mode];
-    document.getElementById("changeRenderer").textContent = label + " ▾";
-    document.getElementById("hudUndo").disabled = true;
-    document.getElementById("hudRedo").disabled = true;
-    if (mode === "animate") {
-      window.anHistoryActivate?.();
-    }
-    if (mode === "sparrow") {
-      window.refreshHudHistory?.();
-      window.spResize?.();
-    }
-    if (mode === "offset") {
-      window.offsetResize?.();
-    }
-  }
-  // ホーム/ウェルカム画面のボタン配線。
-  // 各画面は hidden 属性の ON/OFF で出し入れしている（画面遷移＝hiddenの付け替え）。
-  document.getElementById("homeAnimate").onclick = () => {
-    document.getElementById("studioHome").hidden = true;
-    document.getElementById("renderWelcome").hidden = false;
-  };
-  document.getElementById("homeFunkin").onclick = () => {
-    document.getElementById("studioHome").hidden = true;
-    document.getElementById("funkinWelcome").hidden = false;
-  };
-  document.getElementById("chooseCharacter").onclick = () => {
-    document.getElementById("funkinWelcome").hidden = true;
-    openWorkspace("offset");
-  };
-  document.getElementById("funkinBackHome").onclick = () => {
-    document.getElementById("funkinWelcome").hidden = true;
-    document.getElementById("studioHome").hidden = false;
-  };
-  document.getElementById("backHome").onclick = () => {
-    document.getElementById("renderWelcome").hidden = true;
-    document.getElementById("studioHome").hidden = false;
-  };
-
-  document.getElementById("chooseAnimate").onclick = () => openWorkspace("animate");
-  document.getElementById("chooseSparrow").onclick = () => openWorkspace("sparrow");
-  // Language controls are owned by the shared localization module below.
-  // どの画面からでもホーム画面へ戻る
-  function goHome() {
-    document.getElementById("renderWelcome").hidden = true;
-    document.getElementById("funkinWelcome").hidden = true;
-    document.getElementById("studioHome").hidden = false;
-  }
-  document.getElementById("goHome").onclick = goHome;
-  // ヘッダーの「レンダラー ▾」ボタン: Offset Editor 表示中ならキャラ選択、それ以外ならAnimate/Sparrow選択画面を開き直す
-  document.getElementById("changeRenderer").onclick = () => {
-    if (!document.getElementById("offsetWorkspace").hidden) {
-      document.getElementById("funkinWelcome").hidden = false;
-    } else {
-      document.getElementById("renderWelcome").hidden = false;
-    }
-  };
-
+/** @param state AnimateEditorState（state.listen / state.app / state.active を使う） */
+export function mountAnimateEditor(state) {
   // ============================================================
   // 2. 共通の道具と、Animate Editor の状態
   // ============================================================
@@ -147,11 +81,10 @@
       frame: Number($("frame").value) || 0,
     };
   }
-  // HUD の Undo/Redo ボタンの有効・無効を、履歴の有無に合わせて更新（Animate画面が非表示なら何もしない）
+  // HUD の Undo/Redo ボタンの有効・無効を、履歴の有無に合わせて更新（この画面が表示中でなければ何もしない）
   function anButtons() {
-    if ($("animateWorkspace").hidden) return;
-    $("hudUndo").disabled = !anUndo.length;
-    $("hudRedo").disabled = !anRedo.length;
+    if (!state.active) return;
+    state.app.hud.setHistory(anUndo.length > 0, anRedo.length > 0);
   }
   // 変更を加える『直前』に呼ぶ。今の状態を Undo 履歴へ積み、Redo 履歴は破棄する。上限を超えたら古いものから捨てる
   function anCheckpoint() {
@@ -206,8 +139,6 @@
     anRestore(from.pop());
     status(redo ? "やり直しました。" : "元に戻しました。");
   }
-  // openWorkspace から呼べるように window に公開（Animate を開いたときにボタン状態を更新する）
-  window.anHistoryActivate = anButtons;
   // 自動チェックポイント: 下の編集系ボタンが押された「瞬間」(capture=true で他の処理より先に実行)に
   // 自動で anCheckpoint() を呼ぶ。各ボタンの処理側で呼び忘れても Undo できるようにするための仕組み。
   // anMutations … チェックポイントを取る対象のボタン id 一覧
@@ -227,10 +158,10 @@
     "importpng",
     "restorezip",
   ]);
-  document.addEventListener(
+  state.listen(
+    document,
     "click",
     (e) => {
-      if ($("animateWorkspace").hidden) return;
       let b = e.target.closest("button");
       if (b && anMutations.has(b.id) && anim) anCheckpoint();
     },
@@ -244,10 +175,11 @@
     true,
   );
   // ショートカット: Ctrl/Cmd+Z = Undo、Ctrl/Cmd+Shift+Z または Ctrl/Cmd+Y = Redo。入力欄にフォーカス中は無効（文字入力のUndoと衝突させない）
-  document.addEventListener(
+  state.listen(
+    document,
     "keydown",
     (e) => {
-      if ($("animateWorkspace").hidden || !(e.ctrlKey || e.metaKey) || e.altKey) return;
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const tag = e.target?.tagName;
       if (["INPUT", "TEXTAREA", "SELECT"].includes(tag)) return;
       if (e.key.toLowerCase() === "z") {
@@ -257,21 +189,6 @@
         e.preventDefault();
         anStep(true);
       }
-    },
-    true,
-  );
-  // ヘッダーの Undo / Redo ボタン（Animate 画面のときだけ反応）
-  $("hudUndo").addEventListener(
-    "click",
-    () => {
-      if (!$("animateWorkspace").hidden) anStep(false);
-    },
-    true,
-  );
-  $("hudRedo").addEventListener(
-    "click",
-    () => {
-      if (!$("animateWorkspace").hidden) anStep(true);
     },
     true,
   );
@@ -292,7 +209,7 @@
     ctx.setTransform(d, 0, 0, d, 0, 0);
     draw();
   }
-  window.addEventListener("resize", resize);
+  state.listen(window, "resize", resize);
 
   // ============================================================
   // 4. レガシー形式（ANIMATION / SYMBOL_DICTIONARY）の対応
@@ -893,11 +810,11 @@
   // ============================================================
   // 6. フレームラベル（キーフレームの N = 名前。アニメ名の目印）
   // ============================================================
-  // window に公開しているので、他のスクリプトからも呼べる。
+  // （autosave などから使えるよう、末尾の api にも入れている）
   //   frameLabelGet()                : ラベル一覧を返す（メインのタイムラインのみ）
   //   frameLabelSet(frame, name)     : その位置にラベルを付ける（キーが無ければ、前のキーを分割して作る）
   //   frameLabelRemove(layer, frame) : ラベルを削除
-  window.frameLabelGet = () => {
+  const frameLabelGet = () => {
     if (!anim) return [];
     let result = [];
     (anim.AN?.TL?.L || []).forEach((layer, li) =>
@@ -913,7 +830,7 @@
     );
     return result.sort((a, b) => a.start - b.start);
   };
-  window.frameLabelSet = (frame, name) => {
+  const frameLabelSet = (frame, name) => {
     if (!anim?.AN?.TL?.L?.length) throw Error("Load Animation.json first");
     let layers = anim.AN.TL.L;
     let hit = null;
@@ -943,16 +860,16 @@
       l.FR.sort((a, b) => Number(a.I) - Number(b.I));
     }
     hit.N = name;
-    window.frameLabelRefresh?.();
+    refreshIntegratedLabels();
     updateKeyUI();
     draw();
   };
-  window.frameLabelRemove = (layer, frame) => {
+  const frameLabelRemove = (layer, frame) => {
     let f = anim?.AN?.TL?.L?.[layer]?.FR?.find((f) => Number(f.I) === frame);
     if (!f?.N) throw Error("Label not found");
     anCheckpoint();
     delete f.N;
-    window.frameLabelRefresh?.();
+    refreshIntegratedLabels();
   };
 
   // ラベル編集パネル(画面側)。refreshIntegratedLabels() が一覧を作り直し、以降の各ボタンが上の3関数を呼ぶ。
@@ -962,7 +879,7 @@
     if (!list) return;
     const previous = list.value;
     list.replaceChildren();
-    for (const x of window.frameLabelGet()) {
+    for (const x of frameLabelGet()) {
       const o = document.createElement("option");
       o.value = x.layer + "|" + x.start;
       o.textContent = x.start + "F · " + x.name + " (" + x.layerName + ")";
@@ -972,17 +889,16 @@
     const selected = list.selectedOptions[0];
     if (selected) {
       const [layer, frame] = selected.value.split("|").map(Number);
-      const x = window.frameLabelGet().find((v) => v.layer === layer && v.start === frame);
+      const x = frameLabelGet().find((v) => v.layer === layer && v.start === frame);
       if (x) {
         $("anLabelFrame").value = x.start;
         $("anLabelName").value = x.name;
       }
     }
   }
-  window.frameLabelRefresh = refreshIntegratedLabels;
-  $("anLabelList").onchange = () => {
+    $("anLabelList").onchange = () => {
     const [layer, frame] = ($("anLabelList").value || "").split("|").map(Number);
-    const x = window.frameLabelGet().find((v) => v.layer === layer && v.start === frame);
+    const x = frameLabelGet().find((v) => v.layer === layer && v.start === frame);
     if (x) {
       $("anLabelFrame").value = x.start;
       $("anLabelName").value = x.name;
@@ -1006,7 +922,7 @@
         name = $("anLabelName").value.trim();
       if (!Number.isInteger(frame) || frame < 0 || !name)
         throw Error("Enter a valid frame and label");
-      window.frameLabelSet(frame, name);
+      frameLabelSet(frame, name);
       $("anLabelStatus").textContent = "Saved to working Animation.json";
       refreshIntegratedLabels();
     } catch (e) {
@@ -1018,7 +934,7 @@
       const value = $("anLabelList").value;
       if (!value) throw Error("Select a label");
       const [layer, frame] = value.split("|").map(Number);
-      window.frameLabelRemove(layer, frame);
+      frameLabelRemove(layer, frame);
       $("anLabelStatus").textContent = "Label deleted";
       refreshIntegratedLabels();
     } catch (e) {
@@ -1152,7 +1068,7 @@
       parts();
       updateKeyUI();
       recenterPreview();
-      window.frameLabelRefresh?.();
+      refreshIntegratedLabels();
       legacySelectedLayer = 0;
       legacySelectedElement = 0;
       legacyEditRefresh();
@@ -2120,7 +2036,7 @@
     $("timeline").max = Math.max(0, duration(symbol) - 1);
     $("frame").max = $("timeline").max;
     setFrame(Math.min(Number($("frame").value) || 0, duration(symbol) - 1));
-    window.frameLabelRefresh?.();
+    refreshIntegratedLabels();
     status("レイヤーを削除しました。Undoで元に戻せます。");
   };
   // 新しいレイヤーを先頭（＝一番手前）に追加する（名前は prompt で入力。同名は拒否）
@@ -2311,8 +2227,6 @@
     }
     return refs;
   }
-  // parts-manager.js(パーツ管理パネル)から呼べるように window に公開
-  window.__fsGetRefs = spriteReferences;
   function removeAllSpriteReferences(spriteName) {
     let removed = 0;
     for (const entry of allTimelines())
@@ -2330,7 +2244,7 @@
     return removed;
   }
   // 「この画像の配置をすべて解除」ボタン用（ボタンは parts-manager.js が作る）。確認ダイアログのあと全配置を取り除く。Undo 可
-  window.__fsUnlinkAllSprite = () => {
+  const unlinkAllSprite = () => {
     if (!anim || !map) {
       status("先にAnimation JSONとAtlasを読み込んでください。");
       return;
@@ -2372,7 +2286,7 @@
         "件解除しました。次に「Atlasから削除」を押してください。Animation JSONも保存してください。",
     );
     // 「fs-asset-mutated」イベントで、未保存インジケーター(parts-manager.js)に変更があったことを知らせる
-    document.dispatchEvent(new CustomEvent("fs-asset-mutated"));
+    state.app.events.emit("asset-mutated");
   };
 
   // 選択中の要素1つを、現在のキーから外す（アトラス画像やスプライト定義は残る）
@@ -2532,7 +2446,7 @@
         "spritemap-edited.json",
       );
       if (old.src.startsWith("blob:")) URL.revokeObjectURL(old.src);
-      document.dispatchEvent(new CustomEvent("fs-asset-mutated"));
+      state.app.events.emit("asset-mutated");
       status(
         "未使用パーツを" +
           unused.length +
@@ -3110,10 +3024,12 @@
   resize();
 
   // ============================================================
-  // 外部ファイル(autosave.js)向けの公開口
-  // このIIFEの内部変数は外から見えないため、必要なものだけここで公開する。
+  // 外へ渡すもの
   // ============================================================
-  window.FunkinAnimate = {
+  // 旧: window.FunkinAnimate = {...} のようにグローバルへ置いていた。
+  // 新: 関数の戻り値として State に渡す。State は this.api として保持し、必要な相手にだけ見せる。
+  //   getter/setter（get anim() / set anim(v)）は「外から anim = ... と書いても、中の変数 anim が書き換わる」ための書き方。
+  const api = {
     get anim() { return anim; },
     set anim(v) { anim = v; },
     get map() { return map; },
@@ -3126,6 +3042,25 @@
     set symbol(v) { symbol = v; },
     symbolNavStack, anUndo, anRedo, anButtons,
     animateSymbolOptions, esc, updateAddSpriteList, duration, setFrame,
-    parts, updateKeyUI, resize, recenterPreview, legacyEditRefresh, openWorkspace,
+    parts, updateKeyUI, resize, recenterPreview, legacyEditRefresh,
+    frameLabelRefresh: refreshIntegratedLabels,
+    getSpriteReferences: spriteReferences, // パーツ管理パネルが使う
+    unlinkAllSprite,                       // 同上
   };
-})();
+
+  return {
+    api,
+    // この画面が表示されたとき: HUD の Undo/Redo を合わせ、canvas のサイズを測り直す
+    // （非表示のあいだは大きさ 0 なので、表示のたびに resize が必要）
+    onShow() {
+      anButtons();
+      resize();
+    },
+    // この画面を離れるとき: 再生を止める（非表示のまま再生し続けるのを防ぐ）
+    onHide() {
+      if (playing) $("play").click();
+    },
+    undo: () => anStep(false),
+    redo: () => anStep(true),
+  };
+}

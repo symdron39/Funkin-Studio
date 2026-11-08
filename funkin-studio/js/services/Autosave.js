@@ -1,15 +1,16 @@
 /* ============================================================
-   autosave.js — ローカル自動保存と復元（v2.7.9）
+   services/Autosave.js — ローカル自動保存と復元（v2.7.9）
    ------------------------------------------------------------
    Animate Editor で開いている作業（Animation.json・spritemap・アトラスPNG）を、ブラウザ内の IndexedDB に自動で保存し、
    ブラウザを閉じたり再読み込みしたあとでも「前回の作業を復元」で戻せるようにする。
    Cookie ではなく IndexedDB を使う理由: アトラスPNGや Animation.json は Cookie の容量(1つ数KB)に収まらないため。
-   エディタの状態は animate-editor.js が公開する window.FunkinAnimate（下の A）経由で読み書きする。
+   エディタの状態は AnimateEditorState.api（下の A）経由で読み書きする。
    保存するのは常に1件だけ（上書き）。
 
    目次: 1.保存先(IndexedDB) 2.右下の復元パネル 3.自動保存 4.復元 5.自動保存のきっかけ
    ============================================================ */
-(() => {
+// 起動時に main.js から1回だけ呼ぶ。app は復元時に Animate 画面を開く（app.switchTo）ために使う
+export function startAutosave(app) {
   // ============================================================
   // 1. 保存先（IndexedDB）
   // ============================================================
@@ -85,15 +86,18 @@
   const update = (txt) => {
     stat.textContent = txt;
   };
-  // animate-editor.js が公開している状態・関数（読み書きは A.xxx 経由）
-  const A = window.FunkinAnimate;
+  // Animate エディタの api（states/animate/editor.js の return した api）。
+  // エディタ画面は「最初に開かれたとき」に初めて作られるので、使うたびに refreshA() で取り直す。
+  // まだ開かれていなければ null（= 保存するものが無い）
+  let A = null;
+  const refreshA = () => (A = app.states.get("animate")?.api ?? null);
 
   // ============================================================
   // 3. 自動保存
   // ============================================================
   // sig(): 今の編集状態の「指紋」（JSON文字列）。前回保存したものと同じなら保存を省く。まだ何も読み込んでいなければ null。
   const sig = () =>
-    A.anim && A.map && A.img?.naturalWidth
+    refreshA()?.anim && A.map && A.img?.naturalWidth
       ? JSON.stringify([
           A.anim,
           A.map,
@@ -159,11 +163,14 @@
         update("復元できる作業はありません");
         return;
       }
-      if (A.anim && !confirm("現在のAnimateAtlasを前回の作業で置き換えますか？")) return;
+      if (refreshA()?.anim && !confirm("現在のAnimateAtlasを前回の作業で置き換えますか？")) return;
       const newImg = new Image();
       const url = URL.createObjectURL(data.image);
       newImg.src = url;
       await newImg.decode();
+      // エディタ画面が無ければここで作られる（persistent なので、以後は使い回される）
+      await app.switchTo("animate");
+      if (!refreshA()) throw Error("Animate Editor を開けませんでした");
       A.anim = JSON.parse(data.anim);
       A.map = JSON.parse(data.map);
       A.img = newImg;
@@ -186,13 +193,12 @@
       A.updateAddSpriteList();
       document.getElementById("timeline").max = Math.max(0, A.duration(A.symbol) - 1);
       document.getElementById("frame").max = document.getElementById("timeline").max;
-      A.openWorkspace("animate");
       A.setFrame(Math.min(data.frame, Math.max(0, A.duration(A.symbol) - 1)));
       A.parts();
       A.updateKeyUI();
       A.resize();
       A.recenterPreview();
-      window.frameLabelRefresh?.();
+      A.frameLabelRefresh();
       A.legacyEditRefresh();
       lastSignature = sig();
       update("復元しました: " + new Date(data.updated).toLocaleString());
@@ -240,4 +246,4 @@
       ),
     )
     .catch((e) => update("この環境では自動保存できません: " + e.message));
-})();
+}

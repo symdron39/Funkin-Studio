@@ -1,5 +1,5 @@
 /* ============================================================
-   character-editor.js — Character Editor（V-Slice の character.json / Offset 編集）
+   states/character/editor.js — Character Editor（V-Slice の character.json / Offset 編集）のロジック
    ------------------------------------------------------------
    役割:
      V-Slice(FNF) のキャラクター定義 character.json を読み込み、各アニメーションの
@@ -14,12 +14,16 @@
        frameIndices     : 再生するフレーム番号を指定（省略なら全部）
 
    絵のデータは3形式に対応: ① Sparrow(XML+PNG) ② モダン AnimateAtlas ③ レガシー AnimateAtlas
-   全体は1つの即時実行関数。window に公開しているのは offsetResize のみ。
+
+   旧 character-editor.js からの変更点（挙動は同じ）:
+     ・即時実行関数 → mountCharacterEditor(state) 関数。create() で呼ばれる
+     ・window.offsetResize をやめ、return で onShow / onHide を返す
+     ・window の resize は state.listen(...)
 
    目次: 1.状態変数 2.アトラスの登録 3.基本ヘルパーと Undo/Redo 4.再生するフレーム列の決め方
          5.描画 6.読み込みとアニメの追加・改名・削除 7.再生操作 8.オフセットの編集と書き出し
    ============================================================ */
-(() => {
+export function mountCharacterEditor(state) {
   // ============================================================
   // 1. 状態変数
   // ============================================================
@@ -383,11 +387,7 @@
     ctx.setTransform(d, 0, 0, d, 0, 0);
     draw();
   }
-  // openWorkspace("offset") から呼べるように window に公開
-  window.offsetResize = resize;
-  window.addEventListener("resize", () => {
-    if (!$("offsetWorkspace").hidden) resize();
-  });
+  state.listen(window, "resize", resize); // 表示中のときだけ聞く
 
   // ============================================================
   // 5. 描画
@@ -685,6 +685,7 @@
   $("offSelect").onchange = () => {
     active = Number($("offSelect").value) || 0;
     refresh();
+    restartOffPlayback();
   };
   // 再生中なら停止する
   function stopOffPlayback() {
@@ -693,6 +694,12 @@
       timer = null;
       $("offPlay").textContent = "▶ 再生";
     }
+  }
+  // 再生中なら、いまのアニメの fps で再生し直す（切り替え・fps変更を反映）
+  function restartOffPlayback() {
+    if (!timer) return;
+    stopOffPlayback();
+    $("offPlay").click();
   }
   // アニメ名として使えるか（空でなく、他と重複しない）
   function validAnimationName(name, exclude = -1) {
@@ -852,17 +859,28 @@
   // 変化量は (ドラッグした px) ÷ (ズーム × scale)。
   canvas.addEventListener("pointerdown", (e) => {
     if (!current()) return;
-    snapshot();
+    // 履歴は最初に実際に動かしたときに積む（クリックだけでUndo履歴が増えないように）
     drag = {
       id: e.pointerId,
       x: e.clientX,
       y: e.clientY,
       offsets: [...(current().offsets || [0, 0])],
+      saved: false,
     };
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener("pointermove", (e) => {
     if (!drag || drag.id !== e.pointerId) return;
+    if (!drag.saved) {
+      if (e.clientX === drag.x && e.clientY === drag.y) return;
+      // pointerdown 時点のオフセットに戻した状態を履歴へ積む
+      const a = current();
+      const now = a.offsets;
+      a.offsets = drag.offsets.slice();
+      snapshot();
+      a.offsets = now;
+      drag.saved = true;
+    }
     const z = Math.max(0.1, Number($("offZoom").value) || 1);
     updateOffsets(
       drag.offsets[0] - (e.clientX - drag.x) / (z * (Number(doc?.scale) || 1)),
@@ -892,6 +910,7 @@
     else delete a.frameIndices;
     if ($("offAnimType").value) a.animType = $("offAnimType").value;
     refresh();
+    restartOffPlayback();
     say("設定を適用しました。JSON保存で書き出せます。");
   };
   // character.json を character-offset-edited.json として書き出す。「最適化」ON なら空白・改行を省いて出力し、サイズの削減率を表示
@@ -928,4 +947,16 @@
           : " 整形JSONで保存"),
     );
   };
-})();
+
+  return {
+    // 表示されたとき: canvas のサイズを測り直す（非表示のあいだは大きさ 0 のため）
+    onShow() {
+      resize();
+    },
+    // 離れるとき: 再生中なら止める（ボタンを押したことにして、ボタンの表示も戻す）
+    // ※旧コードは画面を離れても再生タイマーが回り続けていた
+    onHide() {
+      if (timer) $("offPlay").click();
+    },
+  };
+}

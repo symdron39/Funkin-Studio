@@ -1,0 +1,37 @@
+#contributorsWelcome[hidden] { display: none !important; }
+#contributorsWelcome { position: fixed; inset: 0; z-index: 100; overflow-y: auto; background: var(--bg); padding: 24px 14px; }
+#contributorsWelcome .contributors-inner { width: min(850px, 100%); margin: 0 auto; }
+.contributors-list { display: grid; gap: 14px; margin-top: 20px; padding-bottom: 30px; }
+.contributor-card { display: flex; align-items: flex-start; gap: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--txt); }
+.contributor-card img { width: 84px; height: 84px; object-fit: cover; border-radius: 12px; flex-shrink: 0; }
+.contributor-content { min-width: 0; overflow-wrap: anywhere; }
+.contributor-content h2 { font-size: 1.1rem; margin: 0 0 4px; }
+.contributor-content p { margin: 4px 0; }
+.contributor-role { color: var(--accent); font-weight: 600; }
+.contributor-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.contributor-links a { padding: 7px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--studio-button, #183f70); color: var(--txt); text-decoration: none; }
+.contributor-links a:hover { background: var(--studio-button-hover, #285382); }
+@media (max-width: 480px) { .contributor-card img { width: 64px; height: 64px; } .contributor-card { gap: 10px; padding: 12px; } }
+
+/* Information screens are standalone pages, never editor overlays. */
+#studioHud[hidden], #animateWorkspace[hidden], #sparrowWorkspace[hidden], #offsetWorkspace[hidden] { display: none !important; }
+#otherWelcome[hidden] { display: none !important; }
+#otherWelcome { position: fixed; inset: 0; z-index: 10001; overflow-y: auto; display: flex; align-items: center; justify-content: center; padding: 18px; background: var(--bg); }
+#otherWelcome .welcome-inner { width: min(650px,100%); padding: 22px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); }
+#contributorsWelcome { z-index: 10001; }
+body:not(.editor-active) #studioHud { display: none !important; }
+
+/* Navigation isolation: one active screen, including on mobile. */
+#studioHome[hidden], #renderWelcome[hidden], #funkinWelcome[hidden],
+#otherWelcome[hidden], #contributorsWelcome[hidden],
+#studioHud[hidden], #animateWorkspace[hidden],
+#sparrowWorkspace[hidden], #offsetWorkspace[hidden] { display: none !important; }
+body:not(.editor-active) #studioHud,
+body:not(.editor-active) #animateWorkspace,
+body:not(.editor-active) #sparrowWorkspace,
+body:not(.editor-active) #offsetWorkspace { display: none !important; }
+body.editor-active #studioHome,
+body.editor-active #renderWelcome,
+body.editor-active #funkinWelcome,
+body.editor-active #otherWelcome,
+body.editor-active #contributorsWelcome { display: none !important; }
