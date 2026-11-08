@@ -54,6 +54,8 @@ export class UnsavedGuard {
       document.addEventListener(
         "pointerdown",
         (e) => {
+          // 左クリック以外（中/右ドラッグのパン）や、パン操作中（Space / ✋）は「編集」ではない
+          if (e.button !== 0 || e.target?.dataset?.pan === "1") return;
           if (e.target?.id === id && !e.target.closest("[hidden]")) this.mark();
         },
         true,

@@ -214,6 +214,25 @@ Object.assign(dictionary, {
   アトラス: "Atlas",
 });
 
+// 追加分3: Character Editor 3.0（全画面プレビュー + Hud）
+Object.assign(dictionary, {
+  "V-Slice Character Editor 3.0": "V-Slice Character Editor 3.0",
+  "プレビューをドラッグ、または矢印キーで動かせます（Shiftで10、Altで0.1刻み）。ドラッグ右→Offset X減少、ドラッグ下→Offset Y減少。正のオフセットは左・上へ動きます。":
+    "Drag the preview or use the arrow keys (Shift = 10, Alt = 0.1). Drag right → Offset X decreases, drag down → Offset Y decreases. Positive offsets move left / up.",
+  "↶ 戻す": "↶ Undo",
+  "↷ やり直す": "↷ Redo",
+  "元に戻す (Ctrl+Z)": "Undo (Ctrl+Z)",
+  "やり直す (Ctrl+Y)": "Redo (Ctrl+Y)",
+  "ズーム（ホイールでも可）": "Zoom (mouse wheel also works)",
+  "キャラ全体を画面に収める (F)": "Fit the character in view (F)",
+  "ズーム100%・原点を中央へ": "Reset zoom to 100% and recenter the origin",
+  "左ドラッグでビューを動かす（Space長押し / 中・右ドラッグでも可）": "Left-drag moves the view (or hold Space / middle- or right-drag)",
+  "フレームの枠を表示": "Show the frame box",
+  "Hud の表示 / 非表示 (H)": "Show / hide HUD (H)",
+  "ズームイン": "Zoom in",
+  "ズームアウト": "Zoom out",
+});
+
 // ============================================================
 // 2. 数字を含む文言の翻訳
 // ============================================================

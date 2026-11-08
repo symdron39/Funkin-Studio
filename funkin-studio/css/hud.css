@@ -1,0 +1,234 @@
+/* ============================================================
+   hud.css — 「全画面プレビュー + Hud パネル」の共通スタイル
+   ------------------------------------------------------------
+   Character Editor と、今後のステージエディタで共有する。
+   使い方: ワークスペース要素に class="hudWorkspace" を付け、中に
+     <canvas>（全画面）と <div class="hudLayer">（Hud を重ねる層）を置く。
+   構造:
+     .hudLayer      … canvas の上に重なる層。自身はクリックを通す（pointer-events: none）
+     .hudBar        … 上のバー
+     .hudDock       … 左右の縦並びドック（パネルが増えても縦にスクロールできる）
+     .hudPanel      … 個々のパネル（半透明）
+     .hudTransport  … 下の再生バー
+     .hudEye        … 全 Hud の一括トグル。全部隠しても残る
+   色はテーマ変数（--panel / --line / --txt / --accent）に従うので、カラーラボの変更にも追従する。
+   ============================================================ */
+.hudWorkspace {
+  position: fixed;
+  top: 61px; /* 上の共通 HUD（#studioHud）の高さ */
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+}
+.hudWorkspace[hidden] {
+  display: none !important;
+}
+body:has(.hudWorkspace:not([hidden])) {
+  overflow: hidden; /* 画面全体はスクロールさせない。動かすのはプレビューの中身 */
+}
+.hudWorkspace > canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+
+.hudLayer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  --hud-bg: color-mix(in srgb, var(--panel) 86%, transparent);
+}
+.hudLayer > *,
+.hudDock > * {
+  pointer-events: auto;
+}
+.hudLayer[data-all-hidden="true"] [data-hud-panel],
+.hudLayer[data-all-hidden="true"] .hudDock {
+  display: none !important;
+}
+[data-hud-panel][hidden] {
+  display: none !important;
+}
+
+.hudEye {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 10px;
+  background: var(--hud-bg);
+  backdrop-filter: blur(6px);
+  z-index: 3;
+}
+.hudEye[aria-pressed="true"] {
+  opacity: 0.55;
+}
+
+.hudBar {
+  position: absolute;
+  top: 10px;
+  left: 58px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  min-height: 38px;
+  overflow-x: auto;
+  white-space: nowrap;
+  background: var(--hud-bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  backdrop-filter: blur(6px);
+  z-index: 2;
+}
+.hudBar > * {
+  flex: 0 0 auto;
+}
+.hudBar button {
+  padding: 5px 9px;
+  border-radius: 8px;
+}
+.hudBar button.on,
+.hudBar button[aria-pressed="true"] {
+  background: var(--studio-important, #174d3a);
+  border-color: var(--accent);
+  color: #fff;
+}
+.hudBar input[type="number"] {
+  width: 68px;
+  padding: 5px 6px;
+}
+.hudSep {
+  width: 1px;
+  align-self: stretch;
+  background: var(--line);
+  margin: 2px 2px;
+}
+.hudCheck {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  font-size: 12px;
+}
+.hudCheck input {
+  width: auto;
+  padding: 0;
+}
+.hudReadout {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  padding-left: 4px;
+}
+
+.hudDock {
+  position: absolute;
+  top: 58px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(340px, calc(100% - 20px));
+  overflow-y: auto;
+  overflow-x: hidden;
+  pointer-events: none;
+  scrollbar-width: thin;
+}
+.hudDockLeft {
+  left: 10px;
+  bottom: 118px; /* 再生バーの上まで */
+}
+.hudDockRight {
+  right: 10px;
+  bottom: 150px; /* 右下の「ローカル復元」「カラーテスト」と重ならないように */
+}
+.hudPanel {
+  flex: 0 0 auto;
+  background: var(--hud-bg);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.22);
+  min-width: 0;
+}
+.hudPanel h2 {
+  margin-top: 0;
+}
+.hudPanel details > summary {
+  padding: 6px 0;
+}
+
+.hudTransport {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  width: min(640px, calc(100% - 20px));
+  padding: 8px 10px;
+  background: var(--hud-bg);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  backdrop-filter: blur(6px);
+}
+.hudTransport .row {
+  gap: 6px;
+}
+.hudTransport .row > input[type="range"] {
+  accent-color: var(--accent);
+}
+.hudTransport #offStatus,
+.hudTransport .hudStatus {
+  margin-top: 4px;
+  font-size: 12px;
+  max-height: 3.2em;
+  overflow: auto;
+}
+.hudToast {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  max-width: min(560px, calc(100% - 20px));
+  padding: 8px 12px;
+  background: var(--hud-bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 12px;
+  backdrop-filter: blur(6px);
+}
+.hudToast[hidden] {
+  display: none;
+}
+.hudLayer[data-all-hidden="true"] .hudToast {
+  display: block;
+}
+.hudLayer[data-all-hidden="true"] .hudToast[hidden] {
+  display: none;
+}
+
+@media (max-width: 899px) {
+  /* 狭い画面: 両ドックを同じ側に重ね、一度に1つ見るイメージ。ボタンで切り替える */
+  .hudDockLeft,
+  .hudDockRight {
+    left: 10px;
+    right: 10px;
+    width: auto;
+    bottom: 128px;
+  }
+  .hudTransport {
+    width: calc(100% - 20px);
+  }
+}
+@media (max-width: 520px) {
+  .hudWorkspace {
+    top: 60px;
+  }
+}

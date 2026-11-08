@@ -20,9 +20,19 @@
      ・window.offsetResize をやめ、return で onShow / onHide を返す
      ・window の resize は state.listen(...)
 
+   v3.1 の変更点:
+     ・UI を「全画面プレビュー + Hud パネル」に変更。canvas は画面いっぱいで、パン / ズームできる（ui/Viewport.js）
+     ・操作パネルはすべて Hud。ボタンで個別に、👁（または H キー）で一括して表示/非表示（ui/HudPanels.js）
+     ・バグ修正: flipX プレビュー（「JSONのflipXを適用」）で絵が枠の幅ぶん右にずれていた
+     ・基準線は「足元の横線 / 中心の縦線」がどこまでも伸びるグリッドに変更（canvas の端で切れない）
+     ・矢印キーで offset を微調整（Shift=10, Alt=0.1）/ Ctrl+Z, Ctrl+Y で Undo/Redo / F で全体表示
+
    目次: 1.状態変数 2.アトラスの登録 3.基本ヘルパーと Undo/Redo 4.再生するフレーム列の決め方
-         5.描画 6.読み込みとアニメの追加・改名・削除 7.再生操作 8.オフセットの編集と書き出し
+         5.描画 6.読み込みとアニメの追加・改名・削除 7.再生操作 8.オフセットの編集と書き出し 9.ビューと Hud の操作
    ============================================================ */
+import { Viewport, isTextEntry } from "../../ui/Viewport.js";
+import { HudPanels } from "../../ui/HudPanels.js";
+
 export function mountCharacterEditor(state) {
   // ============================================================
   // 1. 状態変数
@@ -31,6 +41,21 @@ export function mountCharacterEditor(state) {
   const $ = (id) => document.getElementById(id),
     canvas = $("offCanvas"),
     ctx = canvas.getContext("2d");
+  // vp     : パン/ズームするカメラ（足元の基準点 0,0 は、横は中央・縦は 72% の高さが初期位置）
+  // panels : Hud パネルの表示/非表示。画面が狭いときは「アニメ」と「再生バー」だけ開いた状態で始める
+  const vp = new Viewport(canvas, {
+      state,
+      originY: 0.72,
+      onChange: () => {
+        $("offZoom").value = Number(vp.zoom.toFixed(2));
+        draw();
+      },
+    }),
+    panels = new HudPanels(state.root, {
+      storageKey: "character",
+      narrowDefaults: ["anim", "transport"],
+      narrowExclusive: ["files", "anim", "char"],
+    });
   // doc       : 読み込んだ character.json（編集対象。書き出すときはこれを出力）
   // image     : アトラス画像 / atlas : アトラス定義（Sparrow なら XML Document、AnimateAtlas なら spritemap JSON）
   // animation : Animation.json（AnimateAtlas のとき）/ sprites : Sparrow のスプライト一覧
@@ -199,7 +224,21 @@ export function mountCharacterEditor(state) {
   // entries()  : アニメーション一覧（doc.animations）
   // current()  : 選択中のアニメーション
   // clone(o)   : 深いコピー
-  const say = (s) => ($("offStatus").textContent = s);
+  // 再生バー（ステータス欄）を隠しているときは、同じメッセージを数秒だけ画面下にも出す
+  let toastTimer = null;
+  const say = (s) => {
+    $("offStatus").textContent = s;
+    const toast = $("offToast");
+    if (panels.isVisible("transport")) {
+      toast.hidden = true;
+      return;
+    }
+    toast.textContent = s;
+    toast.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toast.hidden = true), 4000);
+  };
+  state.addDisposer(() => clearTimeout(toastTimer));
   const entries = () => (Array.isArray(doc?.animations) ? doc.animations : []);
   const current = () => entries()[active];
   const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -257,8 +296,9 @@ export function mountCharacterEditor(state) {
     return Array.isArray(a?.frameIndices) ? a.frameIndices : null;
   }
   // Sparrow: prefix で始まるスプライトを、末尾の連番の順に並べて返す
-  function sparrowFrames(prefix) {
-    const list = sprites.filter((x) => x.name.startsWith(prefix));
+  // （list を省略すると、いま選んでいるアニメのアトラス。基準フレームの探索では別アトラスを渡す）
+  function sparrowFrames(prefix, pool = sprites) {
+    const list = pool.filter((x) => x.name.startsWith(prefix));
     const tail = (x) => x.name.slice(prefix.length);
     list.sort((a, b) => {
       const ma = tail(a).match(/(\d+)$/),
@@ -387,6 +427,10 @@ export function mountCharacterEditor(state) {
     ctx.setTransform(d, 0, 0, d, 0, 0);
     draw();
   }
+  // canvas は画面いっぱいなので、ウィンドウの大きさが変わったら（ResizeObserver）内部解像度を合わせ直す
+  const resizeObserver = new ResizeObserver(() => resize());
+  resizeObserver.observe(canvas);
+  state.addDisposer(() => resizeObserver.disconnect());
   state.listen(window, "resize", resize); // 表示中のときだけ聞く
 
   // ============================================================
@@ -569,51 +613,72 @@ export function mountCharacterEditor(state) {
     return {
       a,
       scale: sc,
-      flip: $("offPreviewFacing").value === "json" && !!doc?.flipX,
+      // 左右反転 = (キャラの flipX) XOR (アニメ個別の flipX)。FlxSprite.checkFlipX と同じ
+      flip: ($("offPreviewFacing").value === "json" && !!doc?.flipX) !== !!a?.flipX,
       globalX: Number(doc?.offsets?.[0]) || 0,
       globalY: Number(doc?.offsets?.[1]) || 0,
       animX: Number(a?.offsets?.[0]) || 0,
       animY: Number(a?.offsets?.[1]) || 0,
     };
   }
+  // 基準フレーム（Sparrow）: V-Slice の BaseCharacter.characterOrigin = (width / 2, height)。
+  //   width / height は updateHitbox() の時点の「いま表示しているフレーム」の大きさ。
+  //   updateHitbox() は dance(true) の直後に呼ばれる（BaseCharacter.onCreate / resetCharacter）ので、基準になるのは
+  //     ・danceLeft があるキャラ … danceRight（無ければ danceLeft）の先頭フレーム（Bopper.dance が交互に再生する）
+  //     ・無いキャラ             … idle の先頭フレーム
+  //     ・どちらも無い           … アトラス先頭のスプライト（何も再生されないので、最初のフレームのまま）
+  //   ※ 以前は常に「アトラス先頭のスプライト」を使っていたため、XML の先頭が別アニメ（死亡・ミス等）だと基準がずれていた。
+  function sparrowSequenceOf(a, pool) {
+    const all = sparrowFrames(getPrefix(a), pool),
+      ix = indices(a);
+    return ix ? ix.map((i) => all[Number(i)]).filter(Boolean) : all;
+  }
   function referenceFrameSize() {
-    // V-Slice FlxSprite origin is determined from the first loaded frame, not from each animation.
-    if (format() === "sparrow") {
-      const first = sprites[0];
-      if (!first) return { w: 0, h: 0 };
-      return { w: first.frameWidth || first.width, h: first.frameHeight || first.height };
-    }
-    return { w: 0, h: 0 };
+    if (format() !== "sparrow") return { w: 0, h: 0, label: "" };
+    const has = (n) => entries().some((x) => x.name === n);
+    const name = has("danceLeft")
+      ? has("danceRight")
+        ? "danceRight"
+        : "danceLeft"
+      : has("idle")
+        ? "idle"
+        : "";
+    const anim = name ? entries().find((x) => x.name === name) : null;
+    // そのアニメが使うアトラス（assetPath）のスプライトから探す。MultiSparrow でも先頭フレームを取り違えない
+    const pool = anim ? (atlasRegistry.get(anim.assetPath || doc?.assetPath)?.sprites ?? sprites) : sprites;
+    const first = (anim && sparrowSequenceOf(anim, pool)[0]) || null;
+    const sp = first || sprites[0];
+    if (!sp) return { w: 0, h: 0, label: "" };
+    return {
+      w: sp.frameWidth || sp.width,
+      h: sp.frameHeight || sp.height,
+      label: first ? `${name} の先頭フレーム` : "アトラス先頭（idle/danceが見つからない）",
+    };
   }
   // プレビューを描く:
-  //   1. 十字のガイド線（縦は中央、横は高さの84%の位置 ＝ キャラの足元の基準）
-  //   2. キャラの位置 = 基準点 + (全体オフセット − アニメのオフセット) × scale × ズーム
+  //   1. 背景のグリッドと基準線（足元の横線 / 中心の縦線）。vp.drawGrid が、パンしても端まで引く
+  //   2. キャラの位置 = 基準点(vp.origin) + (全体オフセット − アニメのオフセット) × scale × ズーム
   //   3. Sparrow なら足元中央を基準に frameX/frameY の分ずらして描く / AnimateAtlas なら atlasDraw・legacyDraw
+  //   4. 「枠」ON なら、基準フレームの枠（点線）をキャラと一緒に描く（足元の基準線に対して枠がどこにあるか見える）
   function draw() {
     const w = canvas.clientWidth,
       h = canvas.clientHeight;
     ctx.clearRect(0, 0, w, h);
-    const ox = w / 2,
-      oy = h * 0.84,
-      z = Math.max(0.1, Math.min(8, Number($("offZoom").value) || 1));
-    ctx.strokeStyle = "#80baff";
-    ctx.lineWidth = 1;
-    ctx.setLineDash([5, 4]);
-    ctx.beginPath();
-    ctx.moveTo(ox, 0);
-    ctx.lineTo(ox, h);
-    ctx.moveTo(0, oy);
-    ctx.lineTo(w, oy);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    vp.drawGrid(ctx);
+    const o = vp.origin(),
+      z = vp.zoom;
     const pose = characterPose(),
       a = pose.a,
       sp = sequence()[frame];
+    // Hud を全部隠していても分かるように、offset の現在値はバーにも出す
+    $("offReadout").textContent = a
+      ? `offset ${a.offsets?.[0] ?? 0}, ${a.offsets?.[1] ?? 0}`
+      : "";
     if (!a || !image || !sp) return;
     const ref = referenceFrameSize();
     // Bopper.getScreenPosition subtracts (animOffsets - globalOffsets) * sprite.scale.
-    const x = ox + (pose.globalX - pose.animX) * pose.scale * z;
-    const y = oy + (pose.globalY - pose.animY) * pose.scale * z;
+    const x = o.x + (pose.globalX - pose.animX) * pose.scale * z;
+    const y = o.y + (pose.globalY - pose.animY) * pose.scale * z;
     ctx.save();
     try {
       ctx.translate(x, y);
@@ -629,11 +694,32 @@ export function mountCharacterEditor(state) {
         // FrameX / FrameY are negative trim offsets in Sparrow XML.
         const fx = sp.frameX || 0,
           fy = sp.frameY || 0;
+        // 左右反転は「足元中央(x=0)」を軸にそのまま反転する。
+        // （旧コードは反転のあとに translate(-ref.w) していたため、絵が枠の幅ぶん右へずれていた）
+        // Flixel は「いま表示中のフレーム自身の枠（frameWidth）」の中で反転する。枠の中心は基準枠の左端 + frameWidth / 2
+        // （フレームの幅が基準と同じなら x=0。違うときは、その分だけ反転の軸もずれる）
         if (pose.flip) {
+          const axis = -ref.w / 2 + (sp.frameWidth || sp.width) / 2;
+          ctx.translate(axis, 0);
           ctx.scale(-1, 1);
-          ctx.translate(-ref.w, 0);
+          ctx.translate(-axis, 0);
         }
         paintSparrow(ctx, sp, image, -ref.w / 2 - fx, -ref.h - fy, sw, sh);
+      }
+      // 基準フレームの枠（Sparrow のみ。AnimateAtlas は基準サイズを持たない）
+      if ($("offShowBox").checked && ref.w) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0); // 枠線の太さを拡大率に左右されないようにするため、いったん変換を戻して画面座標で描く
+        ctx.scale(devicePixelRatio || 1, devicePixelRatio || 1);
+        const k = z * pose.scale;
+        ctx.strokeStyle = "rgba(255,170,60,0.9)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.strokeRect(x - (ref.w / 2) * k + 0.5, y - ref.h * k + 0.5, ref.w * k, ref.h * k);
+        ctx.setLineDash([]);
+        // どのフレームを基準にしたかを枠の左上に表示（基準がずれて見えるときの手がかり）
+        ctx.fillStyle = "rgba(255,170,60,0.95)";
+        ctx.font = "11px system-ui, sans-serif";
+        ctx.fillText(`基準: ${ref.label} (${ref.w}×${ref.h})`, x - (ref.w / 2) * k + 4, y - ref.h * k - 5);
       }
     } catch (e) {
       say("プレビュー描画エラー: " + e.message);
@@ -772,7 +858,9 @@ export function mountCharacterEditor(state) {
   // ============================================================
   // プレビュー方式・ズーム・前へ/次へ・スライダー
   $("offFormat").onchange = () => setFrame(0);
-  $("offZoom").oninput = draw;
+  // ズーム欄: 入力中の途中の値（空欄など）は無視。範囲外は Viewport が丸める
+  $("offZoom").oninput = () => vp.setZoom(Number($("offZoom").value));
+  $("offZoom").onchange = () => ($("offZoom").value = Number(vp.zoom.toFixed(2)));
   $("offPrev").onclick = () => setFrame(frame - 1);
   $("offNext").onclick = () => setFrame(frame + 1);
   $("offTimeline").oninput = () => setFrame(Number($("offTimeline").value));
@@ -858,7 +946,8 @@ export function mountCharacterEditor(state) {
   // オフセットは「引かれる」値なので、マウスを右へ動かすと X が減り（絵は右へ動く）、下へ動かすと Y が減る（絵は下へ動く）。
   // 変化量は (ドラッグした px) ÷ (ズーム × scale)。
   canvas.addEventListener("pointerdown", (e) => {
-    if (!current()) return;
+    // パン操作（中/右ドラッグ・Space・✋）は Viewport が先に処理している。左クリックだけがオフセット編集
+    if (vp.panning || e.button !== 0 || !current()) return;
     // 履歴は最初に実際に動かしたときに積む（クリックだけでUndo履歴が増えないように）
     drag = {
       id: e.pointerId,
@@ -881,7 +970,7 @@ export function mountCharacterEditor(state) {
       a.offsets = now;
       drag.saved = true;
     }
-    const z = Math.max(0.1, Number($("offZoom").value) || 1);
+    const z = vp.zoom;
     updateOffsets(
       drag.offsets[0] - (e.clientX - drag.x) / (z * (Number(doc?.scale) || 1)),
       drag.offsets[1] - (e.clientY - drag.y) / (z * (Number(doc?.scale) || 1)),
@@ -947,6 +1036,65 @@ export function mountCharacterEditor(state) {
           : " 整形JSONで保存"),
     );
   };
+
+  // ============================================================
+  // 9. ビューと Hud の操作（ボタン・キーボード）
+  // ============================================================
+  // ズーム＋/−（1.25倍ずつ）・全体表示・原点へ・✋移動
+  $("offZoomIn").onclick = () => vp.setZoom(vp.zoom * 1.25);
+  $("offZoomOut").onclick = () => vp.setZoom(vp.zoom / 1.25);
+  $("offResetView").onclick = () => vp.reset();
+  $("offShowBox").onchange = () => draw();
+  $("offPanTool").onclick = () => {
+    vp.setPanMode(!vp.panMode);
+    $("offPanTool").setAttribute("aria-pressed", String(vp.panMode));
+  };
+  // 全体表示: 基準フレームの枠（Sparrow）全体が画面に収まるようにする。枠の位置は現在のオフセットぶん動く。
+  // 枠が分からない形式（AnimateAtlas）や未読み込みのときは、ズーム100%・原点中央に戻す
+  function fitView() {
+    const ref = referenceFrameSize(),
+      p = characterPose();
+    if (!ref.w || !ref.h) return vp.reset();
+    const x = (p.globalX - p.animX) * p.scale,
+      y = (p.globalY - p.animY) * p.scale;
+    const hw = (ref.w / 2) * p.scale,
+      hh = ref.h * p.scale;
+    // 足元の基準点(0,0)も一緒に収める
+    vp.fit(Math.min(x - hw, -20), Math.min(y - hh, -20), Math.max(x + hw, 20), Math.max(y, 20));
+  }
+  $("offFit").onclick = fitView;
+  // 矢印キーでの微調整は、続けて押している間は Undo 履歴を1つにまとめる
+  let nudgeAt = 0;
+  function nudge(dx, dy) {
+    const a = current();
+    if (!a) return;
+    const now = performance.now();
+    if (now - nudgeAt > 700) snapshot();
+    nudgeAt = now;
+    const o = a.offsets || [0, 0];
+    updateOffsets(o[0] + dx, o[1] + dy);
+    state.app.unsaved?.mark();
+  }
+  state.listen(window, "keydown", (e) => {
+    if (isTextEntry(e.target) || e.metaKey) return;
+    // Ctrl+Z / Ctrl+Y（Ctrl+Shift+Z）: Undo / Redo
+    if (e.ctrlKey) {
+      const k = e.key.toLowerCase();
+      if (k === "z" || k === "y") {
+        e.preventDefault();
+        restore(k === "y" || e.shiftKey);
+      }
+      return;
+    }
+    const step = e.shiftKey ? 10 : e.altKey ? 0.1 : 1;
+    // オフセットの＋は左・上へ動くので、「絵を右へ動かしたい」→ X を減らす
+    const arrows = { ArrowLeft: [step, 0], ArrowRight: [-step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] };
+    if (arrows[e.key]) {
+      e.preventDefault();
+      nudge(...arrows[e.key]);
+    } else if (e.key === "h" || e.key === "H") panels.toggleAll();
+    else if (e.key === "f" || e.key === "F") fitView();
+  });
 
   return {
     // 表示されたとき: canvas のサイズを測り直す（非表示のあいだは大きさ 0 のため）
