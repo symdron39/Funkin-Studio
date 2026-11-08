@@ -175,6 +175,17 @@ Number("abc")     // NaN （NaN === NaN も false。Number.isFinite() で調べ�
 | `services/Autosave.js` | `IndexedDB`（ブラウザ内DB）・`Promise` を自分で作る |
 | `states/animate/editor.js` | クロージャ・canvas 描画・ファイル読み書き（Blob / URL.createObjectURL） |
 | `build.py` | ES Modules を1枚に束ねる仕組み（バンドラの原理） |
+| `ui/Viewport.js` | ポインタイベント（`setPointerCapture`）・ホイールズーム・座標変換（world ↔ screen） |
+| `states/stage/stageData.js` | 純粋関数だけのモジュール・`structured` なデータの正規化・`??` と `Number.isFinite` |
+| `states/stage/editor.js` | 履歴を「JSON 文字列のスナップショット」で持つ Undo/Redo・`Set` / `Map`・`replaceChildren` |
+
+### Stage Editor で出てくる小ネタ
+
+- **深いコピー**: `JSON.parse(JSON.stringify(x))` は関数や `undefined` を含まないデータなら手軽。Undo の履歴は、これで作った文字列をそのまま積んでいる（Haxe の `Reflect.copy` の深い版のイメージ）。
+- **`input` と `change`**: `<input>` は打鍵ごとに `input`、確定（Enter / フォーカスが外れる）で `change`。「途中は見た目だけ、確定で履歴に積む」に使い分けている。
+- **ポインタキャプチャ**: `canvas.setPointerCapture(e.pointerId)` をすると、ドラッグ中にカーソルが canvas の外へ出ても `pointermove` / `pointerup` が届き続ける。
+- **座標変換**: `screen = origin + world × zoom`。ホイールズームは「カーソル下の world 点が動かない」ように origin を引き直す（`Viewport.zoomAt`）。
+- **`??` と `||` の違い**: `a ?? 1` は `a` が null/undefined のときだけ 1、`a || 1` は 0 や "" でも 1 になる。`alpha ?? 1` と書くのは「alpha = 0 は有効な値」だから。
 
 ## 12. 練習問題（易 → 難）
 
@@ -184,6 +195,9 @@ Number("abc")     // NaN （NaN === NaN も false。Number.isFinite() で調べ�
 4. `update(elapsed)` を上書きして、経過秒を画面に表示する（ヒント: `this.elapsedTotal += elapsed`）
 5. 新しいイベント `"studio-ping"` を `app.events.emit` し、別の State で `on` して受け取る
 6. `states/sparrow/editor.js` をクラス `SparrowEditor` に作り直す（クロージャ → クラスの練習）
+7. Stage Editor の矢印キーを、Shift で 10 ではなく 5 ずつ動くよう変える（`states/stage/editor.js` の `step`）
+8. Stage Editor の選択枠の色を変える（`SEL_COLOR`）
+9. （難）Stage Editor に「選択 prop の四隅をドラッグして scale を変える」ハンドルを足す（ヒント: `corners()` と `pick()` を参考に、ハンドルの当たり判定を作る）
 
 ## 参考
 

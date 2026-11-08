@@ -11,13 +11,14 @@
    旧コードの「if (!$("sparrowWorkspace").hidden)」のような分岐が不要になった。
    ============================================================ */
 import { htmlToElement } from "../core/dom.js";
+import { SUPPORTED_VERSIONS } from "../core/appInfo.js";
 
 const template = `
 <header id="studioHud" hidden>
   <div class="hudLogo">
     <div>
       <strong>🎤🩵Funkin' Studio
-        <span style="color: var(--accent)">For 0.8.6 - 0.8.8</span>
+        <span style="color: var(--accent)">For ${SUPPORTED_VERSIONS}</span>
       </strong>
       <small>Atlas Editor</small>
     </div>

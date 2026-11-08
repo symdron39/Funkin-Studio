@@ -175,10 +175,9 @@ Object.assign(dictionary, {
     "Select character.json and the required atlas files.",
   キャラクター全体: "Character settings",
   "キャラクター名 (name)": "Character name (name)",
-  制作者名: "Creator name",
   基本情報を適用: "Apply metadata",
-  "空欄の generatedBy は未指定として削除します":
-    "An empty generatedBy field removes that property",
+  "generatedBy は自動で設定され、変更できません":
+    "generatedBy is set automatically and cannot be changed",
   全体オフセットを適用: "Apply global offset",
   アニメーション設定: "Animation settings",
   アニメーション: "Animation",

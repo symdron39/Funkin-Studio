@@ -6,14 +6,15 @@
      オフセット(offsets)・fps・ループ・prefix などを、プレビューを見ながら編集して書き出す。
 
    character.json の主な項目（このファイルが触るもの）:
-     name, flipX, generatedBy, scale, assetPath, renderType
+     name, flipX, generatedBy（書き出し時に常に core/appInfo.js の値へ上書き。編集不可）, scale, assetPath, renderType
      offsets            : [x, y] キャラ全体のオフセット
      animations[]       : { name, prefix, offsets:[x,y], frameRate, looped, frameIndices, animType, assetPath }
        prefix           : アトラス上の名前（Sparrow なら接頭辞 / AnimateAtlas ならシンボル名やラベル名）
        animType         : "prefix" | "indices" | "symbol" | "frameLabel"
        frameIndices     : 再生するフレーム番号を指定（省略なら全部）
 
-   絵のデータは3形式に対応: ① Sparrow(XML+PNG) ② モダン AnimateAtlas ③ レガシー AnimateAtlas
+   絵のデータは4形式に対応: ① Sparrow(XML+PNG) ② Packer(TXT+PNG) ③ モダン AnimateAtlas ④ レガシー AnimateAtlas
+   （Packer は Sparrow と同じ扱い。TXT の「名前 = x y 幅 高さ」を読んでスプライト一覧にする。トリミング・回転は無い）
 
    旧 character-editor.js からの変更点（挙動は同じ）:
      ・即時実行関数 → mountCharacterEditor(state) 関数。create() で呼ばれる
@@ -32,6 +33,8 @@
    ============================================================ */
 import { Viewport, isTextEntry } from "../../ui/Viewport.js";
 import { HudPanels } from "../../ui/HudPanels.js";
+import { parsePackerText } from "../stage/sparrowAtlas.js";
+import { GENERATED_BY } from "../../core/appInfo.js";
 
 export function mountCharacterEditor(state) {
   // ============================================================
@@ -136,7 +139,7 @@ export function mountCharacterEditor(state) {
         return inp;
       };
       const png = makeFile("PNG", "image/png");
-      const def = makeFile("XML / spritemap JSON", ".xml,.json");
+      const def = makeFile("XML / TXT(Packer) / spritemap JSON", ".xml,.txt,.json");
       const anim = makeFile("Animation.json（新旧AnimateAtlas対応）", ".json");
       section.append(fields);
       const button = document.createElement("button");
@@ -192,7 +195,11 @@ export function mountCharacterEditor(state) {
     const text = await def.text();
     let nextAtlas,
       nextSprites = [];
-    if (text.trim().startsWith("<")) {
+    if (/\.txt$/i.test(def.name)) {
+      // Packer: Sparrow と同じ「スプライト一覧」にする。atlas には XML の代わりの目印を入れる（format() が Sparrow と判定できるように）
+      nextSprites = parsePackerText(text);
+      nextAtlas = { documentElement: true, packer: true };
+    } else if (text.trim().startsWith("<")) {
       nextAtlas = parseXML(text);
       nextSprites = [...nextAtlas.querySelectorAll("SubTexture")].map((el) => {
         const n = (k) => Number(el.getAttribute(k) || 0),
@@ -242,11 +249,11 @@ export function mountCharacterEditor(state) {
   const entries = () => (Array.isArray(doc?.animations) ? doc.animations : []);
   const current = () => entries()[active];
   const clone = (o) => JSON.parse(JSON.stringify(o));
-  // 名前・generatedBy・flipX の入力欄に、doc の値を反映する
+  // 名前・flipX の入力欄に、doc の値を反映する（generatedBy は表示のみ。常に GENERATED_BY）
   function syncMeta() {
     if (!doc) return;
     $("offCharName").value = doc.name ?? "";
-    $("offGeneratedBy").value = doc.generatedBy ?? "";
+    $("offGeneratedBy").value = GENERATED_BY;
     $("offFlipX").checked = !!doc.flipX;
   }
   // 変更の直前に呼ぶ: doc を丸ごと複製して履歴に積む（最大60件。Redo 履歴は破棄）
@@ -907,23 +914,15 @@ export function mountCharacterEditor(state) {
       snapshot();
       updateOffsets(Number($("offX").value), Number($("offY").value));
     });
-  // 基本情報（name・generatedBy・flipX）を適用。generatedBy が空欄ならその項目を削除する
+  // 基本情報（name・flipX）を適用。generatedBy は編集できない（書き出し時に自動設定）
   $("offMetaApply").onclick = () => {
     if (!doc) return say("character.json を読み込んでください");
     const name = $("offCharName").value.trim();
     if (!name) return say("キャラクター名は空欄にできません");
-    const generatedBy = $("offGeneratedBy").value.trim();
-    if (
-      doc.name === name &&
-      (doc.generatedBy ?? "") === generatedBy &&
-      !!doc.flipX === $("offFlipX").checked
-    )
-      return say("基本情報に変更はありません");
+    if (doc.name === name && !!doc.flipX === $("offFlipX").checked) return say("基本情報に変更はありません");
     snapshot();
     doc.name = name;
     doc.flipX = $("offFlipX").checked;
-    if (generatedBy) doc.generatedBy = generatedBy;
-    else delete doc.generatedBy;
     say("基本情報を適用しました。JSON保存で書き出せます。");
   };
   // プレビューの向き（JSON の flipX に従う / 常にそのまま）の切り替え
@@ -1006,6 +1005,7 @@ export function mountCharacterEditor(state) {
   $("offExport").onclick = () => {
     if (!doc) return say("character.json を読み込んでください");
     let compact = $("offCompactExport").checked;
+    doc.generatedBy = GENERATED_BY; // 書き出す JSON の generatedBy は常にこの値（元ファイルの値も上書き）
     let json;
     try {
       json = JSON.stringify(doc, null, compact ? 0 : 2);

@@ -1,0 +1,144 @@
+/* Stage Editor 専用スタイル。レイアウトの土台（全画面・Hud パネル）は hud.css。ここはこの画面だけの上書き。 */
+#stageWorkspace #stgCanvas {
+  background: var(--studio-canvas, #272d36) !important;
+  background-image: none !important;
+  cursor: default;
+}
+/* 左ドックは再生バーが無いので、下まで使える */
+#stageWorkspace .hudDockLeft {
+  bottom: 10px;
+}
+#stageWorkspace .hudPanel h3 {
+  margin: 12px 0 4px;
+  font-size: 13px;
+  opacity: 0.85;
+}
+#stageWorkspace .hudPanel label {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+}
+#stageWorkspace .hudPanel .row > label {
+  flex: 1 1 0;
+  min-width: 0;
+}
+#stageWorkspace .hudPanel .row > label input[type="number"],
+#stageWorkspace .hudPanel .row > label input[type="text"],
+#stageWorkspace .hudPanel .row > label select {
+  width: 100%;
+}
+#stageWorkspace .hudPanel label > input[type="text"],
+#stageWorkspace .hudPanel label > select,
+#stageWorkspace .hudPanel label > input[type="file"] {
+  width: 100%;
+}
+#stgCharInfo,
+#stgStatus {
+  white-space: pre-wrap;
+}
+.stgColor {
+  display: flex;
+  gap: 4px;
+}
+.stgColor input[type="color"] {
+  width: 34px;
+  padding: 0;
+  flex: 0 0 auto;
+}
+.stgFileBtn {
+  display: inline-flex !important;
+  align-items: center;
+  margin: 0 !important;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  background: var(--studio-button, #2a3550);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.stgFileBtn:hover {
+  filter: brightness(1.15);
+}
+
+/* レイヤー一覧 */
+.stgLayers {
+  max-height: 30vh;
+  overflow-y: auto;
+  margin: 6px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.stgLayer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
+  font-size: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.stgLayer:last-child {
+  border-bottom: 0;
+}
+.stgLayer:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.stgLayer.sel {
+  background: rgba(255, 176, 32, 0.22);
+  outline: 1px solid #ffb020;
+  outline-offset: -1px;
+}
+.stgLayer.off .stgLname {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+.stgVis {
+  padding: 1px 5px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.stgLname {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stgLz {
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 画像アセット一覧 */
+.stgAssetList {
+  margin: 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 16vh;
+  overflow-y: auto;
+}
+.stgAsset {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.stgAsset.missing {
+  color: #ff9b9b;
+}
+.stgAssetName {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* フォルダ選択（webkitdirectory）はスマホの多くで使えないので、指で操作する端末では隠す */
+@media (any-pointer: coarse) {
+  .stgDesktopOnly {
+    display: none;
+  }
+}

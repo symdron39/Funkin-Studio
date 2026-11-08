@@ -22,6 +22,7 @@ import { I18n } from "./services/i18n.js";
 import { UnsavedGuard } from "./services/UnsavedGuard.js";
 import { startAutosave } from "./services/Autosave.js";
 import { startColorLab } from "./services/ColorLab.js";
+import { startMobileFilePicker } from "./services/MobileFilePicker.js";
 import { Hud } from "./ui/Hud.js";
 
 import { HomeState } from "./states/HomeState.js";
@@ -32,6 +33,7 @@ import { ContributorsState } from "./states/ContributorsState.js";
 import { AnimateEditorState } from "./states/AnimateEditorState.js";
 import { SparrowEditorState } from "./states/SparrowEditorState.js";
 import { CharacterEditorState } from "./states/CharacterEditorState.js";
+import { StageEditorState } from "./states/StageEditorState.js";
 
 const app = new App(document.getElementById("app"));
 
@@ -50,9 +52,11 @@ app.states.register(
   AnimateEditorState,
   SparrowEditorState,
   CharacterEditorState,
+  StageEditorState,
 );
 
 startColorLab();
+startMobileFilePicker(); // スマホで XML / JSON が選べない問題の対策（services/MobileFilePicker.js）
 startAutosave(app);
 app.i18n.start(); // HUD / ColorLab の文字を翻訳し、以降の DOM 追加も監視
 

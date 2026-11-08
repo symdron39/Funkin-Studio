@@ -21,14 +21,16 @@ funkin-studio/
       AnimateEditorState.js     ← 入れ物。中身は animate/ に分離
       SparrowEditorState.js
       CharacterEditorState.js
+      StageEditorState.js        ← Stage Editor（Funkin' Editor の中。画面クラスは入れ物だけ）
       animate/  template.js(HTML)  editor.js(ロジック)  partsPanel.js(パーツ管理パネル)
       sparrow/  template.js  editor.js
       character/ template.js  editor.js
+      stage/     template.js  editor.js  stageData.js  stageCharacter.js  atlas.js  sparrowAtlas.js
     ui/Hud.js                   ← 上部バー（Undo/Redo/Home/言語）
     ui/Viewport.js              ← 全画面プレビューのパン/ズーム（= FlxCamera）。グリッド・基準線も描く
     ui/HudPanels.js             ← Hud パネルの表示/非表示（個別・一括・記憶）
     services/                   ← 画面に属さない機能
-      i18n.js  Autosave.js  ColorLab.js  UnsavedGuard.js
+      i18n.js  Autosave.js  ColorLab.js  UnsavedGuard.js  MobileFilePicker.js
     data/contributors.js        ← クレジットのデータ
   css/  images/  build.py  dist/      ← css/hud.css が「全画面プレビュー + Hud」の共通スタイル
 ```
@@ -117,6 +119,30 @@ const panels = new HudPanels(state.root, { storageKey: "stage" });          // �
 - 基準フレーム（足元の基準点）は V-Slice の `BaseCharacter.characterOrigin` に合わせ、`danceRight`/`danceLeft`/`idle` の先頭フレームから決める（XML の先頭ではない）。
 - 狭い画面（<900px）では `narrowExclusive` に挙げたパネルは同時に1つしか開かない。
 
+## Stage Editor（states/stage/）
+
+「全画面プレビュー + Hud」方式の2つ目の画面。部品の役割:
+
+| ファイル | 役割 |
+|---|---|
+| `stageData.js` | ステージ JSON（v1.0.2）の正規化・既定値・scale/色/blend の変換・保存用の文字列化。DOM に触らない純粋な関数群 |
+| `sparrowAtlas.js` | PNG + XML / Packer TXT の読み込みと切り出し描画（Character Editor と同じロジック） |
+| `atlas.js` | Sparrow / Packer / AnimateAtlas（新旧）を共通の「フレーム」にそろえる。ファイル群から assetPath に合うアトラスを探す（フォルダ選択の相対パス対応）。prop とキャラの両方が使う |
+| `stageCharacter.js` | character.json + アトラスから、ステージ上での足元・枠・カメラ焦点を計算して描く（V-Slice の座標規則。出典はコメント参照）。renderType は sparrow / packer / multisparrow / animateatlas / multianimateatlas |
+| `editor.js` | 描画・選択/ドラッグ・レイヤー一覧・プロパティ欄・履歴・保存 |
+
+- 座標: prop の `position` は「スケール後の左上」、キャラの `position` は「足元」（Stage.hx）。zIndex が小さいほど奥。
+- 視差: `screen = pos − camera × scroll`。プレビューのカメラ位置（保存されない）を動かして scroll を確認する。
+- 履歴: 確定のたびにステージ全体を JSON 文字列で積む（`history[hi]` が現在）。入力途中の `input` では積まず、`change` で積む。
+- 知らないキー（animations / danceEvery など）は消さず、保存時もそのまま出す。エディタ専用の `_ed`（隠す）だけ取り除く。
+- アニメ付き（Sparrow）prop: `animations` が1つ以上ある prop は PNG + 同名 XML で表示する（XML は「画像・XML を登録」で一緒に選ぶと assetPath と同名で自動結び付け。プロパティの「アニメ」で先頭フレームを切り替え、▶で再生プレビュー）。PNG と XML を同時に「＋画像prop」へ選ぶと animations の雛形を XML から作る。基準枠は XML 先頭フレーム、アニメの offsets は描画位置を −offset×scale ずらす（Bopper 準拠）。
+- **形式ごとの読み込み**（`atlas.js`）:
+  - prop の `animType`: `sparrow`（PNG+XML）/ `packer`（PNG+TXT。アニメは `frameIndices` = TXT の行順の番号）/ `animateatlas`（フォルダ = `Animation.json` + `spritemapN.json` + `spritemapN.png`）。
+  - AnimateAtlas は assetPath がフォルダなので、フォルダ名（最後の1つ）で結び付ける。PC は「フォルダごと登録」、スマホはファイルをまとめて選ぶ（まだ画像の無い AnimateAtlas の prop が1つだけなら自動で結び付き、複数あるときは一覧の「選択」から）。
+  - キャラは「基準アニメ」が使うアトラスだけあれば表示できる。Multi 系はアニメごとの `assetPath` / `renderType` で形式が決まる（multisparrow = 通常 Sparrow、`renderType: animateatlas` のアニメだけ AnimateAtlas / multianimateatlas = 通常 AnimateAtlas、`renderType: sparrow` のアニメだけ Sparrow）。
+  - AnimateAtlas の枠 = 描いた全スプライトを囲む四角（基準は先頭フレーム）。`atlasSettings.applyStageMatrix` が true ならステージ原点を基準枠に固定、既定では各フレームの枠の左上を基準枠に合わせる。**この配置は FlxAnimate の実装を確認できていないための推定**で、実機とずれる可能性がある。
+- 未対応: AnimateAtlas への色（Color）の反映、`custom` の renderType、拡大縮小ハンドル、複数選択、自動保存（復元パネルは Animate 専用）。
+
 ## 旧版からの挙動の違い（意図したもの）
 
 - 編集画面から出るときの未保存確認は「編集画面を出るとき」に統一（旧版は Home 画面のボタンにも付いていた）
@@ -138,3 +164,12 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 ## デバッグ
 
 ブラウザの開発者コンソールで `app` が使えます。`app.switchTo("sparrow")`、`app.states.current` など。
+
+## モバイル対応メモ
+
+- **ファイル選択**: スマホでは `accept` が「画像だけ」以外の `<input type="file">` から `accept` を外す（`services/MobileFilePicker.js`）。`image/*` を含むと画像選択（フォト）画面になり XML が選べない／`.json` `.xml` だけだと MIME 不一致でグレーアウトするため。種類のチェックは拡張子と読み込み時のエラーで行う。PC では何もしない。
+
+## アプリ情報（appInfo）
+
+- `core/appInfo.js` に `SUPPORTED_VERSIONS`（対応している V-Slice のバージョン範囲）を1か所だけ置き、ヘッダー表示（`ui/Hud.js`）と、書き出す character.json の `generatedBy`（`Funkin' Studio (0.8.6-0.8.8)` の形）が同じ値を使う。
+- `generatedBy` はユーザーが編集できない。Character Editor で書き出すとき、元ファイルに別の値があっても常にこの値へ上書きする。対応バージョンを上げるときは `SUPPORTED_VERSIONS` だけを書き換える。

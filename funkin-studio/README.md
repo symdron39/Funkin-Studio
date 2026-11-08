@@ -24,4 +24,4 @@ Output: `funkin-studio/dist/Funkin_Studio.html`. The build embeds local CSS, Jav
 
 ## GitHub Pages
 
-The repository-root `index.html` is the entry point. GitHub Actions deploys the static site from the repository.
+The repository-root `index.html` is the entry point. Publish the repository root as a static site (for example, GitHub Pages from a branch).

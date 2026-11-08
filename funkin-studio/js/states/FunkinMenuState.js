@@ -16,9 +16,9 @@ export class FunkinMenuState extends State {
             <strong>Character Editor</strong>
             <small>V-Slice キャラクター / Offset</small>
           </button>
-          <button class="render-choice" disabled>
-            <strong>Coming Soon</strong>
-            <small>今後実装予定</small>
+          <button id="chooseStage" class="render-choice">
+            <strong>Stage Editor</strong>
+            <small>V-Slice ステージ / prop・キャラ位置</small>
           </button>
         </div>
       </div>
@@ -27,5 +27,6 @@ export class FunkinMenuState extends State {
   create() {
     this.goOnClick("#funkinBackHome", "home");
     this.goOnClick("#chooseCharacter", "character");
+    this.goOnClick("#chooseStage", "stage");
   }
 }
