@@ -22,7 +22,7 @@ import { Viewport, isTextEntry } from "../../ui/Viewport.js";
 import { HudPanels } from "../../ui/HudPanels.js";
 import { defaultStage, normalizeStage, newProp, newRect, serializeStage, clone, round3, CHAR_IDS, CHAR_LABEL, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas } from "./stageData.js";
 import { loadImage, parseSparrowXml, parsePackerText } from "./sparrowAtlas.js";
-import { SpriteAtlas, animateGroups, buildAnimateAtlas, isSpritemapPng } from "./atlas.js";
+import { SpriteAtlas, animateGroups, buildAnimateAtlas, isSpritemapPng, matchFile, relPath, findAnimateAtlas } from "./atlas.js";
 import { StageCharacter } from "./stageCharacter.js";
 
 const SEL_COLOR = "#ffb020"; // 選択枠の色
@@ -87,8 +87,26 @@ export function mountStageEditor(state) {
   const assetFor = (path) =>
     !path || path.startsWith("#") ? null : (assets.linked.get(path) ?? assets.byBase.get(baseName(path).toLowerCase()) ?? null);
 
+  // ---- ファイルの山（pool）----
+  // 選んだファイルは全部ここに集まる（中身はまだ読まない。ファイルの「手」を持つだけなので軽い）。
+  // キャラの読み込みや、prop の画像の自動結び付けは、必要になったときにここから探す。
+  // → mod のフォルダ全体を一度だけ選べば、json とアセットが別のフォルダにあっても、毎回ファイルを動かさずに済む。
+  const pool = [];
+  const poolKeys = new Set();
+  function addPool(files) {
+    let n = 0;
+    for (const f of files) {
+      const k = `${relPath(f)}|${f.size}|${f.lastModified}`;
+      if (poolKeys.has(k)) continue;
+      poolKeys.add(k);
+      pool.push(f);
+      n++;
+    }
+    return n;
+  }
   async function registerImages(files) {
     const list = [...files];
+    addPool(list);
     const out = [];
     out.xmls = [];
     out.animates = [];
@@ -216,9 +234,16 @@ export function mountStageEditor(state) {
     playing = on;
     if (on) {
       playStart = performance.now();
-      const tick = () => {
+      // 描くのは「アニメの最大フレームレート」まででよい（24fps のアニメを60回描いても絵は同じ）。重いアトラスでの負荷が約半分になる
+      const maxRate = Math.min(60, Math.max(12, ...doc.props.filter(isAnimated).flatMap((p) => p.animations.map((a) => Number(a.frameRate) || 24))));
+      const every = 1000 / maxRate - 3;
+      let last = 0;
+      const tick = (now) => {
         if (!playing) return;
-        draw();
+        if (now - last >= every) {
+          last = now;
+          draw();
+        }
         rafId = requestAnimationFrame(tick);
       };
       rafId = requestAnimationFrame(tick);
@@ -257,6 +282,14 @@ export function mountStageEditor(state) {
     row.append(label, btn);
     return row;
   }
+  // path ごとの使われ方: animateatlas / packer / sparrow（アニメ付き）/ static（1枚絵）
+  const typeOfPath = (path) => {
+    const ps = doc.props.filter((p) => p.assetPath === path && isAtlasProp(p));
+    if (ps.some((p) => animTypeOf(p) === "animateatlas")) return "animateatlas";
+    if (ps.some((p) => animTypeOf(p) === "packer")) return "packer";
+    return ps.length ? "sparrow" : "static";
+  };
+
   function renderAssets() {
     const box = $("stgAssetList");
     box.replaceChildren();
@@ -268,13 +301,6 @@ export function mountStageEditor(state) {
       box.append(t);
       return;
     }
-    // path ごとの使われ方: animateatlas / packer / sparrow（アニメ付き）/ static（1枚絵）
-    const typeOfPath = (path) => {
-      const ps = doc.props.filter((p) => p.assetPath === path && isAtlasProp(p));
-      if (ps.some((p) => animTypeOf(p) === "animateatlas")) return "animateatlas";
-      if (ps.some((p) => animTypeOf(p) === "packer")) return "packer";
-      return ps.length ? "sparrow" : "static";
-    };
     const after = () => {
       renderAssets();
       refreshInspector();
@@ -327,6 +353,74 @@ export function mountStageEditor(state) {
         );
       }
     }
+  }
+
+  /**
+   * ファイルの山から、まだ画像の無い prop のアセットを自動で探して結び付ける（見つかったものだけ読み込む）。
+   * 置き場所つきの名前で探すので、mod のフォルダ全体を選んでおけば images/ 以下の PNG・XML も見つかる。
+   */
+  async function linkFromPool() {
+    if (!pool.length) return 0;
+    let n = 0;
+    const paths = [...new Set(doc.props.filter((p) => !isSolid(p) && p.assetPath).map((p) => p.assetPath))];
+    for (const path of paths) {
+      const type = typeOfPath(path);
+      try {
+        if (type === "animateatlas") {
+          if (!animateFor(path)) {
+            const a = await findAnimateAtlas(pool, path, { strict: true });
+            assets.linkedAnimate.set(path, a);
+            n++;
+          }
+          continue;
+        }
+        if (!assetFor(path)) {
+          const f = matchFile(pool, path, /\.(png|webp|jpe?g)$/i);
+          if (f) {
+            const [r] = await registerImages([f]);
+            if (r) n++;
+          }
+        }
+        if ((type === "sparrow" || type === "packer") && !xmlFor(path)) {
+          const f = matchFile(pool, path, type === "packer" ? /\.txt$/i : /\.xml$/i);
+          if (f) {
+            const r = await registerImages([f]);
+            if (r.xmls.length) n++;
+          }
+        }
+      } catch {
+        /* 見つからない / 読めないものは、そのまま「未登録」の表示に残す */
+      }
+    }
+    if (n) {
+      renderAssets();
+      refreshInspector();
+      draw();
+    }
+    return n;
+  }
+  /** json だけ読んで待っているキャラに、ファイルの山からアトラスを探させる */
+  async function resolveWaitingChars() {
+    let n = 0;
+    for (const id of CHAR_IDS) {
+      const ch = chars[id];
+      if (!ch.waiting) continue;
+      try {
+        await ch.resolve(pool);
+        n++;
+      } catch (e) {
+        ch.error = e.message;
+      }
+    }
+    if (n) draw();
+    refreshInspector();
+    return n;
+  }
+  /** ファイルの山が増えたあとの共通処理 */
+  async function afterPoolChanged() {
+    const a = await linkFromPool();
+    const b = await resolveWaitingChars();
+    return { props: a, chars: b };
   }
 
   // ============================================================
@@ -467,6 +561,14 @@ export function mountStageEditor(state) {
     ctx.restore();
   }
 
+  /** g の枠（回転込み）が、表示範囲 view の外か。AnimateAtlas は枠の外にはみ出して描けるので、枠の大きさ分の余裕を見る */
+  function isOffscreen(g, view) {
+    const pad = Math.max(g.w, g.h, 200);
+    const cs = corners(g),
+      xs = cs.map((c) => c[0]),
+      ys = cs.map((c) => c[1]);
+    return Math.max(...xs) + pad < view.l || Math.min(...xs) - pad > view.r || Math.max(...ys) + pad < view.t || Math.min(...ys) - pad > view.b;
+  }
   function drawProp(p, g) {
     ctx.save();
     ctx.translate(g.cx, g.cy);
@@ -499,7 +601,7 @@ export function mountStageEditor(state) {
         // 色（tint）は Sparrow / Packer のときだけ反映する（AnimateAtlas は未対応）
         const tint = p.color ? parseColor(p.color) : null;
         const white = !tint || (tint.r === 255 && tint.g === 255 && tint.b === 255);
-        const img = v.entry && !white ? tinted(v.entry, tint) : undefined;
+        const img = v.entry && !white ? tint : undefined; // frame.draw の最後の引数は「掛ける色」
         // 基準枠の左上 = (−refW/2, −refH/2)。frame が自分の枠をそこに合わせて描く
         v.frame.draw(ctx, -v.refW / 2, -v.refH / 2, v.ref, v.stageMatrix, img);
       }
@@ -561,9 +663,12 @@ export function mountStageEditor(state) {
     ctx.save();
     ctx.translate(o.x, o.y);
     ctx.scale(z, z);
+    // 画面の外にある物は描かない（大量の prop / 大きなアトラスがあるとき、再生中の負荷が大きく下がる）
+    const view = { l: -o.x / z, t: -o.y / z, r: (w - o.x) / z, b: (h - o.y) / z };
     for (const obj of list) {
       if (isHidden(obj)) continue;
       const g = geom(obj);
+      if (isOffscreen(g, view)) continue;
       ctx.save();
       ctx.translate(g.dx, g.dy);
       if (obj.kind === "prop") drawProp(obj.ref, g);
@@ -923,8 +1028,34 @@ export function mountStageEditor(state) {
       const ch = chars[so.id];
       $("stgCharInfo").textContent = ch.loaded
         ? `読み込み済み: ${ch.view.name}（${ch.fileNames.join(" / ")}）\n基準フレーム: ${ch.view.label} ${ch.view.refW}×${ch.view.refH}、キャラ scale ${ch.view.baseScale}\nposition は「足元」の位置です。`
-        : ch.error || "未読み込み（仮のシルエットで表示中）。position は「足元」の位置です。";
+        : ch.waiting
+          ? `character.json「${ch.jsonName}」（${ch.json.name ?? "名前なし"}）は読み込み済み。アトラスのファイルを待っています。\n${ch.error}`
+          : ch.error || "未読み込み（仮のシルエットで表示中）。position は「足元」の位置です。";
+      renderCharNeeds(ch);
     }
+  }
+
+  /** 分散方式の案内: キャラが必要としているアトラスと、結び付き状況（「選択」から直接足せる） */
+  function renderCharNeeds(ch) {
+    const box = $("stgCharNeeds");
+    box.replaceChildren();
+    if (!ch.json || !ch.need) return;
+    const { path, kind } = ch.need;
+    const KIND = { sparrow: "Sparrow（PNG+XML）", packer: "Packer（PNG+TXT）", animate: "AnimateAtlas（Animation.json+spritemap）" };
+    box.append(
+      assetRow(ch.loaded, (ch.loaded ? "✅ " : "⚠ ") + path + `  ${KIND[kind]}` + (ch.loaded ? `  ← ${ch.atlas.label}` : ""), "表示に使うアトラス（基準アニメの assetPath）", {
+        multiple: true,
+        pick: async (files) => {
+          addPool(files);
+          try {
+            await ch.resolve(pool);
+          } catch (e) {
+            ch.error = e.message;
+          }
+          charDone(ch, "まだアトラスが揃っていません");
+        },
+      }),
+    );
   }
 
   // 値が「既定値と同じ」ならキーを消す（JSON を小さく保つ。V-Slice は欠けたキーを既定値として読むので同じ意味）
@@ -1013,23 +1144,76 @@ export function mountStageEditor(state) {
   onEdit("stgCScrY", "char", (r, el) => { const n = numOf(el); if (n === null) return false; r.scroll = [getScroll(r)[0], n]; });
 
   // キャラの実物を読み込む / 外す
+  // 2つの方式がある（どちらも、選んだファイルは pool に集まる）:
+  //   一括 : character.json とアトラスのファイルを一度に選ぶ（stgCharFiles / stgCharDir）
+  //   分散 : ①character.json だけ選ぶ（stgCharJson） → ②アトラスのファイルを、別のフォルダからでも、何度でも足す（stgCharAssets など）
+  //          mod のフォルダ全体を pool に入れておく（stgPoolDir）と、②も要らない。
+  const selChar = () => (sel?.kind === "char" ? chars[sel.id] : null);
+  const charDone = (ch, what) => {
+    refreshInspector();
+    draw();
+    if (ch.loaded) say(`${CHAR_LABEL[ch.id]} に ${ch.view.name} を読み込みました（基準: ${ch.view.label}）。`);
+    else if (ch.waiting) say(`${what}。アトラスのファイルを足してください（下の一覧を参照）。`);
+  };
+  /** 一括 */
   const onCharFiles = async (e) => {
     const files = [...e.target.files];
     e.target.value = "";
-    if (sel?.kind !== "char" || !files.length) return;
-    const ch = chars[sel.id];
+    const ch = selChar();
+    if (!ch || !files.length) return;
+    addPool(files);
     try {
-      await ch.loadFiles(files);
-      say(`${CHAR_LABEL[sel.id]} に ${ch.view.name} を読み込みました（基準: ${ch.view.label}）。`);
+      await ch.loadFiles(files, pool);
+      charDone(ch);
     } catch (err) {
-      ch.error = "読み込みエラー: " + err.message;
-      say(ch.error);
+      ch.error = err.message;
+      if (!ch.waiting) say("読み込みエラー: " + err.message);
+      charDone(ch, "character.json は読めましたが、アトラスが見つかりません");
     }
-    refreshInspector();
-    draw();
+  };
+  /** 分散 ①: character.json だけ */
+  $("stgCharJson").onchange = async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    const ch = selChar();
+    if (!ch || !files.length) return;
+    addPool(files.filter((f) => !/\.json$/i.test(f.name))); // json 以外が混ざっていれば、それも pool へ
+    try {
+      if (!(await ch.setJsonFrom(files))) throw Error("character.json（animations 配列を持つ JSON）ではありません");
+      try {
+        await ch.resolve(pool); // pool にすでにアトラスがあれば、これで表示まで進む
+      } catch (err) {
+        ch.error = err.message;
+      }
+      charDone(ch, `${ch.view?.name ?? ch.json.name ?? "キャラ"} の character.json を読みました`);
+    } catch (err) {
+      say("読み込みエラー: " + err.message);
+    }
+  };
+  /** 分散 ②: アトラスのファイルを足す（何度でも・別のフォルダからでも） */
+  const onCharAssets = async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    if (!files.length) return;
+    const n = addPool(files);
+    const r = await afterPoolChanged();
+    say(`ファイルを ${n} 個追加しました${r.chars ? `（キャラ ${r.chars} 体が表示できました）` : ""}${r.props ? `（prop の画像 ${r.props} 件を結び付けました）` : ""}。`);
   };
   $("stgCharFiles").onchange = onCharFiles;
   $("stgCharDir").onchange = onCharFiles;
+  $("stgCharAssets").onchange = onCharAssets;
+  $("stgCharAssetsDir").onchange = onCharAssets;
+  // mod のフォルダ全体を pool に入れる（中身は読まない。必要になったものだけ後で読む）
+  $("stgPoolDir").onchange = async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    if (!files.length) return;
+    const n = addPool(files);
+    say(`${n} 個のファイルを登録しました（読み込みは必要になったときだけ）。`);
+    const r = await afterPoolChanged();
+    if (r.chars || r.props) say(`${n} 個のファイルを登録し、キャラ ${r.chars} 体・prop の画像 ${r.props} 件を結び付けました。`);
+    renderAssets();
+  };
   $("stgCharClear").onclick = () => {
     if (sel?.kind !== "char") return;
     chars[sel.id].reset();
@@ -1099,6 +1283,7 @@ export function mountStageEditor(state) {
     try {
       const next = normalizeStage(JSON.parse((await f.text()).replace(/^﻿/, "")));
       loadDoc(next, `「${next.name}」を読み込みました（prop ${next.props.length} 個）。画像は左の「画像アセット」から登録してください。`);
+      linkFromPool(); // ファイルの山（mod フォルダ）にあれば自動で結び付ける
     } catch (err) {
       say("読み込みエラー: " + err.message);
     }
@@ -1117,7 +1302,10 @@ export function mountStageEditor(state) {
     if (regs.animates.length) msg.push(`AnimateAtlas ${regs.animates.length} セット`);
     if (msg.length) say(`${msg.join("・")}を登録しました。${regs.unlinked ? "フォルダ名が分からない AnimateAtlas は、一覧の「選択」から結び付けてください。" : ""}`);
   };
-  $("stgImages").onchange = onRegisterFiles;
+  $("stgImages").onchange = async (e) => {
+    await onRegisterFiles(e);
+    resolveWaitingChars();
+  };
   $("stgAtlasDir").onchange = onRegisterFiles;
 
   // アニメ選択・再生（保存されない _ed に持つ）

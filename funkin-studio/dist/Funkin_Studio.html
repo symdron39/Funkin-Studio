@@ -1111,6 +1111,128 @@ body:has(.hudWorkspace:not([hidden])) {
 
 </style>
     <style>
+/* ===== ./funkin-studio/css/chart-editor.css ===== */
+/* Chart Editor 専用スタイル。土台（全画面・Hud パネル）は hud.css */
+#chartWorkspace #chtCanvas {
+  background: var(--studio-canvas, #1d222a) !important;
+  background-image: none !important;
+  cursor: crosshair;
+  touch-action: none;
+}
+#chartWorkspace .hudDockLeft {
+  bottom: 130px;
+}
+#chartWorkspace .hudDockRight {
+  bottom: 130px;
+}
+#chartWorkspace .hudPanel h3 {
+  margin: 12px 0 4px;
+  font-size: 13px;
+  opacity: 0.85;
+}
+#chartWorkspace .hudPanel label {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+}
+#chartWorkspace .hudPanel .row > label {
+  flex: 1 1 0;
+  min-width: 0;
+}
+#chartWorkspace .hudPanel .row > label input[type="number"],
+#chartWorkspace .hudPanel .row > label input[type="text"],
+#chartWorkspace .hudPanel .row > label select,
+#chartWorkspace .hudPanel label > input[type="text"],
+#chartWorkspace .hudPanel label > input[type="number"],
+#chartWorkspace .hudPanel label > select,
+#chartWorkspace .hudPanel label > input[type="file"] {
+  width: 100%;
+}
+#chartWorkspace .chtInline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  font-size: 12px;
+}
+#chartWorkspace .chtInline select {
+  width: auto;
+}
+#chartWorkspace .hudBar button[aria-pressed="true"] {
+  background: var(--accent);
+  color: #fff;
+}
+#chtStatus {
+  white-space: pre-wrap;
+}
+.chtFileBtn {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  margin: 0 !important;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  background: var(--studio-button, #2a3550);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.chtFileBtn:hover {
+  filter: brightness(1.15);
+}
+.chtTable {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0;
+  max-height: 28vh;
+  overflow-y: auto;
+}
+.chtRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+.chtRow > * {
+  min-width: 0;
+}
+.chtRow input[type="number"],
+.chtRow input[type="text"] {
+  width: 100%;
+  flex: 1 1 0;
+}
+.chtRow .chtRowName {
+  flex: 0 0 auto;
+  max-width: 7em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chtRow.chtOff {
+  opacity: 0.5;
+}
+.chtField {
+  margin-top: 6px;
+}
+.chtField > summary {
+  cursor: pointer;
+  font-size: 12px;
+  opacity: 0.85;
+}
+.chtUnits {
+  opacity: 0.6;
+  font-size: 11px;
+}
+#chtTime {
+  min-width: 11em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+</style>
+    <style>
 /* ===== ./funkin-studio/css/theme-navy.css ===== */
 /* Funkin' Studio | Navy Comfort Theme
    Customize the variables below. Loaded after the base/layout CSS. */
@@ -2227,18 +2349,25 @@ function startAutosave(app) {
   // ============================================================
   // 3. 自動保存
   // ============================================================
-  // sig(): 今の編集状態の「指紋」（JSON文字列）。前回保存したものと同じなら保存を省く。まだ何も読み込んでいなければ null。
-  const sig = () =>
-    refreshA()?.anim && A.map && A.img?.naturalWidth
-      ? JSON.stringify([
-          A.anim,
-          A.map,
-          A.pngFileName,
-          A.img.src,
-          A.symbol,
-          Number(document.getElementById("frame")?.value) || 0,
-        ])
+  // 「何も変わっていない」ことを安く確かめるための軽い指紋（数字と短い文字列だけ。巨大な JSON は触らない）。
+  // 編集のたびに Undo 履歴が1件増える（またはシンボル・フレーム・画像が変わる）ので、これが同じなら中身も同じとみなせる…
+  // ただしドラッグ中の編集は Undo 履歴が増えないので、ポインタを離した・キー入力・入力欄の変更では「確実に変化あり」の印（strong）を立てる。
+  const light = () => {
+    const a = refreshA();
+    return a?.anim && a.map && a.img?.naturalWidth
+      ? [a.anUndo?.length, a.anRedo?.length, a.symbol, Number(document.getElementById("frame")?.value) || 0, a.img.src, a.pngFileName].join("|")
       : null;
+  };
+  let lastLight = null, // 最後に保存した時点の軽い指紋
+    strong = true; // 「確実に変化したかも」の印。起動後の最初の1回は確認する
+  // sig(): 今の編集状態の「指紋」（JSON文字列）。前回保存したものと同じなら保存を省く。まだ何も読み込んでいなければ null。
+  // 重い処理（Animation.json / spritemap 全体の JSON 化）なので、変化があり得るときだけ呼び、結果は保存にも使い回す。
+  const sig = () => {
+    if (!light()) return null;
+    const animStr = JSON.stringify(A.anim),
+      mapStr = JSON.stringify(A.map);
+    return { animStr, mapStr, text: [animStr, mapStr, A.pngFileName, A.img.src, A.symbol, Number(document.getElementById("frame")?.value) || 0].join("\u0000") };
+  };
   // 保存の本体。force=true は「今すぐ保存」（変化が無くても保存する）。
   // 保存中に呼ばれたら pending を立てておき、終わったあとで1回だけやり直す。
   // 画像は blob（バイナリ）のまま保存する（fetch(img.src) で取り出す）。
@@ -2247,11 +2376,16 @@ function startAutosave(app) {
       pending = true;
       return;
     }
-    const signature = sig();
-    if (!signature) {
+    if (!force && !strong && light() === lastLight) return; // 変化なし（重い JSON 化をしない）
+    const cur = light();
+    const parts = sig();
+    if (!parts) {
       if (force) update("先にAnimateAtlasを読み込んでください");
       return;
     }
+    strong = false;
+    lastLight = cur;
+    const signature = parts.text;
     if (!force && signature === lastSignature) return;
     writing = true;
     try {
@@ -2260,8 +2394,8 @@ function startAutosave(app) {
       if (!response.ok) throw Error("Atlas image unavailable");
       const blob = await response.blob();
       const data = {
-        anim: JSON.stringify(A.anim),
-        map: JSON.stringify(A.map),
+        anim: parts.animStr, // 変化の判定で作った文字列を、そのまま保存にも使う
+        map: parts.mapStr,
         image: blob,
         pngFileName: A.pngFileName,
         symbol: A.symbol,
@@ -2332,7 +2466,8 @@ function startAutosave(app) {
       A.recenterPreview();
       A.frameLabelRefresh();
       A.legacyEditRefresh();
-      lastSignature = sig();
+      lastSignature = sig()?.text ?? "";
+      lastLight = light();
       update("復元しました: " + new Date(data.updated).toLocaleString());
     } catch (e) {
       update("復元失敗: " + e.message);
@@ -2346,6 +2481,8 @@ function startAutosave(app) {
     try {
       await drop();
       lastSignature = "";
+      lastLight = null;
+      strong = true;
       update("復元データを削除しました");
     } catch (e) {
       update("削除失敗: " + e.message);
@@ -2359,8 +2496,23 @@ function startAutosave(app) {
   // ============================================================
   // 画面が見えているときは4秒ごと、タブが隠れたとき、ページを離れるときに saveLocal() を呼ぶ。
   // 内容が前回と同じなら saveLocal の中で何もしないので、頻繁に呼んでも問題ない。
+  // 保存の判断は、ポインタを押している間（ドラッグ中）は見送り、ブラウザが手すきのとき（requestIdleCallback）に行う。
+  //   → 以前は4秒ごとに巨大な JSON を丸ごと文字列化していて、大きなアトラスを開いていると周期的に画面が固まった。
+  const idle = (fn) => (window.requestIdleCallback ? requestIdleCallback(fn, { timeout: 3000 }) : setTimeout(fn, 50));
+  let pointerDown = false;
+  document.addEventListener("pointerdown", () => (pointerDown = true), true);
+  document.addEventListener(
+    "pointerup",
+    () => {
+      pointerDown = false;
+      strong = true;
+    },
+    true,
+  );
+  for (const ev of ["keyup", "input", "change", "drop"]) document.addEventListener(ev, () => (strong = true), true);
   setInterval(() => {
-    if (!document.hidden) saveLocal();
+    if (document.hidden || pointerDown) return;
+    idle(() => saveLocal());
   }, 4000);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) saveLocal();
@@ -2877,6 +3029,10 @@ class FunkinMenuState extends State {
             <strong>Stage Editor</strong>
             <small>V-Slice ステージ / prop・キャラ位置</small>
           </button>
+          <button id="chooseChart" class="render-choice">
+            <strong>Chart Editor</strong>
+            <small>V-Slice 譜面 / chart・metadata・イベント</small>
+          </button>
         </div>
       </div>
     </div>`;
@@ -2885,6 +3041,7 @@ class FunkinMenuState extends State {
     this.goOnClick("#funkinBackHome", "home");
     this.goOnClick("#chooseCharacter", "character");
     this.goOnClick("#chooseStage", "stage");
+    this.goOnClick("#chooseChart", "chart");
   }
 }
 
@@ -8472,17 +8629,32 @@ const __m29 = (() => {
    ※ Character Editor 側は動作確認済みのまま触らないため、同じコードが2か所にある。将来ここへ統合できる。
    ============================================================ */
 
-/** File → 読み込み済みの HTMLImageElement（decode まで待つ） */
+/**
+ * File → デコード済みの画像（ImageBitmap）。
+ * <img> のままだと、ブラウザは「デコードした画像」を容量の上限つきのキャッシュに置き、あふれると捨てる。
+ * 大きなアトラスが何十枚もあると、毎フレーム捨てられた画像を PNG からデコードし直して、画面が固まる。
+ * ImageBitmap はデコード済みのピクセルをそのまま持ち続けるので、これが起きない。
+ * 既存コードが使う naturalWidth / naturalHeight も付けておく。
+ */
 async function loadImage(file) {
-  const img = new Image();
-  const url = URL.createObjectURL(file);
+  let bmp;
   try {
-    img.src = url;
-    await img.decode();
-  } finally {
-    URL.revokeObjectURL(url); // decode が終わった画像は URL が無くても描ける
+    bmp = await createImageBitmap(file); // PNG / WebP / JPEG をデコード（メインスレッドを塞がない）
+  } catch {
+    // createImageBitmap が使えない・失敗したときは、従来どおり <img> で読む
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    try {
+      img.src = url;
+      await img.decode();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+    return img;
   }
-  return img;
+  Object.defineProperty(bmp, "naturalWidth", { value: bmp.width });
+  Object.defineProperty(bmp, "naturalHeight", { value: bmp.height });
+  return bmp;
 }
 
 /** XML 文字列 → スプライト一覧 [{name, x, y, width, height, frameX, frameY, frameWidth, frameHeight, rotated}] */
@@ -8871,7 +9043,19 @@ function mountCharacterEditor(state) {
   }
   // Sparrow: prefix で始まるスプライトを、末尾の連番の順に並べて返す
   // （list を省略すると、いま選んでいるアニメのアトラス。基準フレームの探索では別アトラスを渡す）
+  // 結果は（アトラスごと・prefix ごとに）覚えておく。再生中は毎フレーム呼ばれるので、数千スプライトの絞り込み+並べ替えを繰り返さないため。
+  // ※ pool（スプライト配列）は読み込み直すと別の配列になるので、配列が変われば自然に捨てられる（WeakMap）
+  const framesCache = new WeakMap();
   function sparrowFrames(prefix, pool = sprites) {
+    let byPrefix = framesCache.get(pool);
+    if (!byPrefix) framesCache.set(pool, (byPrefix = new Map()));
+    const hit = byPrefix.get(prefix);
+    if (hit) return hit;
+    const found = sparrowFramesUncached(prefix, pool);
+    byPrefix.set(prefix, found);
+    return found;
+  }
+  function sparrowFramesUncached(prefix, pool) {
     const list = pool.filter((x) => x.name.startsWith(prefix));
     const tail = (x) => x.name.slice(prefix.length);
     list.sort((a, b) => {
@@ -9760,6 +9944,7 @@ const template = `
             <h3>画像アセット</h3>
             <label>画像・XML・TXT・AnimateAtlas を登録（複数可）<input id="stgImages" type="file" accept="image/*,.xml,.txt,.json,text/xml,text/plain,application/json" multiple /></label>
             <label class="stgDesktopOnly">フォルダごと登録（AnimateAtlas 向け・PC）<input id="stgAtlasDir" type="file" webkitdirectory multiple /></label>
+            <label class="stgDesktopOnly" title="mod のフォルダ全体を選ぶと、json とアセットが別のフォルダにあっても、assetPath から自動で探します。中身は必要になったときだけ読むので、大きなフォルダでも軽いです">mod フォルダ全体を登録（PC）<input id="stgPoolDir" type="file" webkitdirectory multiple /></label>
             <details>
               <summary>結び付けのルール</summary>
               <p class="tiny">
@@ -9858,8 +10043,19 @@ const template = `
                 <label>Scroll Y<input id="stgCScrY" type="number" step="0.05" /></label>
               </div>
               <h3>表示するキャラクター</h3>
-              <label>character.json とアトラスのファイルを一緒に選択<input id="stgCharFiles" type="file" accept=".json,.png,.xml,.txt,image/*" multiple /></label>
-              <label class="stgDesktopOnly">フォルダごと選択（Multi 系・AnimateAtlas 向け・PC）<input id="stgCharDir" type="file" webkitdirectory multiple /></label>
+              <p class="tiny">読み込み方は2通りです。どちらも、選んだファイルは「ファイルの山」に集まり、あとから探されます。</p>
+              <details open>
+                <summary>① 一括: character.json とアトラスを一度に</summary>
+                <label>まとめて選択<input id="stgCharFiles" type="file" accept=".json,.png,.xml,.txt,image/*" multiple /></label>
+                <label class="stgDesktopOnly">フォルダごと選択（PC）<input id="stgCharDir" type="file" webkitdirectory multiple /></label>
+              </details>
+              <details open>
+                <summary>② 分散: json → アトラスを別々に</summary>
+                <label>character.json だけ選択<input id="stgCharJson" type="file" accept=".json,application/json" /></label>
+                <label>アトラスのファイルを追加（何度でも・別フォルダからでも）<input id="stgCharAssets" type="file" multiple /></label>
+                <label class="stgDesktopOnly">フォルダごと追加（PC）<input id="stgCharAssetsDir" type="file" webkitdirectory multiple /></label>
+              </details>
+              <div id="stgCharNeeds" class="stgAssetList"></div>
               <p class="tiny">対応: sparrow / packer / multisparrow / animateatlas / multianimateatlas。表示に使うのは基準アニメ（danceRight→danceLeft→idle）が使うアトラスだけです。</p>
               <div class="row"><button id="stgCharClear" type="button">キャラを外す</button></div>
               <p id="stgCharInfo" class="tiny"></p>
@@ -10101,7 +10297,7 @@ const __m34 = (() => {
      ・AnimateAtlas      … Animation.json の「タイムライン」が、spritemap の小さな四角を行列で並べて絵を作る
    この違いを呼び出し側（props・キャラ）に見せないよう、どちらも同じ形の「フレーム」を返す:
 
-       frame = { w, h, bx, by, draw(ctx, x, y, ref, stageMatrix, img) }
+       frame = { w, h, bx, by, draw(ctx, x, y, ref, stageMatrix, tint) }
          w, h   : フレームの枠の大きさ（V-Slice の frameWidth / frameHeight。ここから hitbox・足元・カメラ焦点が決まる）
          bx, by : 枠の左上の、アトラス座標での位置（Sparrow は 0,0）
          draw   : 枠の左上が (x, y) に来るように描く（Flixel と同じ）
@@ -10128,13 +10324,39 @@ class SpriteFrame {
     this.bx = 0;
     this.by = 0;
   }
-  /** img を渡すと、その画像で描く（tint 済みの画像に差し替えるとき用） */
-  draw(ctx, x, y, ref, stageMatrix, img) {
+  /**
+   * tint（{ r, g, b }）を渡すと、その色を掛けて描く（Flixel の color = 乗算）。
+   * 色を掛けるのは「使うスプライト1枚分」だけ（小さなキャンバスを作って覚える）。
+   * アトラス全体を色付きで作り直すと、大きなアトラスでは数百ms 固まり、メモリも食うため。
+   */
+  draw(ctx, x, y, ref, stageMatrix, tint) {
     const sp = this.sp;
     const sw = sp.rotated ? sp.height : sp.width,
       sh = sp.rotated ? sp.width : sp.height;
     // frameX / frameY は「トリミングされた分」の負のオフセット
-    paintSparrow(ctx, sp, img || this.image, x - (sp.frameX || 0), y - (sp.frameY || 0), sw, sh);
+    const dx = x - (sp.frameX || 0),
+      dy = y - (sp.frameY || 0);
+    if (!tint) return paintSparrow(ctx, sp, this.image, dx, dy, sw, sh);
+    ctx.drawImage(this._tinted(tint, sw, sh), dx, dy);
+  }
+  _tinted(tint, sw, sh) {
+    const key = `${tint.r},${tint.g},${tint.b}`;
+    this._tints ??= new Map();
+    let c = this._tints.get(key);
+    if (!c) {
+      c = document.createElement("canvas");
+      c.width = Math.max(1, sw);
+      c.height = Math.max(1, sh);
+      const g = c.getContext("2d");
+      paintSparrow(g, this.sp, this.image, 0, 0, sw, sh);
+      g.globalCompositeOperation = "multiply";
+      g.fillStyle = `rgb(${tint.r},${tint.g},${tint.b})`;
+      g.fillRect(0, 0, c.width, c.height);
+      g.globalCompositeOperation = "destination-in"; // 透明な部分は透明のまま（乗算で塗られた分を削る）
+      paintSparrow(g, this.sp, this.image, 0, 0, sw, sh);
+      this._tints.set(key, c);
+    }
+    return c;
   }
 }
 
@@ -10146,6 +10368,7 @@ class SpriteAtlas {
     this.sprites = sprites;
     this.label = label;
     this._cache = new Map();
+    this._seq = new Map(); // frames() の結果（再生中に毎フレーム探し直さないため）
   }
   frameOf(sp) {
     let f = this._cache.get(sp);
@@ -10181,6 +10404,14 @@ class SpriteAtlas {
    *   indexOnly（packer の prop）: frameIndices をファイル順の番号としてそのまま使う（Stage.hx: animation.add(name, frameIndices)）
    */
   frames(anim, { indexOnly = false } = {}) {
+    const key = `${indexOnly ? "i" : "p"}|${anim?.prefix ?? anim?.name ?? ""}|${JSON.stringify(anim?.frameIndices ?? null)}`;
+    const hit = this._seq.get(key);
+    if (hit) return hit;
+    const seq = this._frames(anim, indexOnly);
+    this._seq.set(key, seq);
+    return seq;
+  }
+  _frames(anim, indexOnly) {
     if (indexOnly) {
       const all = this.all(),
         ix = Array.isArray(anim?.frameIndices) && anim.frameIndices.length ? anim.frameIndices : null;
@@ -10219,6 +10450,18 @@ class AnimateFrame {
     this.atlas = atlas;
     this.spec = spec;
   }
+  /**
+   * このフレームを作る「スプライトと行列」の一覧 [{ sp, m }]。タイムラインをたどるのは重いので、初回だけ計算して使い回す
+   * （再生中に毎フレームたどり直すと、大きなアトラスでは画面が固まる原因になる）
+   */
+  get list() {
+    if (!this._list) {
+      const out = [];
+      this.atlas.traverse(this.spec, (sp, m) => out.push({ sp, m }));
+      this._list = out;
+    }
+    return this._list;
+  }
   /** 枠（描画した全スプライトを囲む四角）。初回だけ計算してキャッシュする */
   get box() {
     if (!this._box) {
@@ -10226,7 +10469,7 @@ class AnimateFrame {
         y0 = Infinity,
         x1 = -Infinity,
         y1 = -Infinity;
-      this.atlas.traverse(this.spec, (sp, m) => {
+      for (const { sp, m } of this.list) {
         for (const [px, py] of [[0, 0], [sp.w, 0], [0, sp.h], [sp.w, sp.h]]) {
           const x = m[0] * px + m[2] * py + m[4],
             y = m[1] * px + m[3] * py + m[5];
@@ -10235,7 +10478,7 @@ class AnimateFrame {
           x1 = Math.max(x1, x);
           y1 = Math.max(y1, y);
         }
-      });
+      }
       this._box = Number.isFinite(x0) ? { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) } : { x: 0, y: 0, w: 1, h: 1 };
     }
     return this._box;
@@ -10254,14 +10497,18 @@ class AnimateFrame {
   }
   draw(ctx, x, y, ref, stageMatrix) {
     // 既定: このフレーム自身の枠の左上を (x, y) に置く。stageMatrix: ステージ原点を基準枠に対して固定する
-    const origin = stageMatrix && ref ? [x - ref.bx, y - ref.by] : [x - this.bx, y - this.by];
-    this.atlas.traverse(this.spec, (sp, m) => {
-      ctx.save();
-      ctx.transform(1, 0, 0, 1, origin[0], origin[1]);
-      ctx.transform(...m);
+    const ox = stageMatrix && ref ? x - ref.bx : x - this.bx,
+      oy = stageMatrix && ref ? y - ref.by : y - this.by;
+    // スプライトごとに save / restore すると、数百枚あるフレームで非常に遅い。
+    // 今の変換を1回だけ控えて、スプライトごとに setTransform（= 控えた変換 × 原点 × そのスプライトの行列）で描く
+    const t = ctx.getTransform();
+    const base = mul([t.a, t.b, t.c, t.d, t.e, t.f], [1, 0, 0, 1, ox, oy]);
+    for (const { sp, m } of this.list) {
+      const M = mul(base, m);
+      ctx.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
       ctx.drawImage(sp.image, sp.x, sp.y, sp.w, sp.h, 0, 0, sp.w, sp.h);
-      ctx.restore();
-    });
+    }
+    ctx.setTransform(t);
   }
 }
 
@@ -10273,6 +10520,8 @@ class AnimateAtlas {
     this.label = label;
     this.legacy = !!animation?.ANIMATION;
     this._frames = new Map(); // フレームの枠は計算が重いので、同じフレームは作り回す
+    this._seq = new Map(); // frames() の結果
+    this._symMap = null;
     this.sprites = new Map(); // spritemap のスプライト名 → { x, y, w, h, rotated, image }
     for (const { json, image } of parts) {
       for (const item of json?.ATLAS?.SPRITES || []) {
@@ -10297,7 +10546,9 @@ class AnimateAtlas {
     if (sp) emit(sp, sp.rotated ? mul(m, ROT(sp.w)) : m);
   }
   _symbol(name) {
-    return (this.animation.SD?.S || []).find((x) => x.SN === name);
+    // シンボルは数百個あることがあり、毎回の線形探索は遅いので、名前 → シンボルの表を1回だけ作る
+    if (!this._symMap) this._symMap = new Map((this.animation.SD?.S || []).map((x) => [x.SN, x]));
+    return this._symMap.get(name);
   }
   _modern(name, fr, m, depth, emit) {
     if (depth > 20) return;
@@ -10387,6 +10638,12 @@ class AnimateAtlas {
    *   frameIndices    : 全体の中の番号で絞り込む
    */
   frames(anim) {
+    const key = JSON.stringify([anim?.prefix ?? anim?.name ?? "", anim?.animType ?? "", anim?.frameIndices ?? null]);
+    let seq = this._seq.get(key);
+    if (!seq) this._seq.set(key, (seq = this._framesOf(anim)));
+    return seq;
+  }
+  _framesOf(anim) {
     const a = anim || {};
     const pref = String(a.prefix ?? a.name ?? "");
     let all = [];
@@ -10475,45 +10732,72 @@ function animateGroups(files) {
   return dirs.map((dir) => ({ dir, files: list.filter((f) => relDir(f) === dir) }));
 }
 
+/** ファイルの置き場所つきの名前（フォルダごと選んだときは「フォルダ/…/名前」、直接選んだときは名前だけ） */
+const relPath = (f) => f.webkitRelativePath || f.name;
+// ファイルが数千個あっても探せるよう、正規化した名前は1回だけ計算する
+const _pathCache = new WeakMap();
+const pathNoExt = (f) => {
+  let v = _pathCache.get(f);
+  if (v === undefined) _pathCache.set(f, (v = norm(relPath(f)).replace(/\.[^./]+$/, "")));
+  return v;
+};
+
 /**
- * assetPath（フォルダ）に対応する AnimateAtlas を、選ばれたファイルから探して作る。
- *   1. フォルダ名が assetPath と合う組  2. 候補が1組だけならそれ
+ * ファイルの山（pool）から、assetPath に合うファイルを探す。
+ *   ① 置き場所つきの名前の末尾が assetPath と一致する（mod のフォルダ全体を選んだときは、images/characters/bf.png のように完全に特定できる）
+ *   ② 無ければ、拡張子を除いた名前が assetPath の最後の1つと一致する（ファイルを直接選んだとき）
+ * extRe: 対象の拡張子（例 /\.png$/i）
+ */
+function matchFile(pool, assetPath, extRe) {
+  const want = norm(assetPath);
+  if (!want) return null;
+  const cand = pool.filter((f) => extRe.test(f.name));
+  return cand.find((f) => pathNoExt(f) === want || pathNoExt(f).endsWith("/" + want)) || cand.find((f) => stem(f.name) === lastSeg(want)) || null;
+}
+
+/**
+ * assetPath（フォルダ）に対応する AnimateAtlas を、ファイルの山から探して作る。
+ *   1. フォルダ名が assetPath と合う組  2. 候補が1組だけならそれ（strict のときは 1 だけ）
  * 見つからなければ Error（何をどう選べばよいか書く）
  */
-async function findAnimateAtlas(files, assetPath) {
+async function findAnimateAtlas(files, assetPath, { strict = false } = {}) {
   const groups = animateGroups(files);
-  if (!groups.length) throw Error(`AnimateAtlas「${assetPath}」の Animation.json が選択されていません（spritemap1.json / spritemap1.png も一緒に）`);
+  if (!groups.length) throw Error(`AnimateAtlas「${assetPath}」の Animation.json が見つかりません（spritemap1.json / spritemap1.png も一緒に）`);
   const want = norm(assetPath);
   const hit = groups.find((g) => norm(g.dir) === want || (g.dir && (norm(g.dir).endsWith("/" + want) || want.endsWith("/" + norm(g.dir)) || lastSeg(g.dir) === lastSeg(want))));
-  const pick = hit || (groups.length === 1 ? groups[0] : null);
+  const pick = hit || (!strict && groups.length === 1 ? groups[0] : null);
   if (!pick) throw Error(`AnimateAtlas が ${groups.length} セットあり、「${assetPath}」がどれか分かりません。フォルダごと選ぶか、1セットずつ選んでください`);
   return buildAnimateAtlas(pick.files, assetPath);
 }
 
 /**
- * assetPath に対応する Sparrow / Packer アトラスを、選ばれたファイルから探して作る。
- * ファイル名（拡張子なし）が assetPath の末尾と合う PNG + (XML | TXT)。合うものが無くて PNG と定義が1つずつなら、それを使う。
+ * assetPath に対応する Sparrow / Packer アトラスを、ファイルの山から探して作る。
+ * PNG と (XML | TXT) を matchFile で探す。合うものが無くて PNG と定義が1つずつなら、それを使う。
  */
 async function findSpriteAtlas(files, assetPath, kind) {
   const list = [...files];
-  const pngs = list.filter((f) => /\.(png|webp|jpe?g)$/i.test(f.name) && !isSpritemapPng(f, list));
-  const defs = list.filter((f) => (kind === "packer" ? /\.txt$/i.test(f.name) : /\.xml$/i.test(f.name)));
-  const key = lastSeg(assetPath);
-  const png = pngs.find((f) => stem(f.name) === key) || (pngs.length === 1 && defs.length === 1 ? pngs[0] : null);
-  const def = defs.find((f) => stem(f.name) === key) || (defs.length === 1 && png ? defs[0] : null);
+  const png = matchFile(list, assetPath, /\.(png|webp|jpe?g)$/i) || soleOf(list, /\.(png|webp|jpe?g)$/i, kind);
+  const def = matchFile(list, assetPath, kind === "packer" ? /\.txt$/i : /\.xml$/i) || soleOf(list, kind === "packer" ? /\.txt$/i : /\.xml$/i, kind);
   const ext = kind === "packer" ? "TXT" : "XML";
-  if (!png) throw Error(`「${assetPath}」の画像（${key}.png）が選択されていません`);
-  if (!def) throw Error(`「${assetPath}」の ${ext}（${key}.${ext.toLowerCase()}）が選択されていません`);
+  const key = lastSeg(assetPath);
+  if (!png) throw Error(`「${assetPath}」の画像（${key}.png）が見つかりません`);
+  if (!def) throw Error(`「${assetPath}」の ${ext}（${key}.${ext.toLowerCase()}）が見つかりません`);
   const text = await def.text();
   const sprites = kind === "packer" ? parsePackerText(text) : parseSparrowXml(text);
   return new SpriteAtlas(kind, await loadImage(png), sprites, `${png.name} + ${def.name}`);
+}
+/** 該当する種類のファイルが1つしか無ければそれ（spritemap の PNG は除く）。選んだ数が少ないときの救済 */
+function soleOf(list, re) {
+  const animDirs = new Set(list.filter((f) => isAnimationJsonName(f.name)).map(relDir));
+  const hits = list.filter((f) => re.test(f.name) && !(/^spritemap\d*\.png$/i.test(f.name) && animDirs.has(relDir(f))));
+  return hits.length === 1 ? hits[0] : null;
 }
 /** spritemapN.png（AnimateAtlas の部品）か。同じ場所に Animation.json があれば、そちらの部品として扱う */
 function isSpritemapPng(f, list) {
   return /^spritemap\d*\.png$/i.test(f.name) && list.some((g) => isAnimationJsonName(g.name) && relDir(g) === relDir(f));
 }
 
-return { SpriteAtlas, AnimateAtlas, isAnimationJsonName, isSpritemapJsonName, buildAnimateAtlas, animateGroups, findAnimateAtlas, findSpriteAtlas, isSpritemapPng };
+return { SpriteAtlas, AnimateAtlas, isAnimationJsonName, isSpritemapJsonName, buildAnimateAtlas, animateGroups, relPath, matchFile, findAnimateAtlas, findSpriteAtlas, isSpritemapPng };
 })();
 
 /* ===== funkin-studio/js/states/stage/stageCharacter.js ===== */
@@ -10571,6 +10855,8 @@ class StageCharacter {
   }
   reset() {
     this.json = null; // character.json
+    this.jsonName = "";
+    this.need = null; // 表示に必要なアトラス { path, kind, ref }（json を読んだ時点で決まる）
     this.atlas = null; // SpriteAtlas / AnimateAtlas
     this.view = null; // 描画用にまとめた値（下の build）
     this.fileNames = [];
@@ -10579,39 +10865,61 @@ class StageCharacter {
   get loaded() {
     return !!this.view;
   }
+  /** json は読めたが、アトラスのファイルを待っている状態 */
+  get waiting() {
+    return !!this.json && !this.view;
+  }
 
-  /** ファイル（character.json とアトラスのファイルを一緒に）から読み込む。足りないものがあれば Error（何が足りないか書く） */
-  async loadFiles(files) {
-    const list = [...files];
-    let json = null,
-      jsonFile = null;
-    for (const f of list.filter((f) => /\.json$/i.test(f.name))) {
+  /**
+   * ファイルの中から character.json を探して読む（animations 配列を持つ JSON）。見つかれば true。
+   * アトラスはまだ読まない（= 分散方式の1段階目。resolve で後から探す）
+   */
+  async setJsonFrom(files) {
+    for (const f of [...files].filter((f) => /\.json$/i.test(f.name))) {
+      let j;
       try {
-        const j = JSON.parse((await f.text()).replace(/^﻿/, ""));
-        if (Array.isArray(j?.animations)) {
-          json = j;
-          jsonFile = f;
-          break;
-        }
+        j = JSON.parse((await f.text()).replace(/^\uFEFF/, ""));
       } catch {
-        /* spritemap などは読めても character.json ではない。次へ */
+        continue; // spritemap などは character.json ではない。次へ
       }
+      if (!Array.isArray(j?.animations)) continue;
+      const rt = String(j.renderType || "sparrow").toLowerCase();
+      if (!RENDER_TYPES.includes(rt)) throw Error(`renderType「${j.renderType}」は未対応です（${RENDER_TYPES.join(" / ")} に対応）`);
+      const ref = referenceAnimOf(j),
+        path = (ref?.assetPath || j.assetPath || "").trim();
+      if (!path) throw Error("assetPath がありません（character.json か、基準アニメに assetPath が必要です）");
+      this.reset();
+      this.json = j;
+      this.jsonName = f.name;
+      this.need = { path, kind: atlasKindOf(j, ref?.assetPath ? ref : null), ref };
+      return true;
     }
-    if (!json) throw Error("character.json（animations 配列を持つ JSON）が選択されていません");
-    const rt = String(json.renderType || "sparrow").toLowerCase();
-    if (!RENDER_TYPES.includes(rt)) throw Error(`renderType「${json.renderType}」は未対応です（${RENDER_TYPES.join(" / ")} に対応）`);
+    return false;
+  }
 
-    const ref = referenceAnimOf(json),
-      path = (ref?.assetPath || json.assetPath || "").trim(),
-      kind = atlasKindOf(json, ref?.assetPath ? ref : null);
-    if (!path) throw Error("assetPath がありません（character.json か、基準アニメに assetPath が必要です）");
-    const rest = list.filter((f) => f !== jsonFile);
-    const atlas = kind === "animate" ? await findAnimateAtlas(rest, path) : await findSpriteAtlas(rest, path, kind);
-    this.json = json;
+  /**
+   * ファイルの山（pool）から、表示に必要なアトラスを探して読む。無ければ Error（何が足りないか書く）。
+   * 成功すると view ができる。呼び直してもよい（足りないファイルを足したあとなど）
+   */
+  async resolve(pool) {
+    if (!this.json) throw Error("character.json がまだ選択されていません");
+    const { path, kind, ref } = this.need;
+    const list = [...pool];
+    const atlas = kind === "animate" ? await findAnimateAtlas(list, path) : await findSpriteAtlas(list, path, kind);
     this.atlas = atlas;
-    this.fileNames = [jsonFile.name, atlas.label];
+    this.fileNames = [this.jsonName, atlas.label];
     this.view = this.build(ref, path, kind);
     this.error = "";
+  }
+
+  /**
+   * 一括方式: character.json とアトラスのファイルを一緒に渡す。pool は、それまでに集めたファイル（分散方式で足したもの）
+   * ファイルの中に character.json が無くても、すでに json を読んでいればそれを使う
+   */
+  async loadFiles(files, pool = []) {
+    const list = [...files];
+    if (!(await this.setJsonFrom(list)) && !this.json) throw Error("character.json（animations 配列を持つ JSON）が選択されていません");
+    await this.resolve([...list, ...pool]);
   }
 
   /** 基準フレームなど、描画に必要な値を決める */
@@ -10709,7 +11017,7 @@ const { Viewport, isTextEntry } = __m27;
 const { HudPanels } = __m28;
 const { defaultStage, normalizeStage, newProp, newRect, serializeStage, clone, round3, CHAR_IDS, CHAR_LABEL, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas } = __m33;
 const { loadImage, parseSparrowXml, parsePackerText } = __m29;
-const { SpriteAtlas, animateGroups, buildAnimateAtlas, isSpritemapPng } = __m34;
+const { SpriteAtlas, animateGroups, buildAnimateAtlas, isSpritemapPng, matchFile, relPath, findAnimateAtlas } = __m34;
 const { StageCharacter } = __m35;
 
 const SEL_COLOR = "#ffb020"; // 選択枠の色
@@ -10774,8 +11082,26 @@ function mountStageEditor(state) {
   const assetFor = (path) =>
     !path || path.startsWith("#") ? null : (assets.linked.get(path) ?? assets.byBase.get(baseName(path).toLowerCase()) ?? null);
 
+  // ---- ファイルの山（pool）----
+  // 選んだファイルは全部ここに集まる（中身はまだ読まない。ファイルの「手」を持つだけなので軽い）。
+  // キャラの読み込みや、prop の画像の自動結び付けは、必要になったときにここから探す。
+  // → mod のフォルダ全体を一度だけ選べば、json とアセットが別のフォルダにあっても、毎回ファイルを動かさずに済む。
+  const pool = [];
+  const poolKeys = new Set();
+  function addPool(files) {
+    let n = 0;
+    for (const f of files) {
+      const k = `${relPath(f)}|${f.size}|${f.lastModified}`;
+      if (poolKeys.has(k)) continue;
+      poolKeys.add(k);
+      pool.push(f);
+      n++;
+    }
+    return n;
+  }
   async function registerImages(files) {
     const list = [...files];
+    addPool(list);
     const out = [];
     out.xmls = [];
     out.animates = [];
@@ -10903,9 +11229,16 @@ function mountStageEditor(state) {
     playing = on;
     if (on) {
       playStart = performance.now();
-      const tick = () => {
+      // 描くのは「アニメの最大フレームレート」まででよい（24fps のアニメを60回描いても絵は同じ）。重いアトラスでの負荷が約半分になる
+      const maxRate = Math.min(60, Math.max(12, ...doc.props.filter(isAnimated).flatMap((p) => p.animations.map((a) => Number(a.frameRate) || 24))));
+      const every = 1000 / maxRate - 3;
+      let last = 0;
+      const tick = (now) => {
         if (!playing) return;
-        draw();
+        if (now - last >= every) {
+          last = now;
+          draw();
+        }
         rafId = requestAnimationFrame(tick);
       };
       rafId = requestAnimationFrame(tick);
@@ -10944,6 +11277,14 @@ function mountStageEditor(state) {
     row.append(label, btn);
     return row;
   }
+  // path ごとの使われ方: animateatlas / packer / sparrow（アニメ付き）/ static（1枚絵）
+  const typeOfPath = (path) => {
+    const ps = doc.props.filter((p) => p.assetPath === path && isAtlasProp(p));
+    if (ps.some((p) => animTypeOf(p) === "animateatlas")) return "animateatlas";
+    if (ps.some((p) => animTypeOf(p) === "packer")) return "packer";
+    return ps.length ? "sparrow" : "static";
+  };
+
   function renderAssets() {
     const box = $("stgAssetList");
     box.replaceChildren();
@@ -10955,13 +11296,6 @@ function mountStageEditor(state) {
       box.append(t);
       return;
     }
-    // path ごとの使われ方: animateatlas / packer / sparrow（アニメ付き）/ static（1枚絵）
-    const typeOfPath = (path) => {
-      const ps = doc.props.filter((p) => p.assetPath === path && isAtlasProp(p));
-      if (ps.some((p) => animTypeOf(p) === "animateatlas")) return "animateatlas";
-      if (ps.some((p) => animTypeOf(p) === "packer")) return "packer";
-      return ps.length ? "sparrow" : "static";
-    };
     const after = () => {
       renderAssets();
       refreshInspector();
@@ -11014,6 +11348,74 @@ function mountStageEditor(state) {
         );
       }
     }
+  }
+
+  /**
+   * ファイルの山から、まだ画像の無い prop のアセットを自動で探して結び付ける（見つかったものだけ読み込む）。
+   * 置き場所つきの名前で探すので、mod のフォルダ全体を選んでおけば images/ 以下の PNG・XML も見つかる。
+   */
+  async function linkFromPool() {
+    if (!pool.length) return 0;
+    let n = 0;
+    const paths = [...new Set(doc.props.filter((p) => !isSolid(p) && p.assetPath).map((p) => p.assetPath))];
+    for (const path of paths) {
+      const type = typeOfPath(path);
+      try {
+        if (type === "animateatlas") {
+          if (!animateFor(path)) {
+            const a = await findAnimateAtlas(pool, path, { strict: true });
+            assets.linkedAnimate.set(path, a);
+            n++;
+          }
+          continue;
+        }
+        if (!assetFor(path)) {
+          const f = matchFile(pool, path, /\.(png|webp|jpe?g)$/i);
+          if (f) {
+            const [r] = await registerImages([f]);
+            if (r) n++;
+          }
+        }
+        if ((type === "sparrow" || type === "packer") && !xmlFor(path)) {
+          const f = matchFile(pool, path, type === "packer" ? /\.txt$/i : /\.xml$/i);
+          if (f) {
+            const r = await registerImages([f]);
+            if (r.xmls.length) n++;
+          }
+        }
+      } catch {
+        /* 見つからない / 読めないものは、そのまま「未登録」の表示に残す */
+      }
+    }
+    if (n) {
+      renderAssets();
+      refreshInspector();
+      draw();
+    }
+    return n;
+  }
+  /** json だけ読んで待っているキャラに、ファイルの山からアトラスを探させる */
+  async function resolveWaitingChars() {
+    let n = 0;
+    for (const id of CHAR_IDS) {
+      const ch = chars[id];
+      if (!ch.waiting) continue;
+      try {
+        await ch.resolve(pool);
+        n++;
+      } catch (e) {
+        ch.error = e.message;
+      }
+    }
+    if (n) draw();
+    refreshInspector();
+    return n;
+  }
+  /** ファイルの山が増えたあとの共通処理 */
+  async function afterPoolChanged() {
+    const a = await linkFromPool();
+    const b = await resolveWaitingChars();
+    return { props: a, chars: b };
   }
 
   // ============================================================
@@ -11154,6 +11556,14 @@ function mountStageEditor(state) {
     ctx.restore();
   }
 
+  /** g の枠（回転込み）が、表示範囲 view の外か。AnimateAtlas は枠の外にはみ出して描けるので、枠の大きさ分の余裕を見る */
+  function isOffscreen(g, view) {
+    const pad = Math.max(g.w, g.h, 200);
+    const cs = corners(g),
+      xs = cs.map((c) => c[0]),
+      ys = cs.map((c) => c[1]);
+    return Math.max(...xs) + pad < view.l || Math.min(...xs) - pad > view.r || Math.max(...ys) + pad < view.t || Math.min(...ys) - pad > view.b;
+  }
   function drawProp(p, g) {
     ctx.save();
     ctx.translate(g.cx, g.cy);
@@ -11186,7 +11596,7 @@ function mountStageEditor(state) {
         // 色（tint）は Sparrow / Packer のときだけ反映する（AnimateAtlas は未対応）
         const tint = p.color ? parseColor(p.color) : null;
         const white = !tint || (tint.r === 255 && tint.g === 255 && tint.b === 255);
-        const img = v.entry && !white ? tinted(v.entry, tint) : undefined;
+        const img = v.entry && !white ? tint : undefined; // frame.draw の最後の引数は「掛ける色」
         // 基準枠の左上 = (−refW/2, −refH/2)。frame が自分の枠をそこに合わせて描く
         v.frame.draw(ctx, -v.refW / 2, -v.refH / 2, v.ref, v.stageMatrix, img);
       }
@@ -11248,9 +11658,12 @@ function mountStageEditor(state) {
     ctx.save();
     ctx.translate(o.x, o.y);
     ctx.scale(z, z);
+    // 画面の外にある物は描かない（大量の prop / 大きなアトラスがあるとき、再生中の負荷が大きく下がる）
+    const view = { l: -o.x / z, t: -o.y / z, r: (w - o.x) / z, b: (h - o.y) / z };
     for (const obj of list) {
       if (isHidden(obj)) continue;
       const g = geom(obj);
+      if (isOffscreen(g, view)) continue;
       ctx.save();
       ctx.translate(g.dx, g.dy);
       if (obj.kind === "prop") drawProp(obj.ref, g);
@@ -11610,8 +12023,34 @@ function mountStageEditor(state) {
       const ch = chars[so.id];
       $("stgCharInfo").textContent = ch.loaded
         ? `読み込み済み: ${ch.view.name}（${ch.fileNames.join(" / ")}）\n基準フレーム: ${ch.view.label} ${ch.view.refW}×${ch.view.refH}、キャラ scale ${ch.view.baseScale}\nposition は「足元」の位置です。`
-        : ch.error || "未読み込み（仮のシルエットで表示中）。position は「足元」の位置です。";
+        : ch.waiting
+          ? `character.json「${ch.jsonName}」（${ch.json.name ?? "名前なし"}）は読み込み済み。アトラスのファイルを待っています。\n${ch.error}`
+          : ch.error || "未読み込み（仮のシルエットで表示中）。position は「足元」の位置です。";
+      renderCharNeeds(ch);
     }
+  }
+
+  /** 分散方式の案内: キャラが必要としているアトラスと、結び付き状況（「選択」から直接足せる） */
+  function renderCharNeeds(ch) {
+    const box = $("stgCharNeeds");
+    box.replaceChildren();
+    if (!ch.json || !ch.need) return;
+    const { path, kind } = ch.need;
+    const KIND = { sparrow: "Sparrow（PNG+XML）", packer: "Packer（PNG+TXT）", animate: "AnimateAtlas（Animation.json+spritemap）" };
+    box.append(
+      assetRow(ch.loaded, (ch.loaded ? "✅ " : "⚠ ") + path + `  ${KIND[kind]}` + (ch.loaded ? `  ← ${ch.atlas.label}` : ""), "表示に使うアトラス（基準アニメの assetPath）", {
+        multiple: true,
+        pick: async (files) => {
+          addPool(files);
+          try {
+            await ch.resolve(pool);
+          } catch (e) {
+            ch.error = e.message;
+          }
+          charDone(ch, "まだアトラスが揃っていません");
+        },
+      }),
+    );
   }
 
   // 値が「既定値と同じ」ならキーを消す（JSON を小さく保つ。V-Slice は欠けたキーを既定値として読むので同じ意味）
@@ -11700,23 +12139,76 @@ function mountStageEditor(state) {
   onEdit("stgCScrY", "char", (r, el) => { const n = numOf(el); if (n === null) return false; r.scroll = [getScroll(r)[0], n]; });
 
   // キャラの実物を読み込む / 外す
+  // 2つの方式がある（どちらも、選んだファイルは pool に集まる）:
+  //   一括 : character.json とアトラスのファイルを一度に選ぶ（stgCharFiles / stgCharDir）
+  //   分散 : ①character.json だけ選ぶ（stgCharJson） → ②アトラスのファイルを、別のフォルダからでも、何度でも足す（stgCharAssets など）
+  //          mod のフォルダ全体を pool に入れておく（stgPoolDir）と、②も要らない。
+  const selChar = () => (sel?.kind === "char" ? chars[sel.id] : null);
+  const charDone = (ch, what) => {
+    refreshInspector();
+    draw();
+    if (ch.loaded) say(`${CHAR_LABEL[ch.id]} に ${ch.view.name} を読み込みました（基準: ${ch.view.label}）。`);
+    else if (ch.waiting) say(`${what}。アトラスのファイルを足してください（下の一覧を参照）。`);
+  };
+  /** 一括 */
   const onCharFiles = async (e) => {
     const files = [...e.target.files];
     e.target.value = "";
-    if (sel?.kind !== "char" || !files.length) return;
-    const ch = chars[sel.id];
+    const ch = selChar();
+    if (!ch || !files.length) return;
+    addPool(files);
     try {
-      await ch.loadFiles(files);
-      say(`${CHAR_LABEL[sel.id]} に ${ch.view.name} を読み込みました（基準: ${ch.view.label}）。`);
+      await ch.loadFiles(files, pool);
+      charDone(ch);
     } catch (err) {
-      ch.error = "読み込みエラー: " + err.message;
-      say(ch.error);
+      ch.error = err.message;
+      if (!ch.waiting) say("読み込みエラー: " + err.message);
+      charDone(ch, "character.json は読めましたが、アトラスが見つかりません");
     }
-    refreshInspector();
-    draw();
+  };
+  /** 分散 ①: character.json だけ */
+  $("stgCharJson").onchange = async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    const ch = selChar();
+    if (!ch || !files.length) return;
+    addPool(files.filter((f) => !/\.json$/i.test(f.name))); // json 以外が混ざっていれば、それも pool へ
+    try {
+      if (!(await ch.setJsonFrom(files))) throw Error("character.json（animations 配列を持つ JSON）ではありません");
+      try {
+        await ch.resolve(pool); // pool にすでにアトラスがあれば、これで表示まで進む
+      } catch (err) {
+        ch.error = err.message;
+      }
+      charDone(ch, `${ch.view?.name ?? ch.json.name ?? "キャラ"} の character.json を読みました`);
+    } catch (err) {
+      say("読み込みエラー: " + err.message);
+    }
+  };
+  /** 分散 ②: アトラスのファイルを足す（何度でも・別のフォルダからでも） */
+  const onCharAssets = async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    if (!files.length) return;
+    const n = addPool(files);
+    const r = await afterPoolChanged();
+    say(`ファイルを ${n} 個追加しました${r.chars ? `（キャラ ${r.chars} 体が表示できました）` : ""}${r.props ? `（prop の画像 ${r.props} 件を結び付けました）` : ""}。`);
   };
   $("stgCharFiles").onchange = onCharFiles;
   $("stgCharDir").onchange = onCharFiles;
+  $("stgCharAssets").onchange = onCharAssets;
+  $("stgCharAssetsDir").onchange = onCharAssets;
+  // mod のフォルダ全体を pool に入れる（中身は読まない。必要になったものだけ後で読む）
+  $("stgPoolDir").onchange = async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    if (!files.length) return;
+    const n = addPool(files);
+    say(`${n} 個のファイルを登録しました（読み込みは必要になったときだけ）。`);
+    const r = await afterPoolChanged();
+    if (r.chars || r.props) say(`${n} 個のファイルを登録し、キャラ ${r.chars} 体・prop の画像 ${r.props} 件を結び付けました。`);
+    renderAssets();
+  };
   $("stgCharClear").onclick = () => {
     if (sel?.kind !== "char") return;
     chars[sel.id].reset();
@@ -11786,6 +12278,7 @@ function mountStageEditor(state) {
     try {
       const next = normalizeStage(JSON.parse((await f.text()).replace(/^﻿/, "")));
       loadDoc(next, `「${next.name}」を読み込みました（prop ${next.props.length} 個）。画像は左の「画像アセット」から登録してください。`);
+      linkFromPool(); // ファイルの山（mod フォルダ）にあれば自動で結び付ける
     } catch (err) {
       say("読み込みエラー: " + err.message);
     }
@@ -11804,7 +12297,10 @@ function mountStageEditor(state) {
     if (regs.animates.length) msg.push(`AnimateAtlas ${regs.animates.length} セット`);
     if (msg.length) say(`${msg.join("・")}を登録しました。${regs.unlinked ? "フォルダ名が分からない AnimateAtlas は、一覧の「選択」から結び付けてください。" : ""}`);
   };
-  $("stgImages").onchange = onRegisterFiles;
+  $("stgImages").onchange = async (e) => {
+    await onRegisterFiles(e);
+    resolveWaitingChars();
+  };
   $("stgAtlasDir").onchange = onRegisterFiles;
 
   // アニメ選択・再生（保存されない _ed に持つ）
@@ -11954,8 +12450,2489 @@ class StageEditorState extends EditorState {
 return { StageEditorState };
 })();
 
-/* ===== funkin-studio/js/main.js ===== */
+/* ===== funkin-studio/js/states/chart/template.js ===== */
 const __m38 = (() => {
+/* ============================================================
+   chart/template.js — Chart Editor 画面の HTML
+   ------------------------------------------------------------
+   Character / Stage Editor と同じ「全画面キャンバス + Hud パネル」方式。ID はすべて "cht" で始まる。
+   ・キャンバス: 縦スクロールのグリッド（ホイール=時間送り / Ctrl+ホイール=拡大縮小）
+   ・左: ファイル / 曲情報 / 難易度 / BPM　・右: 編集（選択中の中身・イベント）/ 音声
+   ・下: 再生バー
+   ============================================================ */
+const template = `
+    <section id="chartWorkspace" class="hudWorkspace" hidden>
+      <canvas id="chtCanvas"></canvas>
+
+      <div class="hudLayer" data-all-hidden="false">
+        <button id="chtHudEye" class="hudEye" type="button" data-hud-all title="Hud の表示 / 非表示 (H)" aria-label="Hud の表示 / 非表示">👁</button>
+
+        <div class="hudBar" data-hud-panel="bar" data-hud-always>
+          <button type="button" data-hud-toggle="files" data-ja="📁 ファイル" data-en="📁 Files">📁 ファイル</button>
+          <button type="button" data-hud-toggle="song" data-ja="🎵 曲情報" data-en="🎵 Song">🎵 曲情報</button>
+          <button type="button" data-hud-toggle="diff" data-ja="🎚 難易度" data-en="🎚 Difficulty">🎚 難易度</button>
+          <button type="button" data-hud-toggle="timing" data-ja="⏱ BPM" data-en="⏱ BPM">⏱ BPM</button>
+          <button type="button" data-hud-toggle="edit" data-ja="✏ 編集" data-en="✏ Edit">✏ 編集</button>
+          <button type="button" data-hud-toggle="audio" data-ja="🔊 音声" data-en="🔊 Audio">🔊 音声</button>
+          <span class="hudSep"></span>
+          <button id="chtToolPlace" type="button" aria-pressed="true" title="配置: クリックでノーツ/イベントを置く・ドラッグで長さ・選択物をドラッグで移動 (1)">✏ 配置</button>
+          <button id="chtToolSelect" type="button" aria-pressed="false" title="選択: ドラッグで範囲選択 (2)">▭ 選択</button>
+          <button id="chtToolPan" type="button" aria-pressed="false" title="スクロール: ドラッグで時間送り（スマホ向け） (3)">✋ 移動</button>
+          <span class="hudSep"></span>
+          <button id="chtZoomOut" type="button" title="縮小">−</button>
+          <button id="chtZoomIn" type="button" title="拡大">＋</button>
+          <label class="chtInline" title="スナップ（←/→ キーでも変更）">スナップ
+            <select id="chtSnap"></select>
+          </label>
+          <span class="hudSep"></span>
+          <span id="chtReadout" class="hudReadout"></span>
+        </div>
+
+        <div class="hudDock hudDockLeft">
+          <aside class="hudPanel" data-hud-panel="files">
+            <h2>Chart Editor</h2>
+            <div class="row">
+              <button id="chtNew" type="button">新規</button>
+              <button id="chtSaveFnfc" class="primary" type="button" title="chart + metadata + 音声をまとめた .fnfc（公式の Chart Editor で開けます）">.fnfc 保存</button>
+            </div>
+            <label>開く（.fnfc / chart.json / metadata.json / 音声。複数可）
+              <input id="chtOpen" type="file" multiple />
+            </label>
+            <label>ファイルを追加（別フォルダのものを足す）
+              <input id="chtAdd" type="file" multiple />
+            </label>
+            <div class="row">
+              <label class="chtFileBtn">Inst を選ぶ<input id="chtInst" type="file" hidden /></label>
+              <label class="chtFileBtn">Voices を追加<input id="chtVoices" type="file" multiple hidden /></label>
+            </div>
+            <h3>個別に保存（いまのバリエーション）</h3>
+            <div class="row">
+              <button id="chtSaveChart" type="button">chart.json</button>
+              <button id="chtSaveMeta" type="button">metadata.json</button>
+              <button id="chtSaveAllJson" type="button" title="全バリエーションの JSON を .zip に（音声なし）">全JSON zip</button>
+            </div>
+            <div class="row"><label><input id="chtCompact" type="checkbox" /> 1行の軽量JSONで保存</label></div>
+            <label>songId（ファイル名に使う）<input id="chtSongId" type="text" placeholder="例: bopeebo" /></label>
+            <div id="chtStatus" class="tiny"></div>
+          </aside>
+
+          <aside class="hudPanel" data-hud-panel="song">
+            <h2>曲情報（metadata）</h2>
+            <p class="tiny">編集中のバリエーションの metadata です。</p>
+            <label>songName<input id="chtSongName" type="text" /></label>
+            <div class="row">
+              <label>artist<input id="chtArtist" type="text" /></label>
+              <label>charter<input id="chtCharter" type="text" /></label>
+            </div>
+            <div class="row">
+              <label>stage<input id="chtStage" type="text" /></label>
+              <label>noteStyle<input id="chtNoteStyle" type="text" /></label>
+            </div>
+            <h3>キャラクター</h3>
+            <div class="row">
+              <label>player<input id="chtCharPlayer" type="text" /></label>
+              <label>girlfriend<input id="chtCharGf" type="text" /></label>
+              <label>opponent<input id="chtCharOpp" type="text" /></label>
+            </div>
+            <label>instrumental（空=既定の Inst）<input id="chtCharInst" type="text" /></label>
+            <label>altInstrumentals（カンマ区切り）<input id="chtCharAltInst" type="text" /></label>
+            <label>playerVocals（カンマ区切り・空=player）<input id="chtCharPVoc" type="text" /></label>
+            <label>opponentVocals（カンマ区切り・空=opponent）<input id="chtCharOVoc" type="text" /></label>
+            <h3>その他</h3>
+            <div class="row">
+              <label>album<input id="chtAlbum" type="text" /></label>
+              <label>stickerPack<input id="chtSticker" type="text" /></label>
+            </div>
+            <div class="row">
+              <label>previewStart (ms)<input id="chtPrevStart" type="number" step="100" /></label>
+              <label>previewEnd (ms)<input id="chtPrevEnd" type="number" step="100" /></label>
+            </div>
+            <div class="row">
+              <button id="chtPrevFromHead" type="button" title="再生位置をプレビュー開始にする">▶ここを開始</button>
+              <button id="chtPrevToHead" type="button">■ここを終了</button>
+            </div>
+            <label>discordRPCImage<input id="chtDiscord" type="text" /></label>
+            <div class="row">
+              <label><input id="chtLooped" type="checkbox" /> looped</label>
+              <label>divisions<input id="chtDivisions" type="number" step="1" /></label>
+            </div>
+            <h3>音声オフセット (ms)</h3>
+            <div class="row">
+              <label>instrumental<input id="chtOffInst" type="number" step="1" /></label>
+              <label>vocals（全体）<input id="chtOffVoc" type="number" step="1" /></label>
+            </div>
+            <p class="tiny">vocals のキャラ別のオフセットは、保存時にそのまま残ります。ここでは全キャラ共通の値を一括で設定します。</p>
+          </aside>
+
+          <aside class="hudPanel" data-hud-panel="diff">
+            <h2>バリエーション・難易度</h2>
+            <p class="tiny">切り替えは下の再生バーのメニューから。</p>
+            <div class="row">
+              <button id="chtAddVar" type="button" title="新しいバリエーションを追加">＋</button>
+              <button id="chtDelVar" type="button" title="このバリエーションを削除">🗑</button>
+            </div>
+            <div class="row">
+              <button id="chtAddDiff" type="button">＋ 空の難易度</button>
+              <button id="chtDupDiff" type="button" title="いまの難易度のノーツをコピーして追加">⧉ 複製して追加</button>
+              <button id="chtDelDiff" type="button">🗑 削除</button>
+            </div>
+            <div id="chtDiffTable" class="chtTable"></div>
+            <p class="tiny">scrollSpeed と ratings は難易度ごとです。events（カメラなど）は同じバリエーションの全難易度で共通です。</p>
+          </aside>
+
+          <aside class="hudPanel" data-hud-panel="timing">
+            <h2>BPM・拍子（timeChanges）</h2>
+            <div id="chtTimeList" class="chtTable"></div>
+            <div class="row">
+              <button id="chtAddTime" type="button" title="再生位置の小節の頭に変更点を追加">＋ ここに追加</button>
+            </div>
+            <div class="row"><label><input id="chtKeepSteps" type="checkbox" /> BPM を変えたら、ノーツ・イベントの時間を再計算（step 位置を保つ）</label></div>
+            <p class="tiny">オフのときは公式と同じで、ノーツの時間(ms)はそのまま、グリッド上の位置だけが変わります。</p>
+          </aside>
+        </div>
+
+        <div class="hudDock hudDockRight">
+          <aside class="hudPanel" data-hud-panel="edit">
+            <h2>編集</h2>
+            <div class="row">
+              <button id="chtDel" type="button" title="削除 (Delete)">削除</button>
+              <button id="chtCopy" type="button" title="Ctrl+C">コピー</button>
+              <button id="chtCut" type="button" title="Ctrl+X">切り取り</button>
+              <button id="chtPaste" type="button" title="再生位置に貼り付け (Ctrl+V)">貼り付け</button>
+            </div>
+            <div class="row">
+              <button id="chtSelAll" type="button" title="Ctrl+A">全選択</button>
+              <button id="chtMirror" type="button" title="左右を入れ替える (M)">↔ ミラー</button>
+              <button id="chtFlip" type="button" title="プレイヤー↔相手 (Shift+M)">⇄ 反転</button>
+              <button id="chtUnstack" type="button" title="同じ位置に重なったノーツを1つにする">重なり除去</button>
+            </div>
+            <h3>新しく置くノーツ</h3>
+            <div class="row">
+              <label>kind（空=通常）<input id="chtPlaceKind" type="text" list="chtKinds" /></label>
+            </div>
+            <datalist id="chtKinds"></datalist>
+            <h3 id="chtSelTitle">選択中</h3>
+            <p id="chtNoSel" class="tiny">グリッドでノーツ・イベントをクリックして選んでください。</p>
+            <div id="chtNoteFields" hidden>
+              <div class="row">
+                <label>長さ (ms)<input id="chtNLen" type="number" step="10" min="0" /></label>
+                <label>kind<input id="chtNKind" type="text" list="chtKinds" /></label>
+              </div>
+              <div class="row">
+                <label>時間 (ms)<input id="chtNTime" type="number" step="1" /></label>
+                <label>方向<select id="chtNDir"></select></label>
+              </div>
+              <div id="chtNParams"></div>
+              <button id="chtNAddParam" type="button">＋ param</button>
+            </div>
+            <div id="chtEventFields" hidden>
+              <div class="row">
+                <label>種類<select id="chtEKind"></select></label>
+                <label>時間 (ms)<input id="chtETime" type="number" step="1" /></label>
+              </div>
+              <div id="chtEForm"></div>
+            </div>
+            <h3>イベント（右端の列に置く）</h3>
+            <div class="row">
+              <label>置くイベント<select id="chtPalette"></select></label>
+            </div>
+            <div class="row" id="chtCustomRow" hidden>
+              <label>カスタム名（スクリプトのイベント）<input id="chtCustomKind" type="text" placeholder="MyEvent" /></label>
+            </div>
+            <div class="row"><button id="chtAddEventHead" type="button">＋ 再生位置にイベントを追加</button></div>
+          </aside>
+
+          <aside class="hudPanel" data-hud-panel="audio">
+            <h2>音声トラック</h2>
+            <p class="tiny">いまのバリエーションで使うトラックだけが鳴ります。波形はチェックしたトラックを重ねて表示します。</p>
+            <div id="chtTracks" class="chtTable"></div>
+            <div class="row">
+              <label>再生速度
+                <select id="chtRate"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option></select>
+              </label>
+              <label><input id="chtHitSound" type="checkbox" /> ヒット音</label>
+            </div>
+          </aside>
+        </div>
+
+        <div class="hudTransport" data-hud-panel="transport">
+          <div class="row">
+            <button id="chtPlay" class="primary" type="button" title="再生 / 一時停止 (Space)">▶</button>
+            <button id="chtStop" type="button" title="先頭へ (Home)">⏮</button>
+            <input id="chtSeek" type="range" min="0" max="1000" step="1" value="0" style="flex:1" title="位置" />
+            <span id="chtTime" class="hudReadout"></span>
+          </div>
+          <div class="row">
+            <label class="chtInline">バリエーション <select id="chtVariation"></select></label>
+            <label class="chtInline">難易度 <select id="chtDifficulty"></select></label>
+          </div>
+          <div id="chtHint" class="hudStatus tiny"></div>
+        </div>
+
+        <div id="chtToast" class="hudToast" hidden></div>
+      </div>
+    </section>
+`;
+
+return { template };
+})();
+
+/* ===== funkin-studio/js/states/chart/chartData.js ===== */
+const __m39 = (() => {
+/* ============================================================
+   chart/chartData.js — Chart Editor のデータ（metadata / chart）と時間計算
+   ------------------------------------------------------------
+   出典: V-Slice 0.8.x data/song/SongData.hx, SongRegistry.hx, Conductor.hx, play/event/*.hx
+   ・metadata.json : 曲の情報・キャラ・ステージ・難易度一覧・timeChanges（BPM）
+   ・chart.json    : scrollSpeed（難易度ごと）・events（全難易度で共通）・notes（難易度ごと）
+   ・時間はすべてミリ秒(ms)で持つ。グリッドの縦位置は「step（16分音符）」で数える。
+   ・ノーツ d: 0-3 = プレイヤー側, 4-7 = 相手側（getStrumlineIndex）。グリッド上は 相手=左 / プレイヤー=右 / イベント=最右。
+   ============================================================ */
+const { GENERATED_BY } = __m10;
+
+const METADATA_VERSION = "2.2.4";
+const CHART_VERSION = "2.0.0";
+const STRUMLINE_SIZE = 4;
+const STEPS_PER_BEAT = 4;
+const DEFAULT_VARIATION = "default";
+const SNAP_QUANTS = [4, 8, 12, 16, 20, 24, 32, 48, 64, 96, 192];
+const BASE_QUANT_INDEX = 3; // 16分
+const DIR_NAMES = ["Left", "Down", "Up", "Right"];
+
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const round3 = (n) => Math.round(n * 1000) / 1000;
+
+// ------------------------------------------------------------
+// 組み込みイベント（0.8.x の play/event/*.hx の getEventSchema）
+// type: float / int / string / bool / enum。frame の中身（advanced）は group で表す。
+// ------------------------------------------------------------
+const EASES = ["linear", "INSTANT", "CLASSIC", "sine", "quad", "cube", "quart", "quint", "expo", "smoothStep", "smootherStep", "elastic", "back", "bounce", "circ"];
+const EASE_DIRS = ["In", "Out", "InOut"];
+const easeField = (def, withClassic) => ({ name: "ease", title: "Easing", type: "enum", def, options: (withClassic ? EASES : EASES.filter((e) => e !== "CLASSIC")).map((v) => [v, v]) });
+const easeDirField = { name: "easeDir", title: "Easing Direction", type: "enum", def: "In", options: EASE_DIRS.map((v) => [v === "InOut" ? "In/Out" : v, v]) };
+
+const EVENT_SCHEMAS = {
+  FocusCamera: {
+    title: "Focus Camera",
+    fields: [
+      { name: "char", title: "Target", type: "enum", def: 0, options: [["Position", -1], ["Player", 0], ["Opponent", 1], ["Girlfriend", 2]] },
+      { name: "x", title: "X Position", type: "float", def: 0, step: 10, units: "px" },
+      { name: "y", title: "Y Position", type: "float", def: 0, step: 10, units: "px" },
+      { name: "duration", title: "Duration", type: "float", def: 4, min: 0, step: 0.5, units: "steps" },
+      easeField("CLASSIC", true),
+      easeDirField,
+    ],
+  },
+  ZoomCamera: {
+    title: "Zoom Camera",
+    fields: [
+      { name: "zoom", title: "Zoom", type: "float", def: 1, min: 0, step: 0.05, units: "x" },
+      { name: "duration", title: "Duration", type: "float", def: 4, min: 0, step: 0.5, units: "steps" },
+      easeField("linear", false),
+      easeDirField,
+      { name: "mode", title: "Mode", type: "enum", def: "direct", group: "advanced", options: [["Stage zoom", "stage"], ["Absolute zoom", "direct"]] },
+      { name: "widescreenScaleX", title: "Widescreen Scale X", type: "float", def: 0, min: 0, max: 1, step: 0.05, group: "advanced", units: "x" },
+      { name: "widescreenScaleY", title: "Widescreen Scale Y", type: "float", def: 0, min: 0, max: 1, step: 0.05, group: "advanced", units: "x" },
+    ],
+  },
+  ScrollSpeed: {
+    title: "Scroll Speed",
+    fields: [
+      { name: "scroll", title: "Scroll Speed", type: "float", def: 1, min: 0.1, step: 0.1, units: "x" },
+      { name: "duration", title: "Duration", type: "float", def: 4, min: 0, step: 0.5, units: "steps" },
+      easeField("linear", false),
+      easeDirField,
+      { name: "strumline", title: "Target Strumline", type: "enum", def: "both", group: "advanced", options: [["Both", "both"], ["Player", "player"], ["Opponent", "opponent"]] },
+      { name: "absolute", title: "Absolute", type: "bool", def: false, group: "advanced" },
+    ],
+  },
+  SetCameraBop: {
+    title: "Set Camera Bop",
+    fields: [
+      { name: "intensity", title: "Intensity", type: "float", def: 1.015, min: 0, step: 0.1, units: "x" },
+      { name: "offset", title: "Offset", type: "float", def: 0, step: 0.25, units: "beats" },
+      { name: "rate", title: "Rate", type: "float", def: 4, min: 0, step: 0.25, units: "beats/zoom" },
+    ],
+  },
+  SetHealthIcon: {
+    title: "Set Health Icon",
+    fields: [
+      { name: "char", title: "Target", type: "enum", def: 0, options: [["Player", 0], ["Opponent", 1]] },
+      { name: "id", title: "Icon ID", type: "string", def: "face" },
+      { name: "shouldBop", title: "Should Bop", type: "bool", def: true },
+      { name: "scale", title: "Scale", type: "float", def: 1, min: 0, step: 0.1 },
+      { name: "flipX", title: "Flip X", type: "bool", def: false },
+      { name: "isPixel", title: "Is Pixel", type: "bool", def: false, group: "advanced" },
+      { name: "offsetX", title: "Offset X", type: "float", def: 0, group: "advanced" },
+      { name: "offsetY", title: "Offset Y", type: "float", def: 0, group: "advanced" },
+    ],
+  },
+  PlayAnimation: {
+    title: "Play Animation",
+    fields: [
+      { name: "target", title: "Target", type: "string", def: "boyfriend" },
+      { name: "anim", title: "Animation", type: "string", def: "idle" },
+      { name: "force", title: "Force", type: "bool", def: false },
+    ],
+  },
+  SetTargetBopSpeed: {
+    title: "Set Bop Speed",
+    fields: [
+      { name: "target", title: "Target", type: "string", def: "boyfriend" },
+      { name: "rate", title: "Rate", type: "float", def: 1, min: 0, step: 0.25, units: "beats/dance" },
+    ],
+  },
+};
+const EVENT_KINDS = Object.keys(EVENT_SCHEMAS);
+
+function eventTitle(kind) {
+  return EVENT_SCHEMAS[kind]?.title ?? kind;
+}
+/** スキーマの既定値だけで作った value */
+function defaultEventValue(kind) {
+  const v = {};
+  for (const f of EVENT_SCHEMAS[kind]?.fields ?? []) v[f.name] = f.def;
+  return v;
+}
+
+// ------------------------------------------------------------
+// 既定データ
+// ------------------------------------------------------------
+function defaultMetadata(songName = "New Song") {
+  return {
+    version: METADATA_VERSION,
+    songName,
+    artist: "Unknown",
+    charter: "",
+    divisions: 96,
+    looped: false,
+    offsets: { instrumental: 0, altInstrumentals: {}, vocals: {}, altVocals: {} },
+    playData: {
+      songVariations: [],
+      difficulties: ["normal"],
+      characters: { player: "bf", girlfriend: "gf", opponent: "dad", instrumental: "" },
+      stage: "mainStage",
+      noteStyle: "funkin",
+      ratings: { normal: 1 },
+      album: "",
+      previewStart: 0,
+      previewEnd: 15000,
+    },
+    generatedBy: GENERATED_BY,
+    timeFormat: "ms",
+    timeChanges: [{ t: 0, bpm: 100, n: 4, d: 4 }],
+  };
+}
+function defaultChart() {
+  return { version: CHART_VERSION, scrollSpeed: { normal: 1 }, events: [], notes: { normal: [] }, generatedBy: GENERATED_BY };
+}
+
+/** 読み込んだ metadata を整える（足りない欄を補う。知らない欄はそのまま残す） */
+function normalizeMetadata(raw) {
+  const m = raw && typeof raw === "object" ? raw : {};
+  const d = defaultMetadata(m.songName ?? "New Song");
+  const out = { ...m };
+  out.songName = m.songName ?? d.songName;
+  out.artist = m.artist ?? d.artist;
+  out.offsets = { ...d.offsets, ...(m.offsets || {}) };
+  out.offsets.altInstrumentals ||= {};
+  out.offsets.vocals ||= {};
+  out.offsets.altVocals ||= {};
+  const p = (out.playData = { ...d.playData, ...(m.playData || {}) });
+  p.songVariations = Array.isArray(p.songVariations) ? p.songVariations : [];
+  p.difficulties = Array.isArray(p.difficulties) && p.difficulties.length ? p.difficulties : ["normal"];
+  p.characters = { ...d.playData.characters, ...(p.characters || {}) };
+  p.ratings = p.ratings && typeof p.ratings === "object" ? p.ratings : {};
+  out.timeFormat = m.timeFormat ?? "ms";
+  out.looped = !!m.looped;
+  out.divisions = m.divisions ?? 96;
+  out.timeChanges = (Array.isArray(m.timeChanges) && m.timeChanges.length ? m.timeChanges : d.timeChanges)
+    .map((tc) => ({ ...tc, t: Number(tc.t) || 0, bpm: Number(tc.bpm) || 100, n: Number(tc.n ?? 4) || 4, d: Number(tc.d ?? 4) || 4 }))
+    .sort((a, b) => a.t - b.t);
+  out.timeChanges[0].t = Math.min(0, out.timeChanges[0].t);
+  return out;
+}
+function normalizeChart(raw, difficulties = []) {
+  const c = raw && typeof raw === "object" ? raw : {};
+  const out = { ...c };
+  out.scrollSpeed = c.scrollSpeed && typeof c.scrollSpeed === "object" ? c.scrollSpeed : {};
+  out.events = (Array.isArray(c.events) ? c.events : []).map((e) => ({ t: Number(e.t) || 0, e: String(e.e ?? ""), v: e.v ?? {} })).sort((a, b) => a.t - b.t);
+  out.notes = {};
+  for (const [diff, list] of Object.entries(c.notes && typeof c.notes === "object" ? c.notes : {})) {
+    out.notes[diff] = (Array.isArray(list) ? list : []).map((n) => normNote(n)).sort((a, b) => a.t - b.t || a.d - b.d);
+  }
+  for (const df of difficulties) out.notes[df] ||= [];
+  return out;
+}
+function normNote(n) {
+  const o = { t: Number(n.t) || 0, d: Number(n.d) | 0 };
+  if (n.l) o.l = Number(n.l) || 0;
+  if (n.k) o.k = String(n.k);
+  if (Array.isArray(n.p) && n.p.length) o.p = n.p.map((x) => ({ n: String(x.n), v: x.v }));
+  return o;
+}
+
+// ------------------------------------------------------------
+// 書き出し（version と generatedBy は常に上書き）
+// ------------------------------------------------------------
+const stripNote = (n) => {
+  const o = { t: round3(n.t), d: n.d };
+  if (n.l > 0) o.l = round3(n.l);
+  if (n.k) o.k = n.k;
+  if (n.p?.length) o.p = n.p;
+  return o;
+};
+function serializeMetadata(meta, pretty = true) {
+  const out = clone(meta);
+  out.version = METADATA_VERSION;
+  out.generatedBy = GENERATED_BY;
+  out.timeFormat = "ms";
+  const timing = new Timing(out.timeChanges);
+  out.timeChanges = out.timeChanges.map((tc, i) => {
+    const o = { t: round3(tc.t), bpm: tc.bpm, n: tc.n, d: tc.d };
+    if (tc.b !== undefined || i === 0) o.b = round3(timing.beatAtIndex(i));
+    if (tc.bt) o.bt = tc.bt;
+    return o;
+  });
+  for (const k of ["charter", "album", "stickerPack", "discordRPCImage"]) {
+    if (out[k] === "") delete out[k];
+    if (out.playData[k] === "") delete out.playData[k];
+  }
+  if (!out.charter) delete out.charter;
+  return JSON.stringify(out, null, pretty ? 2 : undefined);
+}
+function serializeChart(chart, pretty = true) {
+  const out = { ...chart };
+  out.version = CHART_VERSION;
+  out.generatedBy = GENERATED_BY;
+  out.events = chart.events.map((e) => ({ t: round3(e.t), e: e.e, v: e.v }));
+  out.notes = {};
+  for (const [diff, list] of Object.entries(chart.notes)) out.notes[diff] = list.map(stripNote);
+  return JSON.stringify(out, null, pretty ? 2 : undefined);
+}
+
+// ------------------------------------------------------------
+// 時間 ↔ step（Conductor.hx と同じ式）
+//   beatLengthMs = 60000 / bpm × (4 / 分母)   stepLengthMs = beatLengthMs / 4   measure = beat × 分子
+// ------------------------------------------------------------
+class Timing {
+  constructor(timeChanges) {
+    this.tc = timeChanges;
+    this.beats = []; // 各 timeChange の開始 beat
+    let beat = 0;
+    for (let i = 0; i < timeChanges.length; i++) {
+      if (i > 0) beat += (timeChanges[i].t - timeChanges[i - 1].t) / this.beatLen(i - 1);
+      this.beats.push(beat);
+    }
+  }
+  beatLen(i) {
+    const c = this.tc[i];
+    return (60000 / c.bpm) * (4 / c.d);
+  }
+  beatAtIndex(i) {
+    return this.beats[i];
+  }
+  indexAtMs(ms) {
+    let i = 0;
+    for (let k = 1; k < this.tc.length; k++) if (ms >= this.tc[k].t) i = k;
+    return i;
+  }
+  indexAtStep(step) {
+    let i = 0;
+    for (let k = 1; k < this.tc.length; k++) if (step >= this.beats[k] * STEPS_PER_BEAT - 1e-6) i = k;
+    return i;
+  }
+  msToStep(ms) {
+    const i = this.indexAtMs(ms);
+    return this.beats[i] * STEPS_PER_BEAT + (ms - this.tc[i].t) / (this.beatLen(i) / STEPS_PER_BEAT);
+  }
+  stepToMs(step) {
+    const i = this.indexAtStep(step);
+    return this.tc[i].t + (step - this.beats[i] * STEPS_PER_BEAT) * (this.beatLen(i) / STEPS_PER_BEAT);
+  }
+  bpmAt(ms) {
+    return this.tc[this.indexAtMs(ms)].bpm;
+  }
+  /** この step がある小節の開始 step と、小節の step 数 */
+  measureAtStep(step) {
+    const i = this.indexAtStep(step);
+    const c = this.tc[i];
+    const stepsPerMeasure = c.n * STEPS_PER_BEAT * (4 / c.d) * (c.d / 4); // 分子拍 × 4 step（分母に関わらず 1拍=4step）
+    const start0 = this.beats[i] * STEPS_PER_BEAT;
+    const k = Math.floor((step - start0 + 1e-6) / stepsPerMeasure);
+    return { start: start0 + k * stepsPerMeasure, len: stepsPerMeasure, index: i, number: k };
+  }
+}
+
+return { METADATA_VERSION, CHART_VERSION, STRUMLINE_SIZE, STEPS_PER_BEAT, DEFAULT_VARIATION, SNAP_QUANTS, BASE_QUANT_INDEX, DIR_NAMES, clone, round3, EVENT_SCHEMAS, EVENT_KINDS, eventTitle, defaultEventValue, defaultMetadata, defaultChart, normalizeMetadata, normalizeChart, serializeMetadata, serializeChart, Timing };
+})();
+
+/* ===== funkin-studio/js/states/chart/audio.js ===== */
+const __m40 = (() => {
+/* ============================================================
+   chart/audio.js — Chart Editor の音声（Inst / Voices の複数トラック）
+   ------------------------------------------------------------
+   Web Audio API。トラックごとに AudioBuffer・音量・ミュート・波形ピーク（10ms ごとの最大振幅）を持つ。
+   再生中の位置は AudioContext の時計から求める（setInterval 等のズレが出ない）。
+   曲の位置 posMs に対して、音声側の位置は (posMs − offset)。offset > 0 なら音声が遅れて始まる。
+   ============================================================ */
+const PEAK_MS = 10;
+
+class AudioEngine {
+  constructor() {
+    this.ctx = null;
+    this.tracks = []; // { id, kind: "inst"|"vocal", name, bytes(Uint8Array), buffer, peaks, gain, volume, muted, wave, offset }
+    this.playing = false;
+    this.rate = 1;
+    this._startCtx = 0;
+    this._startPos = 0;
+    this._sources = [];
+  }
+  _ensure() {
+    if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (this.ctx.state === "suspended") this.ctx.resume?.();
+    return this.ctx;
+  }
+  /** バイト列から読み込む。同じ id があれば置き換える */
+  async load(id, kind, name, bytes) {
+    const ctx = this._ensure();
+    const buffer = await ctx.decodeAudioData(bytes.slice().buffer);
+    const old = this.tracks.findIndex((t) => t.id === id);
+    const gain = ctx.createGain();
+    gain.connect(ctx.destination);
+    const tr = { id, kind, name, bytes, buffer, peaks: computePeaks(buffer), gain, volume: 1, muted: false, wave: kind === "inst", offset: 0, active: true };
+    if (old >= 0) {
+      const prev = this.tracks[old];
+      tr.volume = prev.volume;
+      tr.muted = prev.muted;
+      tr.wave = prev.wave;
+      tr.offset = prev.offset;
+      this.tracks[old] = tr;
+    } else this.tracks.push(tr);
+    this._applyGain(tr);
+    if (this.playing) this.pause();
+    return tr;
+  }
+  remove(id) {
+    this.pause();
+    this.tracks = this.tracks.filter((t) => t.id !== id);
+  }
+  clear() {
+    this.pause();
+    this.tracks = [];
+  }
+  _applyGain(t) {
+    t.gain.gain.value = t.muted ? 0 : t.volume;
+  }
+  setVolume(id, v) {
+    const t = this.tracks.find((x) => x.id === id);
+    if (t) ((t.volume = v), this._applyGain(t));
+  }
+  setMuted(id, m) {
+    const t = this.tracks.find((x) => x.id === id);
+    if (t) ((t.muted = m), this._applyGain(t));
+  }
+  get durationMs() {
+    return this.tracks.reduce((m, t) => (t.active === false ? m : Math.max(m, t.buffer.duration * 1000 + t.offset)), 0);
+  }
+  /** 再生中なら現在位置、停止中なら止めた位置 */
+  position() {
+    if (!this.playing) return this._startPos;
+    return this._startPos + (this.ctx.currentTime - this._startCtx) * 1000 * this.rate;
+  }
+  seek(ms) {
+    const was = this.playing;
+    if (was) this.pause();
+    this._startPos = ms;
+    if (was) this.play();
+  }
+  play() {
+    if (this.playing) return;
+    const ctx = this._ensure();
+    this._startCtx = ctx.currentTime + 0.03;
+    this._sources = [];
+    for (const t of this.tracks) {
+      if (t.active === false) continue;
+      const startAt = (this._startPos - t.offset) / 1000; // 音声ファイル内の開始位置（秒）
+      const src = ctx.createBufferSource();
+      src.buffer = t.buffer;
+      src.playbackRate.value = this.rate;
+      src.connect(t.gain);
+      if (startAt >= 0) {
+        if (startAt < t.buffer.duration) src.start(this._startCtx, startAt);
+      } else src.start(this._startCtx + -startAt / this.rate, 0);
+      this._sources.push(src);
+    }
+    this.playing = true;
+  }
+  pause() {
+    if (!this.playing) return;
+    this._startPos = this.position();
+    for (const s of this._sources) {
+      try {
+        s.stop();
+      } catch {}
+    }
+    this._sources = [];
+    this.playing = false;
+  }
+  setRate(r) {
+    const was = this.playing;
+    if (was) this.pause();
+    this.rate = r;
+    if (was) this.play();
+  }
+  /** ヒット音（短いクリック） */
+  tick(high = false) {
+    const ctx = this._ensure();
+    const o = ctx.createOscillator(),
+      g = ctx.createGain();
+    o.frequency.value = high ? 1500 : 1000;
+    g.gain.setValueAtTime(0.18, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.05);
+    o.connect(g).connect(ctx.destination);
+    o.start();
+    o.stop(ctx.currentTime + 0.06);
+  }
+}
+
+/** 10ms ごとの最大振幅（0〜1）。全チャンネルの最大 */
+function computePeaks(buffer) {
+  const per = Math.max(1, Math.round(buffer.sampleRate * (PEAK_MS / 1000)));
+  const n = Math.ceil(buffer.length / per);
+  const peaks = new Float32Array(n);
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const d = buffer.getChannelData(c);
+    for (let i = 0; i < n; i++) {
+      let m = peaks[i];
+      const end = Math.min(d.length, (i + 1) * per);
+      for (let j = i * per; j < end; j += 2) {
+        const a = d[j] < 0 ? -d[j] : d[j];
+        if (a > m) m = a;
+      }
+      peaks[i] = m;
+    }
+  }
+  return peaks;
+}
+
+return { PEAK_MS, AudioEngine };
+})();
+
+/* ===== funkin-studio/js/states/chart/zip.js ===== */
+const __m41 = (() => {
+/* ============================================================
+   chart/zip.js — .fnfc（= ZIP）の読み書き（外部ライブラリなし）
+   ------------------------------------------------------------
+   読み: 中央ディレクトリを読み、deflate は DecompressionStream("deflate-raw")、無圧縮はそのまま。
+   書き: 無圧縮（store）で作る。音声（ogg/mp3）は元々圧縮済みなので、サイズはほぼ変わらない。
+   ============================================================ */
+let crcTable = null;
+function crc32(bytes) {
+  if (!crcTable) {
+    crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      crcTable[n] = c >>> 0;
+    }
+  }
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 255] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+async function inflateRaw(data) {
+  const ds = new DecompressionStream("deflate-raw");
+  const stream = new Blob([data]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** @returns Map<名前, Uint8Array> */
+async function readZip(buffer) {
+  const u8 = new Uint8Array(buffer),
+    dv = new DataView(buffer);
+  let eocd = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("ZIP として読めません（終端が見つかりません）");
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const dec = new TextDecoder();
+  const out = new Map();
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true),
+      csize = dv.getUint32(p + 20, true),
+      nlen = dv.getUint16(p + 28, true),
+      xlen = dv.getUint16(p + 30, true),
+      clen = dv.getUint16(p + 32, true),
+      lho = dv.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nlen));
+    p += 46 + nlen + xlen + clen;
+    if (name.endsWith("/")) continue;
+    const lnlen = dv.getUint16(lho + 26, true),
+      lxlen = dv.getUint16(lho + 28, true);
+    const start = lho + 30 + lnlen + lxlen;
+    const raw = u8.subarray(start, start + csize);
+    if (method === 0) out.set(name, raw.slice());
+    else if (method === 8) out.set(name, await inflateRaw(raw));
+    else throw new Error(`未対応の圧縮方式です (${name}: method ${method})`);
+  }
+  return out;
+}
+
+/** @param entries [{ name, data: Uint8Array }] @returns Blob */
+function writeZip(entries) {
+  const enc = new TextEncoder();
+  const parts = [],
+    central = [];
+  let offset = 0;
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  for (const { name, data } of entries) {
+    const nameBytes = enc.encode(name),
+      crc = crc32(data);
+    const head = new DataView(new ArrayBuffer(30));
+    head.setUint32(0, 0x04034b50, true);
+    head.setUint16(4, 20, true);
+    head.setUint16(6, 0x0800, true); // UTF-8 名
+    head.setUint16(10, dosTime, true);
+    head.setUint16(12, dosDate, true);
+    head.setUint32(14, crc, true);
+    head.setUint32(18, data.length, true);
+    head.setUint32(22, data.length, true);
+    head.setUint16(26, nameBytes.length, true);
+    parts.push(head, nameBytes, data);
+    const c = new DataView(new ArrayBuffer(46));
+    c.setUint32(0, 0x02014b50, true);
+    c.setUint16(4, 20, true);
+    c.setUint16(6, 20, true);
+    c.setUint16(8, 0x0800, true);
+    c.setUint16(12, dosTime, true);
+    c.setUint16(14, dosDate, true);
+    c.setUint32(16, crc, true);
+    c.setUint32(20, data.length, true);
+    c.setUint32(24, data.length, true);
+    c.setUint16(28, nameBytes.length, true);
+    c.setUint32(42, offset, true);
+    central.push(c, nameBytes);
+    offset += 30 + nameBytes.length + data.length;
+  }
+  const cdSize = central.reduce((s, x) => s + (x.byteLength ?? x.length), 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, entries.length, true);
+  end.setUint16(10, entries.length, true);
+  end.setUint32(12, cdSize, true);
+  end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end], { type: "application/zip" });
+}
+
+return { readZip, writeZip };
+})();
+
+/* ===== funkin-studio/js/states/chart/editor.js ===== */
+const __m42 = (() => {
+/* ============================================================
+   chart/editor.js — Chart Editor（V-Slice の chart.json / metadata.json 編集）のロジック
+   ------------------------------------------------------------
+   できること:
+     ・chart.json / metadata.json / .fnfc（zip）/ 音声の読み込み（複数選択・あとから追加も可）と書き出し
+     ・Inst / Voices（複数）の再生・波形表示・音量/ミュート・再生速度・ヒット音
+     ・ノーツの配置・削除・移動・ホールド長・種類(kind)/params、範囲選択、コピー/切り取り/貼り付け、ミラー/反転、重なり除去
+     ・イベント（組み込み7種 + カスタム名）の配置・編集（スキーマからフォームを自動生成）
+     ・BPM・拍子の変更（timeChanges）、バリエーション・難易度の追加/複製/削除、scrollSpeed・ratings
+     ・metadata の全項目（キャラ・ステージ・noteStyle・オフセット・プレビュー区間など）
+     ・Undo / Redo（JSON のスナップショット）
+   座標: 縦=時間（下へ進む）。列は左から 相手(4) / プレイヤー(4) / イベント(1)。1マス = 1 step（16分）。
+
+   目次: 1.状態 2.データ参照 3.履歴 4.音声と読み込み 5.描画 6.操作(ポインタ) 7.パネル 8.保存 9.再生・キーボード
+   ============================================================ */
+const { isTextEntry } = __m27;
+const { HudPanels } = __m28;
+const { DEFAULT_VARIATION, SNAP_QUANTS, BASE_QUANT_INDEX, STRUMLINE_SIZE, STEPS_PER_BEAT, DIR_NAMES, EVENT_SCHEMAS, EVENT_KINDS, eventTitle, defaultEventValue, defaultMetadata, defaultChart, normalizeMetadata, normalizeChart, serializeMetadata, serializeChart, Timing, clone, round3 } = __m39;
+const { AudioEngine, PEAK_MS } = __m40;
+const { readZip, writeZip } = __m41;
+
+const GRID = 40; // 1マスの基準ピクセル（V-Slice の GRID_SIZE）
+const COLS = STRUMLINE_SIZE * 2 + 1; // 相手4 + プレイヤー4 + イベント1
+const EVENT_COL = COLS - 1;
+const NOTE_COLORS = ["#c24b99", "#00ffff", "#12fa05", "#f9393f"]; // Left / Down / Up / Right
+const SEL_COLOR = "#ffb020";
+const AUDIO_RE = /\.(ogg|mp3|wav|flac|m4a|aac)$/i;
+
+/** d（0-3 プレイヤー / 4-7 相手）⇄ 列（0-3 相手 / 4-7 プレイヤー）。V-Slice の noteDataToGridColumn と同じ */
+const dataToCol = (d) => (d >= STRUMLINE_SIZE ? d - STRUMLINE_SIZE : d + STRUMLINE_SIZE);
+const colToData = dataToCol; // 対称
+const isEvent = (o) => o && typeof o.e === "string";
+
+function mountChartEditor(state) {
+  // ============================================================
+  // 1. 状態
+  // ============================================================
+  const $ = (id) => document.getElementById(id),
+    canvas = $("chtCanvas"),
+    ctx = canvas.getContext("2d");
+  const panels = new HudPanels(state.root, {
+    storageKey: "chart",
+    defaults: ["files", "edit", "transport"],
+    narrowDefaults: ["transport"],
+    narrowExclusive: ["files", "song", "diff", "timing", "edit", "audio"],
+  });
+
+  let songId = "";
+  let variations = { [DEFAULT_VARIATION]: { meta: defaultMetadata(), chart: defaultChart() } };
+  let curVar = DEFAULT_VARIATION,
+    curDiff = "normal";
+  let timing = new Timing(variations[DEFAULT_VARIATION].meta.timeChanges);
+
+  const audio = new AudioEngine();
+  let sel = new Set(); // 選択中のノーツ / イベント（オブジェクトそのもの）
+  let clipboard = null;
+  let tool = "place"; // place / select / pan
+  let snapIdx = BASE_QUANT_INDEX;
+  let zoom = 1; // 1 = 40px/マス
+  let posMs = 0;
+  let dirty = true;
+  let hover = null; // { col, step }
+  let drag = null;
+  let hitSound = false;
+
+  let toastTimer = null;
+  const say = (s) => {
+    $("chtStatus").textContent = s;
+    const t = $("chtToast");
+    t.textContent = s;
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (t.hidden = true), 4500);
+  };
+  state.addDisposer(() => clearTimeout(toastTimer));
+  const markDirty = () => state.app.unsaved?.mark();
+  const redraw = () => (dirty = true);
+
+  // ============================================================
+  // 2. データ参照
+  // ============================================================
+  const curData = () => variations[curVar] ?? variations[DEFAULT_VARIATION];
+  const meta = () => curData().meta;
+  const chart = () => curData().chart;
+  const notes = () => (chart().notes[curDiff] ??= []);
+  const events = () => chart().events;
+  const snapQuant = () => SNAP_QUANTS[snapIdx];
+  const snapSteps = () => 16 / snapQuant() / (16 / 16) * (STEPS_PER_BEAT / 4) ; // 16分=1step。quant 4 = 4step、32 = 0.5step
+  const cell = () => GRID * zoom;
+  const difficulties = () => meta().playData.difficulties;
+  const songLengthMs = () => {
+    let end = audio.durationMs;
+    for (const n of notes()) end = Math.max(end, n.t + (n.l || 0) + 2000);
+    for (const e of events()) end = Math.max(end, e.t + 2000);
+    return Math.max(end, 10000);
+  };
+  const retiming = () => {
+    timing = new Timing(meta().timeChanges);
+    redraw();
+  };
+  const sortNotes = () => notes().sort((a, b) => a.t - b.t || a.d - b.d);
+  const sortEvents = () => events().sort((a, b) => a.t - b.t);
+  const stepOf = (ms) => timing.msToStep(ms);
+  const msOf = (step) => round3(timing.stepToMs(step));
+
+  // ============================================================
+  // 3. 履歴（Undo / Redo）
+  // ============================================================
+  let history = [],
+    hi = -1;
+  const snapshot = () => JSON.stringify({ variations, curVar, curDiff, songId });
+  function resetHistory() {
+    history = [snapshot()];
+    hi = 0;
+    syncHud();
+  }
+  function commit() {
+    const s = snapshot();
+    if (s === history[hi]) return;
+    history.length = hi + 1;
+    history.push(s);
+    hi++;
+    if (history.length > 60) (history.shift(), hi--);
+    markDirty();
+    syncHud();
+  }
+  function restoreAt(i) {
+    blurFocus();
+    hi = i;
+    const d = JSON.parse(history[hi]);
+    variations = d.variations;
+    songId = d.songId;
+    curVar = variations[d.curVar] ? d.curVar : DEFAULT_VARIATION;
+    curDiff = difficulties().includes(d.curDiff) ? d.curDiff : difficulties()[0];
+    sel.clear();
+    retiming();
+    refreshAll();
+    updateActiveTracks();
+    markDirty();
+    syncHud();
+  }
+  const undo = () => hi > 0 && restoreAt(hi - 1);
+  const redo = () => hi < history.length - 1 && restoreAt(hi + 1);
+  function syncHud() {
+    if (state.active) state.app.hud.setHistory(hi > 0, hi < history.length - 1);
+  }
+  function blurFocus() {
+    const a = document.activeElement;
+    if (a && a !== document.body && state.root.contains(a)) a.blur();
+  }
+
+  // ============================================================
+  // 4. 音声と読み込み
+  // ============================================================
+  const baseName = (n) => n.replace(/^.*[\\/]/, "").replace(/\.[^.]+$/, "");
+  const lc = (s) => String(s ?? "").toLowerCase();
+
+  /** いまのバリエーションで鳴らすトラックを決める（Inst-<id> / Voices-<char>[-<variation>] の名前の約束） */
+  function updateActiveTracks() {
+    const instId = meta().playData.characters.instrumental || "";
+    const expect = lc("inst" + (instId ? "-" + instId : ""));
+    const insts = audio.tracks.filter((t) => t.kind === "inst");
+    const hasExpected = insts.some((t) => lc(t.id) === expect);
+    const others = Object.keys(variations).filter((v) => v !== DEFAULT_VARIATION);
+    for (const t of audio.tracks) {
+      const id = lc(t.id);
+      if (t.kind === "inst") t.active = hasExpected ? id === expect : insts.length === 1 || id === "inst";
+      else if (id.startsWith("voices-")) {
+        const rest = id.slice(7);
+        if (curVar !== DEFAULT_VARIATION) t.active = rest.endsWith("-" + lc(curVar));
+        else t.active = !others.some((v) => rest.endsWith("-" + lc(v)));
+      } else t.active = true;
+    }
+    renderTracks();
+    redraw();
+  }
+  async function loadAudioBytes(name, bytes) {
+    const id = baseName(name);
+    const kind = /^inst/i.test(id) ? "inst" : "vocal";
+    try {
+      const tr = await audio.load(id, kind, name, bytes);
+      tr.ext = (name.match(/\.[^.]+$/) || [".ogg"])[0].toLowerCase();
+      return true;
+    } catch (e) {
+      say(`音声「${name}」を読み込めませんでした: ${e.message || e}`);
+      return false;
+    }
+  }
+
+  /** ファイル（chart / metadata / .fnfc / 音声）を種類ごとに仕分けして取り込む */
+  async function ingest(files, { merge }) {
+    const got = { metas: new Map(), charts: new Map(), audios: [], songId: "", warn: [] };
+    const sortJson = (name, text) => {
+      let j;
+      try {
+        j = JSON.parse(text.replace(/^﻿/, ""));
+      } catch {
+        got.warn.push(`${name}: JSON として読めません`);
+        return;
+      }
+      if (/(^|[\\/])manifest\.json$/i.test(name)) {
+        if (j.songId) got.songId = j.songId;
+        return;
+      }
+      const m = name.replace(/^.*[\\/]/, "").match(/^(.*?)-(metadata|chart)(?:-(.+?))?\.json$/i);
+      const v = m?.[3] || DEFAULT_VARIATION;
+      if (m && !got.songId) got.songId = m[1];
+      if (j.playData || (m && /metadata/i.test(m[2]))) got.metas.set(v, j);
+      else if (j.notes || j.scrollSpeed || (m && /chart/i.test(m[2]))) got.charts.set(v, j);
+      else if (j.songId && !got.songId) got.songId = j.songId; // manifest.json
+      else got.warn.push(`${name}: chart でも metadata でもないので無視しました`);
+    };
+    for (const f of files) {
+      const n = f.name;
+      if (/\.(fnfc|zip)$/i.test(n)) {
+        try {
+          const entries = await readZip(await f.arrayBuffer());
+          for (const [en, data] of entries) {
+            if (/\.json$/i.test(en)) sortJson(en, new TextDecoder().decode(data));
+            else if (AUDIO_RE.test(en)) got.audios.push({ name: en, bytes: data });
+          }
+        } catch (e) {
+          got.warn.push(`${n}: ${e.message}`);
+        }
+      } else if (/\.json$/i.test(n)) sortJson(n, await f.text());
+      else if (AUDIO_RE.test(n)) got.audios.push({ name: n, bytes: new Uint8Array(await f.arrayBuffer()) });
+      else got.warn.push(`${n}: 対応していない種類のファイルです`);
+    }
+    if (!got.metas.size && !got.charts.size && !got.audios.length) {
+      say(got.warn.join("\n") || "読み込めるファイルがありませんでした。");
+      return;
+    }
+    if (!merge && (got.metas.size || got.charts.size)) {
+      if (!state.app.unsaved.confirmReplace()) return;
+      audio.clear();
+      variations = {};
+    }
+    if (got.metas.size || got.charts.size) {
+      const names = new Set([...got.metas.keys(), ...got.charts.keys()]);
+      if (!names.has(DEFAULT_VARIATION) && !variations[DEFAULT_VARIATION]) names.add(DEFAULT_VARIATION);
+      for (const v of names) {
+        const m = got.metas.has(v) ? normalizeMetadata(got.metas.get(v)) : variations[v]?.meta ?? defaultMetadata(got.songId || "New Song");
+        const c = normalizeChart(got.charts.get(v) ?? variations[v]?.chart ?? defaultChart(), m.playData.difficulties);
+        // chart にしか無い難易度も一覧に入れる
+        for (const df of Object.keys(c.notes)) if (!m.playData.difficulties.includes(df)) m.playData.difficulties.push(df);
+        variations[v] = { meta: m, chart: c };
+      }
+      if (!merge) {
+        const first = variations[DEFAULT_VARIATION] ?? Object.values(variations)[0];
+        if (!variations[DEFAULT_VARIATION]) variations[DEFAULT_VARIATION] = first;
+        songId = got.songId || songId || slug(first.meta.songName);
+        curVar = DEFAULT_VARIATION;
+        curDiff = difficulties().includes("normal") ? "normal" : difficulties()[0];
+        posMs = 0;
+        sel.clear();
+      } else if (got.songId && !songId) songId = got.songId;
+      // デフォルトの songVariations に、読み込んだバリエーションを反映
+      const dv = variations[DEFAULT_VARIATION].meta.playData;
+      for (const v of Object.keys(variations)) if (v !== DEFAULT_VARIATION && !dv.songVariations.includes(v)) dv.songVariations.push(v);
+      retiming();
+    }
+    let loadedAudio = 0;
+    for (const a of got.audios) if (await loadAudioBytes(a.name, a.bytes)) loadedAudio++;
+    updateActiveTracks();
+    resetHistory();
+    refreshAll();
+    if (!merge) state.app.unsaved?.clean();
+    const parts = [];
+    if (got.metas.size || got.charts.size) parts.push(`metadata ${got.metas.size} / chart ${got.charts.size}`);
+    if (loadedAudio) parts.push(`音声 ${loadedAudio} 本`);
+    const missing = [];
+    for (const v of Object.keys(variations)) {
+      if (!got.metas.has(v) && !merge && Object.keys(variations).length) missing.push(`${v}: metadata`);
+      if (!got.charts.has(v) && !merge) missing.push(`${v}: chart`);
+    }
+    say(`読み込みました（${parts.join("・")}）。${missing.length ? "\n見つからなかったので既定で補いました: " + missing.join(", ") : ""}${got.warn.length ? "\n" + got.warn.join("\n") : ""}`);
+  }
+  const slug = (s) => String(s || "song").trim().toLowerCase().replace(/[^\w\-]+/g, "-").replace(/^-+|-+$/g, "") || "song";
+
+  // ============================================================
+  // 5. 描画
+  // ============================================================
+  function resize() {
+    const dpr = window.devicePixelRatio || 1,
+      w = canvas.clientWidth,
+      h = canvas.clientHeight;
+    canvas.width = Math.max(1, Math.round(w * dpr));
+    canvas.height = Math.max(1, Math.round(h * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    redraw();
+  }
+  const resizeObserver = new ResizeObserver(() => resize());
+  resizeObserver.observe(canvas);
+  state.addDisposer(() => resizeObserver.disconnect());
+
+  const layout = () => {
+    const ch = cell(),
+      W = canvas.clientWidth,
+      H = canvas.clientHeight;
+    return { ch, W, H, left: Math.round((W - COLS * ch) / 2), playY: Math.round(H * 0.38) };
+  };
+  const stepToY = (step, L, curStep) => L.playY + (step - curStep) * L.ch;
+
+  function draw() {
+    const L = layout(),
+      { ch, W, H, left, playY } = L;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = getComputedStyle(canvas).backgroundColor || "#1d222a";
+    ctx.fillRect(0, 0, W, H);
+    const curStep = stepOf(posMs);
+    const s0 = Math.floor(curStep - playY / ch) - 1,
+      s1 = Math.ceil(curStep + (H - playY) / ch) + 1;
+    const gw = COLS * ch;
+
+    // 列の背景（市松模様）
+    for (let s = s0; s <= s1; s++) {
+      if (s < 0) continue;
+      const y = stepToY(s, L, curStep);
+      for (let c = 0; c < COLS; c++) {
+        const even = (s + c) % 2 === 0;
+        ctx.fillStyle = c === EVENT_COL ? (even ? "#3a3326" : "#342e22") : c < STRUMLINE_SIZE ? (even ? "#2a2f3d" : "#252a37") : even ? "#2d3446" : "#283043";
+        ctx.fillRect(left + c * ch, y, ch, ch);
+      }
+    }
+    // 波形（チェックしたトラックを重ねる）
+    drawWaveforms(L, curStep, gw);
+
+    // 線: step（薄い）/ beat / 小節（太い + 番号）/ BPM 変更
+    ctx.font = "11px system-ui, sans-serif";
+    ctx.textBaseline = "middle";
+    for (let s = Math.max(0, s0); s <= s1; s++) {
+      const y = Math.round(stepToY(s, L, curStep)) + 0.5;
+      const m = timing.measureAtStep(s);
+      const isMeasure = Math.abs(s - m.start) < 1e-6;
+      const isBeat = Math.abs(((s - m.start) % STEPS_PER_BEAT) / STEPS_PER_BEAT - Math.round(((s - m.start) % STEPS_PER_BEAT) / STEPS_PER_BEAT)) < 1e-6 && (s - m.start) % STEPS_PER_BEAT === 0;
+      ctx.strokeStyle = isMeasure ? "rgba(255,255,255,.7)" : isBeat ? "rgba(255,255,255,.3)" : "rgba(255,255,255,.1)";
+      ctx.lineWidth = isMeasure ? 2 : 1;
+      ctx.beginPath();
+      ctx.moveTo(left, y);
+      ctx.lineTo(left + gw, y);
+      ctx.stroke();
+      if (isMeasure) {
+        ctx.fillStyle = "rgba(255,255,255,.75)";
+        ctx.textAlign = "right";
+        ctx.fillText(String(m.number + measureOffsetOf(m)), left - 6, y + 10);
+      }
+    }
+    // 列の区切り
+    ctx.strokeStyle = "rgba(255,255,255,.35)";
+    ctx.lineWidth = 2;
+    for (const c of [0, STRUMLINE_SIZE, EVENT_COL, COLS]) {
+      ctx.beginPath();
+      ctx.moveTo(left + c * ch + 0.5, 0);
+      ctx.lineTo(left + c * ch + 0.5, H);
+      ctx.stroke();
+    }
+    // BPM / 拍子の変更点
+    ctx.textAlign = "left";
+    meta().timeChanges.forEach((tc, i) => {
+      const y = stepToY(timing.beatAtIndex(i) * STEPS_PER_BEAT, L, curStep);
+      if (y < -20 || y > H + 20) return;
+      ctx.fillStyle = "#ffd36b";
+      ctx.fillRect(left + gw + 6, y - 1, 10, 2);
+      ctx.fillText(`${tc.bpm} BPM ${tc.n}/${tc.d}`, left + gw + 20, y - 7);
+    });
+    // プレビュー区間
+    const pd = meta().playData;
+    for (const [ms, label] of [[pd.previewStart, "preview▶"], [pd.previewEnd <= 1 ? pd.previewEnd * songLengthMs() : pd.previewEnd, "preview■"]]) {
+      if (!Number.isFinite(ms)) continue;
+      const y = stepToY(stepOf(ms), L, curStep);
+      if (y < 0 || y > H) continue;
+      ctx.strokeStyle = "rgba(120,200,255,.8)";
+      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(left - 60, y);
+      ctx.lineTo(left + gw, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(120,200,255,.9)";
+      ctx.textAlign = "right";
+      ctx.fillText(label, left - 36, y - 6);
+    }
+    // 曲の外（先頭より前）を暗く
+    const y0 = stepToY(0, L, curStep);
+    if (y0 > 0) {
+      ctx.fillStyle = "rgba(0,0,0,.45)";
+      ctx.fillRect(left, 0, gw, Math.min(H, y0));
+    }
+
+    // イベント
+    const playing = audio.playing;
+    ctx.textAlign = "left";
+    for (const e of events()) {
+      const y = stepToY(stepOf(e.t), L, curStep);
+      if (y < -ch || y > H + ch) continue;
+      const x = left + EVENT_COL * ch,
+        isSel = sel.has(e);
+      ctx.globalAlpha = playing && e.t < posMs ? 0.45 : 1;
+      ctx.fillStyle = "#ffb43a";
+      ctx.beginPath();
+      ctx.moveTo(x + ch / 2, y + ch * 0.08);
+      ctx.lineTo(x + ch * 0.92, y + ch / 2);
+      ctx.lineTo(x + ch / 2, y + ch * 0.92);
+      ctx.lineTo(x + ch * 0.08, y + ch / 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = isSel ? "#fff" : "rgba(0,0,0,.5)";
+      ctx.lineWidth = isSel ? 3 : 1.5;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = isSel ? "#fff" : "#ffd9a0";
+      ctx.fillText(eventTitle(e.e), x + ch + 6 + (BPM_LABEL_PAD), y + ch / 2);
+    }
+    // ノーツ
+    for (const n of notes()) {
+      const y = stepToY(stepOf(n.t), L, curStep);
+      const yEnd = n.l > 0 ? stepToY(stepOf(n.t + n.l), L, curStep) : y;
+      if (yEnd < -ch || y > H + ch) continue;
+      drawNote(n, left + dataToCol(n.d) * ch, y, yEnd, ch, sel.has(n), playing && n.t < posMs);
+    }
+    // ホバー（置く位置の予告）
+    if (hover && tool === "place" && !drag) {
+      const x = left + hover.col * ch,
+        y = stepToY(hover.step, L, curStep);
+      ctx.fillStyle = "rgba(255,255,255,.18)";
+      ctx.fillRect(x, y, ch, ch * Math.min(1, snapSteps()));
+      ctx.strokeStyle = "rgba(255,255,255,.6)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, ch - 1, ch * Math.min(1, snapSteps()) - 1);
+    }
+    // 範囲選択の枠
+    if (drag?.kind === "box") {
+      ctx.strokeStyle = SEL_COLOR;
+      ctx.fillStyle = "rgba(255,176,32,.15)";
+      ctx.lineWidth = 1;
+      const r = drag.rect;
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w, r.h);
+    }
+    // 列の見出し
+    ctx.fillStyle = "rgba(255,255,255,.55)";
+    ctx.textAlign = "center";
+    ctx.font = "bold 11px system-ui, sans-serif";
+    ctx.fillText("Opponent", left + (STRUMLINE_SIZE * ch) / 2, HEAD_Y);
+    ctx.fillText("Player", left + STRUMLINE_SIZE * ch * 1.5, HEAD_Y);
+    ctx.fillText("Events", left + EVENT_COL * ch + ch / 2, HEAD_Y);
+    // 再生位置（プレイヘッド）
+    ctx.strokeStyle = "#ff5577";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(left - 14, playY);
+    ctx.lineTo(left + gw + 14, playY);
+    ctx.stroke();
+    ctx.fillStyle = "#ff5577";
+    ctx.beginPath();
+    ctx.moveTo(left - 16, playY - 7);
+    ctx.lineTo(left - 2, playY);
+    ctx.lineTo(left - 16, playY + 7);
+    ctx.fill();
+  }
+  const BPM_LABEL_PAD = 0;
+const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
+  /** timeChanges の小節番号は「その変更点で 0 から数え直す」のではなく、通算で数える（V-Slice と同じ） */
+  function measureOffsetOf(m) {
+    let off = 0;
+    for (let i = 0; i < m.index; i++) {
+      const c = meta().timeChanges[i];
+      const len = c.n * STEPS_PER_BEAT;
+      const span = (timing.beatAtIndex(i + 1) - timing.beatAtIndex(i)) * STEPS_PER_BEAT;
+      off += Math.round(span / len);
+    }
+    return off;
+  }
+
+  function drawNote(n, x, y, yEnd, ch, isSel, past) {
+    const d = n.d % STRUMLINE_SIZE;
+    const color = NOTE_COLORS[d] ?? "#aaa";
+    ctx.globalAlpha = past ? 0.4 : 1;
+    if (n.l > 0) {
+      const bw = ch * 0.34;
+      ctx.fillStyle = color;
+      ctx.globalAlpha *= 0.75;
+      ctx.fillRect(x + (ch - bw) / 2, y + ch / 2, bw, Math.max(0, yEnd - y));
+      ctx.globalAlpha = past ? 0.4 : 1;
+      ctx.fillRect(x + (ch - bw) / 2 - 2, yEnd + ch / 2 - 4, bw + 4, 6);
+    }
+    const pad = ch * 0.06;
+    ctx.fillStyle = color;
+    roundRect(x + pad, y + pad, ch - pad * 2, ch - pad * 2, ch * 0.18);
+    ctx.fill();
+    drawArrow(x + ch / 2, y + ch / 2, ch, d);
+    ctx.strokeStyle = isSel ? "#fff" : "rgba(0,0,0,.55)";
+    ctx.lineWidth = isSel ? 3 : 1.5;
+    roundRect(x + pad, y + pad, ch - pad * 2, ch - pad * 2, ch * 0.18);
+    ctx.stroke();
+    if (n.k) {
+      ctx.fillStyle = "#fff";
+      ctx.font = `bold ${Math.max(9, ch * 0.28)}px system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.fillText(n.k[0].toUpperCase(), x + ch * 0.82, y + ch * 0.2);
+    }
+    ctx.globalAlpha = 1;
+  }
+  /** 方向の矢印（d: 0=Left 1=Down 2=Up 3=Right） */
+  function drawArrow(cx, cy, ch, d) {
+    const ang = [Math.PI, Math.PI / 2, -Math.PI / 2, 0][d]; // 右向きを基準に回す
+    const a = ch * 0.24;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(ang);
+    ctx.fillStyle = "rgba(0,0,0,.6)";
+    ctx.beginPath();
+    ctx.moveTo(a * 1.1, 0);
+    ctx.lineTo(-a * 0.2, -a);
+    ctx.lineTo(-a * 0.2, -a * 0.38);
+    ctx.lineTo(-a * 1.1, -a * 0.38);
+    ctx.lineTo(-a * 1.1, a * 0.38);
+    ctx.lineTo(-a * 0.2, a * 0.38);
+    ctx.lineTo(-a * 0.2, a);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+  const WAVE_COLORS = ["#6ec1ff", "#ff8fb1", "#9bff8f", "#ffd36b", "#c9a2ff", "#7fffe0"];
+  function drawWaveforms(L, curStep, gw) {
+    const list = audio.tracks.filter((t) => t.active !== false && t.wave);
+    if (!list.length) return;
+    const { H, left, playY } = L;
+    const cx = left + gw / 2;
+    list.forEach((t, ti) => {
+      ctx.fillStyle = WAVE_COLORS[ti % WAVE_COLORS.length];
+      ctx.globalAlpha = 0.32;
+      for (let y = 0; y < H; y += 2) {
+        const stepA = curStep + (y - playY) / L.ch,
+          stepB = curStep + (y + 2 - playY) / L.ch;
+        if (stepB < 0) continue;
+        const a = (timing.stepToMs(Math.max(0, stepA)) - t.offset) / PEAK_MS,
+          b = (timing.stepToMs(Math.max(0, stepB)) - t.offset) / PEAK_MS;
+        if (b < 0 || a > t.peaks.length) continue;
+        let m = 0;
+        const i0 = Math.max(0, Math.floor(a)),
+          i1 = Math.min(t.peaks.length - 1, Math.max(i0, Math.floor(b)));
+        const stride = Math.max(1, Math.floor((i1 - i0) / 24));
+        for (let i = i0; i <= i1; i += stride) if (t.peaks[i] > m) m = t.peaks[i];
+        const w = Math.min(1, m * 1.4) * (gw / 2 - 2);
+        ctx.fillRect(cx - w, y, w * 2, 2);
+      }
+    });
+    ctx.globalAlpha = 1;
+  }
+
+  // 描画ループ（変化があったときと再生中だけ描く）
+  let raf = 0,
+    lastTickMs = 0;
+  function frame() {
+    raf = requestAnimationFrame(frame);
+    if (!state.active) return;
+    if (audio.playing) {
+      const p = audio.position();
+      const end = songLengthMs();
+      if (p >= end) {
+        audio.pause();
+        posMs = end;
+        syncTransport();
+      } else {
+        if (hitSound) {
+          for (const n of notes()) {
+            if (n.t > p) break;
+            if (n.t > lastTickMs) {
+              audio.tick(n.d >= STRUMLINE_SIZE);
+              break;
+            }
+          }
+        }
+        lastTickMs = p;
+        posMs = p;
+      }
+      dirty = true;
+      syncTransport();
+    }
+    if (dirty) {
+      dirty = false;
+      draw();
+    }
+  }
+  raf = requestAnimationFrame(frame);
+  state.addDisposer(() => cancelAnimationFrame(raf));
+
+  // ============================================================
+  // 6. 操作（ポインタ）
+  // ============================================================
+  /** 画面座標 → { col, stepF(連続値), step(スナップ後) } */
+  function pointerInfo(ev) {
+    const r = canvas.getBoundingClientRect(),
+      x = ev.clientX - r.left,
+      y = ev.clientY - r.top,
+      L = layout(),
+      curStep = stepOf(posMs);
+    const col = Math.floor((x - L.left) / L.ch);
+    const stepF = curStep + (y - L.playY) / L.ch;
+    const sn = snapSteps();
+    return { x, y, col, stepF, step: Math.floor(stepF / sn + 1e-9) * sn, inGrid: col >= 0 && col < COLS };
+  }
+  const colOfObj = (o) => (isEvent(o) ? EVENT_COL : dataToCol(o.d));
+  function hitTest(col, stepF) {
+    // 手前（後ろの要素）から探す
+    const eps = 0.02;
+    if (col === EVENT_COL) {
+      for (let i = events().length - 1; i >= 0; i--) {
+        const s = stepOf(events()[i].t);
+        if (stepF >= s - eps && stepF < s + 1) return events()[i];
+      }
+      return null;
+    }
+    const list = notes();
+    for (let i = list.length - 1; i >= 0; i--) {
+      const n = list[i];
+      if (dataToCol(n.d) !== col) continue;
+      const s = stepOf(n.t),
+        e = n.l > 0 ? stepOf(n.t + n.l) : s;
+      if (stepF >= s - eps && (stepF < s + 1 || stepF <= e + 0.5)) return n;
+    }
+    return null;
+  }
+  const isEndHandle = (n, stepF) => !isEvent(n) && n.l > 0 && Math.abs(stepF - stepOf(n.t + n.l)) < 0.6;
+
+  function setPos(ms, { seek = true } = {}) {
+    posMs = Math.max(0, Math.min(songLengthMs(), ms));
+    if (seek && audio.playing) (audio.seek(posMs), (lastTickMs = posMs));
+    else if (seek) audio._startPos = posMs;
+    syncTransport();
+    redraw();
+  }
+  const scrollBySteps = (ds) => setPos(msOf(Math.max(0, stepOf(posMs) + ds)));
+
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  canvas.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      if (e.ctrlKey) {
+        setZoom(zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+        return;
+      }
+      scrollBySteps((e.deltaY / cell()) * (e.shiftKey ? 4 : 1.2));
+    },
+    { passive: false },
+  );
+  function setZoom(z) {
+    zoom = Math.max(0.3, Math.min(3, z));
+    redraw();
+  }
+
+  let spaceDown = false;
+  canvas.addEventListener("pointerdown", (e) => {
+    canvas.focus?.();
+    blurFocus();
+    const p = pointerInfo(e);
+    const touch = e.pointerType === "touch";
+    canvas.setPointerCapture?.(e.pointerId);
+    // 右クリック: 削除
+    if (e.button === 2) {
+      const h = p.inGrid ? hitTest(p.col, p.stepF) : null;
+      if (h) {
+        sel = new Set([h]);
+        deleteSelected();
+      }
+      return;
+    }
+    // スクロール（中ボタン・Space・移動ツール）
+    if (e.button === 1 || spaceDown || tool === "pan") {
+      drag = { kind: "scroll", y0: p.y, ms0: posMs, step0: stepOf(posMs) };
+      return;
+    }
+    const hit = p.inGrid ? hitTest(p.col, p.stepF) : null;
+    if (hit) {
+      if (e.shiftKey || e.ctrlKey) {
+        sel.has(hit) ? sel.delete(hit) : sel.add(hit);
+        refreshEdit();
+        redraw();
+        return;
+      }
+      if (!sel.has(hit)) sel = new Set([hit]);
+      if (sel.size === 1 && isEndHandle(hit, p.stepF)) {
+        drag = { kind: "extend", note: hit, moved: false };
+      } else {
+        drag = { kind: "move", p0: p, base: [...sel].map((o) => ({ o, t: o.t, d: o.d })), moved: false, steps0: stepOf(hit.t), col0: colOfObj(hit), anchor: hit };
+      }
+      refreshEdit();
+      redraw();
+      return;
+    }
+    // 何もない所
+    if (tool === "select" || !p.inGrid) {
+      drag = { kind: "box", x0: p.x, y0: p.y, rect: { x: p.x, y: p.y, w: 0, h: 0 }, add: e.shiftKey || e.ctrlKey, touch };
+      return;
+    }
+    if (touch) {
+      // 指: タップなら置く / ドラッグならスクロール
+      drag = { kind: "tap", p0: p, y0: p.y, ms0: posMs, scrolled: false };
+      return;
+    }
+    placeAt(p);
+  });
+  function placeAt(p) {
+    if (p.step < 0) return;
+    if (p.col === EVENT_COL) {
+      const kind = paletteKind();
+      if (!kind) return;
+      const ev = { t: msOf(p.step), e: kind, v: EVENT_SCHEMAS[kind] ? defaultEventValue(kind) : {} };
+      events().push(ev);
+      sortEvents();
+      sel = new Set([ev]);
+      drag = { kind: "placed" };
+      commit();
+    } else {
+      const d = colToData(p.col);
+      const t = msOf(p.step);
+      const dup = notes().find((n) => n.d === d && Math.abs(n.t - t) < 0.5);
+      if (dup) {
+        sel = new Set([dup]);
+        refreshEdit();
+        redraw();
+        return;
+      }
+      const n = { t, d };
+      const k = $("chtPlaceKind").value.trim();
+      if (k && k !== "normal") n.k = k;
+      notes().push(n);
+      sortNotes();
+      sel = new Set([n]);
+      drag = { kind: "hold", note: n, step0: p.step, moved: false };
+    }
+    refreshEdit();
+    redraw();
+  }
+  canvas.addEventListener("pointermove", (e) => {
+    const p = pointerInfo(e);
+    if (!drag) {
+      const prev = hover;
+      hover = p.inGrid && p.step >= 0 ? { col: p.col, step: p.step } : null;
+      if (JSON.stringify(prev) !== JSON.stringify(hover)) redraw();
+      return;
+    }
+    if (drag.kind === "scroll") {
+      setPos(msOf(Math.max(0, drag.step0 - (p.y - drag.y0) / cell())));
+    } else if (drag.kind === "tap") {
+      if (Math.abs(p.y - drag.y0) > 8) drag.scrolled = true;
+      if (drag.scrolled) setPos(msOf(Math.max(0, stepOf(drag.ms0) - (p.y - drag.y0) / cell())));
+    } else if (drag.kind === "box") {
+      drag.rect = { x: Math.min(drag.x0, p.x), y: Math.min(drag.y0, p.y), w: Math.abs(p.x - drag.x0), h: Math.abs(p.y - drag.y0) };
+      redraw();
+    } else if (drag.kind === "hold") {
+      const len = Math.max(0, p.stepF - drag.step0);
+      const sn = snapSteps();
+      const snapped = Math.floor(len / sn) * sn;
+      const end = msOf(drag.step0 + snapped);
+      const l = snapped >= 1 - 1e-6 || snapped >= sn * 1 && snapped >= 0.99 ? round3(end - drag.note.t) : 0;
+      if (l !== (drag.note.l || 0)) {
+        if (l > 0) drag.note.l = l;
+        else delete drag.note.l;
+        drag.moved = true;
+        refreshEdit();
+        redraw();
+      }
+    } else if (drag.kind === "extend") {
+      const sn = snapSteps();
+      const end = msOf(Math.max(stepOf(drag.note.t), Math.round(p.stepF / sn) * sn));
+      const l = round3(end - drag.note.t);
+      if (l !== (drag.note.l || 0)) {
+        if (l > 0) drag.note.l = l;
+        else delete drag.note.l;
+        drag.moved = true;
+        refreshEdit();
+        redraw();
+      }
+    } else if (drag.kind === "move") {
+      const sn = snapSteps();
+      const dStep = Math.round((p.stepF - drag.p0.stepF) / sn) * sn;
+      let dCol = p.col - drag.p0.col;
+      if (!drag.moved && dStep === 0 && dCol === 0) return;
+      // 列は 0-7 の範囲に収める（イベントは列を動かさない）
+      const cols = drag.base.filter((b) => !isEvent(b.o)).map((b) => dataToCol(b.d));
+      if (cols.length) dCol = Math.max(-Math.min(...cols), Math.min(STRUMLINE_SIZE * 2 - 1 - Math.max(...cols), dCol));
+      else dCol = 0;
+      for (const b of drag.base) {
+        const s = Math.max(0, stepOf(b.t) + dStep);
+        b.o.t = msOf(s);
+        if (!isEvent(b.o)) b.o.d = colToData(dataToCol(b.d) + dCol);
+      }
+      drag.moved = true;
+      redraw();
+    }
+  });
+  const endDrag = (e) => {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    if (d.kind === "box") {
+      const r = d.rect;
+      const L = layout(),
+        curStep = stepOf(posMs);
+      if (r.w < 4 && r.h < 4) {
+        if (!d.add) sel = new Set();
+      } else {
+        const picked = new Set(d.add ? sel : []);
+        const inRect = (x, y, w, h) => x < r.x + r.w && x + w > r.x && y < r.y + r.h && y + h > r.y;
+        for (const n of notes()) {
+          const y = stepToY(stepOf(n.t), L, curStep);
+          if (inRect(L.left + dataToCol(n.d) * L.ch, y, L.ch, L.ch)) picked.add(n);
+        }
+        for (const ev of events()) {
+          const y = stepToY(stepOf(ev.t), L, curStep);
+          if (inRect(L.left + EVENT_COL * L.ch, y, L.ch, L.ch)) picked.add(ev);
+        }
+        sel = picked;
+      }
+      refreshEdit();
+      redraw();
+    } else if (d.kind === "tap") {
+      if (!d.scrolled) placeAt(d.p0);
+    } else if (d.kind === "hold" || d.kind === "extend" || d.kind === "move") {
+      if (d.kind === "move" && d.moved) {
+        sortNotes();
+        sortEvents();
+        removeStacked(true);
+      }
+      commit();
+      refreshEdit();
+      redraw();
+    } else if (d.kind === "placed") {
+      commit();
+    }
+  };
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", endDrag);
+  canvas.addEventListener("pointerleave", () => {
+    if (!drag && hover) ((hover = null), redraw());
+  });
+
+  // ---- 編集操作 ----
+  function deleteSelected() {
+    if (!sel.size) return;
+    chart().events = events().filter((e) => !sel.has(e));
+    chart().notes[curDiff] = notes().filter((n) => !sel.has(n));
+    sel.clear();
+    commit();
+    refreshEdit();
+    redraw();
+  }
+  function removeStacked(silent = false) {
+    const seen = new Map();
+    let removed = 0;
+    const keep = [];
+    for (const n of notes()) {
+      const k = `${n.d}|${Math.round(n.t * 100)}`;
+      if (seen.has(k)) {
+        removed++;
+        sel.delete(n);
+        continue;
+      }
+      seen.set(k, n);
+      keep.push(n);
+    }
+    if (removed) {
+      chart().notes[curDiff] = keep;
+      if (!silent) (commit(), refreshEdit(), redraw(), say(`重なったノーツを ${removed} 個消しました。`));
+    } else if (!silent) say("重なったノーツはありません。");
+  }
+  function copySel(cut) {
+    if (!sel.size) return;
+    const items = [...sel];
+    const first = Math.min(...items.map((o) => stepOf(o.t)));
+    clipboard = items.map((o) => ({ o: clone(o), ds: stepOf(o.t) - first }));
+    say(`${items.length} 個をコピーしました。`);
+    if (cut) deleteSelected();
+  }
+  function pasteAtHead() {
+    if (!clipboard?.length) return say("クリップボードが空です。");
+    const base = Math.max(0, Math.floor(stepOf(posMs) / snapSteps() + 1e-9) * snapSteps());
+    const added = new Set();
+    for (const { o, ds } of clipboard) {
+      const c = clone(o);
+      c.t = msOf(base + ds);
+      if (isEvent(c)) events().push(c);
+      else notes().push(c);
+      added.add(c);
+    }
+    sortNotes();
+    sortEvents();
+    sel = added;
+    removeStacked(true);
+    commit();
+    refreshEdit();
+    redraw();
+  }
+  function mirrorSel(flip) {
+    let n = 0;
+    for (const o of sel) {
+      if (isEvent(o)) continue;
+      o.d = flip ? (o.d + STRUMLINE_SIZE) % (STRUMLINE_SIZE * 2) : o.d - (o.d % STRUMLINE_SIZE) + (STRUMLINE_SIZE - 1 - (o.d % STRUMLINE_SIZE));
+      n++;
+    }
+    if (n) (sortNotes(), commit(), refreshEdit(), redraw());
+  }
+  function selectAll() {
+    sel = new Set([...notes(), ...events()]);
+    refreshEdit();
+    redraw();
+  }
+  $("chtDel").onclick = deleteSelected;
+  $("chtCopy").onclick = () => copySel(false);
+  $("chtCut").onclick = () => copySel(true);
+  $("chtPaste").onclick = pasteAtHead;
+  $("chtSelAll").onclick = selectAll;
+  $("chtMirror").onclick = () => mirrorSel(false);
+  $("chtFlip").onclick = () => mirrorSel(true);
+  $("chtUnstack").onclick = () => removeStacked(false);
+
+  // ツール・ズーム・スナップ
+  function setTool(t) {
+    tool = t;
+    for (const [id, name] of [["chtToolPlace", "place"], ["chtToolSelect", "select"], ["chtToolPan", "pan"]]) $(id).setAttribute("aria-pressed", String(tool === name));
+    canvas.style.cursor = tool === "pan" ? "grab" : tool === "select" ? "default" : "crosshair";
+  }
+  $("chtToolPlace").onclick = () => setTool("place");
+  $("chtToolSelect").onclick = () => setTool("select");
+  $("chtToolPan").onclick = () => setTool("pan");
+  $("chtZoomIn").onclick = () => setZoom(zoom * 1.2);
+  $("chtZoomOut").onclick = () => setZoom(zoom / 1.2);
+  const snapSel = $("chtSnap");
+  SNAP_QUANTS.forEach((q, i) => snapSel.append(new Option(`1/${q}`, i)));
+  snapSel.value = snapIdx;
+  snapSel.onchange = () => setSnap(Number(snapSel.value));
+  function setSnap(i) {
+    snapIdx = Math.max(0, Math.min(SNAP_QUANTS.length - 1, i));
+    snapSel.value = snapIdx;
+    redraw();
+  }
+
+  // ============================================================
+  // 7. パネル
+  // ============================================================
+  const setVal = (el, v) => {
+    if (document.activeElement === el) return;
+    if (el.type === "checkbox") el.checked = !!v;
+    else el.value = v ?? "";
+  };
+  const csv = (s) => String(s).split(",").map((x) => x.trim()).filter(Boolean);
+  const num = (s, d = 0) => (Number.isFinite(Number(s)) && String(s).trim() !== "" ? Number(s) : d);
+
+  // ---- 曲情報（metadata） ----
+  // [要素ID, 読む, 書く]
+  const metaBinds = [
+    ["chtSongName", (m) => m.songName, (m, v) => (m.songName = v)],
+    ["chtArtist", (m) => m.artist, (m, v) => (m.artist = v)],
+    ["chtCharter", (m) => m.charter ?? "", (m, v) => (m.charter = v)],
+    ["chtStage", (m) => m.playData.stage, (m, v) => (m.playData.stage = v)],
+    ["chtNoteStyle", (m) => m.playData.noteStyle, (m, v) => (m.playData.noteStyle = v)],
+    ["chtCharPlayer", (m) => m.playData.characters.player, (m, v) => (m.playData.characters.player = v)],
+    ["chtCharGf", (m) => m.playData.characters.girlfriend, (m, v) => (m.playData.characters.girlfriend = v)],
+    ["chtCharOpp", (m) => m.playData.characters.opponent, (m, v) => (m.playData.characters.opponent = v)],
+    ["chtCharInst", (m) => m.playData.characters.instrumental ?? "", (m, v) => { m.playData.characters.instrumental = v; updateActiveTracks(); }],
+    ["chtCharAltInst", (m) => (m.playData.characters.altInstrumentals ?? []).join(", "), (m, v) => setList(m.playData.characters, "altInstrumentals", csv(v), true)],
+    ["chtCharPVoc", (m) => (m.playData.characters.playerVocals ?? []).join(", "), (m, v) => setList(m.playData.characters, "playerVocals", csv(v), false)],
+    ["chtCharOVoc", (m) => (m.playData.characters.opponentVocals ?? []).join(", "), (m, v) => setList(m.playData.characters, "opponentVocals", csv(v), false)],
+    ["chtAlbum", (m) => m.playData.album ?? "", (m, v) => (m.playData.album = v)],
+    ["chtSticker", (m) => m.playData.stickerPack ?? "", (m, v) => (m.playData.stickerPack = v)],
+    ["chtPrevStart", (m) => m.playData.previewStart, (m, v) => (m.playData.previewStart = num(v))],
+    ["chtPrevEnd", (m) => m.playData.previewEnd, (m, v) => (m.playData.previewEnd = num(v))],
+    ["chtDiscord", (m) => m.playData.discordRPCImage ?? "", (m, v) => (m.playData.discordRPCImage = v)],
+    ["chtLooped", (m) => m.looped, (m, v) => (m.looped = !!v)],
+    ["chtDivisions", (m) => m.divisions, (m, v) => (m.divisions = num(v, 96))],
+    ["chtOffInst", (m) => m.offsets.instrumental ?? 0, (m, v) => { m.offsets.instrumental = num(v); applyOffsets(); }],
+    ["chtOffVoc", (m) => firstVocalOffset(m), (m, v) => { setAllVocalOffsets(m, num(v)); applyOffsets(); }],
+  ];
+  /** 空の配列は欄ごと消す（V-Slice は無い=既定に任せる）。alt は空配列でもよいが、消して問題ない */
+  function setList(obj, key, arr, keepEmpty) {
+    if (arr.length || keepEmpty) obj[key] = arr;
+    else delete obj[key];
+  }
+  const vocalIds = (m) => {
+    const c = m.playData.characters;
+    return [...new Set([...(c.playerVocals ?? [c.player]), ...(c.opponentVocals ?? [c.opponent])])];
+  };
+  const firstVocalOffset = (m) => {
+    const ids = [...Object.keys(m.offsets.vocals ?? {})];
+    return ids.length ? m.offsets.vocals[ids[0]] : 0;
+  };
+  function setAllVocalOffsets(m, v) {
+    m.offsets.vocals ||= {};
+    for (const id of vocalIds(m)) m.offsets.vocals[id] = v;
+    for (const id of Object.keys(m.offsets.vocals)) m.offsets.vocals[id] = v;
+    if (!v) for (const id of Object.keys(m.offsets.vocals)) if (!m.offsets.vocals[id]) delete m.offsets.vocals[id];
+  }
+  function applyOffsets() {
+    const m = meta();
+    for (const t of audio.tracks) {
+      if (t.kind === "inst") t.offset = m.offsets.instrumental || 0;
+      else {
+        const id = lc(t.id).replace(/^voices-/, "").replace(new RegExp(`-${lc(curVar)}$`), "");
+        const key = Object.keys(m.offsets.vocals ?? {}).find((k) => lc(k) === id);
+        t.offset = key ? m.offsets.vocals[key] : 0;
+      }
+    }
+    redraw();
+  }
+  for (const [id, get, set] of metaBinds) {
+    const el = $(id);
+    el.addEventListener("change", () => {
+      set(meta(), el.type === "checkbox" ? el.checked : el.value);
+      commit();
+      redraw();
+    });
+  }
+  $("chtPrevFromHead").onclick = () => ((meta().playData.previewStart = Math.round(posMs)), commit(), refreshSong());
+  $("chtPrevToHead").onclick = () => ((meta().playData.previewEnd = Math.round(posMs)), commit(), refreshSong());
+  const refreshSong = () => {
+    for (const [id, get] of metaBinds) setVal($(id), get(meta()));
+    setVal($("chtSongId"), songId);
+  };
+  $("chtSongId").onchange = (e) => {
+    songId = e.target.value.replace(/[\/\\:*?"<>|]/g, "").trim();
+    e.target.value = songId;
+    commit();
+  };
+
+  // ---- バリエーション・難易度 ----
+  const varSel = $("chtVariation"),
+    diffSel = $("chtDifficulty");
+  function refreshDiff() {
+    varSel.replaceChildren(...Object.keys(variations).map((v) => new Option(v, v)));
+    varSel.value = curVar;
+    diffSel.replaceChildren(...difficulties().map((v) => new Option(v, v)));
+    diffSel.value = curDiff;
+    const table = $("chtDiffTable");
+    table.replaceChildren();
+    for (const df of difficulties()) {
+      const row = document.createElement("div");
+      row.className = "chtRow";
+      const name = Object.assign(document.createElement("span"), { className: "chtRowName", textContent: df, title: df });
+      const spd = Object.assign(document.createElement("input"), { type: "number", step: "0.1", min: "0.1", title: "scrollSpeed", value: chart().scrollSpeed[df] ?? chart().scrollSpeed.default ?? 1 });
+      const rate = Object.assign(document.createElement("input"), { type: "number", step: "1", min: "0", title: "rating（難易度の数字）", value: meta().playData.ratings[df] ?? 0 });
+      spd.onchange = () => ((chart().scrollSpeed[df] = num(spd.value, 1)), commit());
+      rate.onchange = () => ((meta().playData.ratings[df] = Math.round(num(rate.value, 0))), commit());
+      row.append(name, label("speed", spd), label("rating", rate));
+      table.append(row);
+    }
+  }
+  function label(text, el) {
+    const l = document.createElement("label");
+    l.style.margin = "0";
+    l.style.flex = "1 1 0";
+    l.append(Object.assign(document.createElement("span"), { className: "chtUnits", textContent: text }), el);
+    return l;
+  }
+  varSel.onchange = () => switchTo(varSel.value, curDiff);
+  diffSel.onchange = () => switchTo(curVar, diffSel.value);
+  function switchTo(v, df) {
+    if (audio.playing) audio.pause();
+    curVar = variations[v] ? v : DEFAULT_VARIATION;
+    curDiff = difficulties().includes(df) ? df : difficulties()[0];
+    sel.clear();
+    retiming();
+    applyOffsets();
+    updateActiveTracks();
+    commit(); // 画面の状態も履歴に入れておく
+    refreshAll();
+  }
+  const askName = (msg) => (window.prompt(msg) || "").trim().replace(/[^\w\-]+/g, "");
+  $("chtAddVar").onclick = () => {
+    const v = askName("新しいバリエーションの名前（例: erect）");
+    if (!v || variations[v]) return v && say("その名前はすでにあります。");
+    const base = variations[DEFAULT_VARIATION].meta;
+    const m = normalizeMetadata({ ...clone(base), playData: { ...clone(base.playData), songVariations: [] } });
+    const c = normalizeChart(defaultChart(), m.playData.difficulties);
+    for (const df of m.playData.difficulties) c.scrollSpeed[df] = 1;
+    variations[v] = { meta: m, chart: c };
+    base.playData.songVariations.push(v);
+    switchTo(v, m.playData.difficulties[0]);
+    say(`バリエーション「${v}」を追加しました（metadata は default のコピー）。`);
+  };
+  $("chtDelVar").onclick = () => {
+    if (curVar === DEFAULT_VARIATION) return say("default は削除できません。");
+    if (!window.confirm(`バリエーション「${curVar}」を削除しますか？（Undo で戻せます）`)) return;
+    const v = curVar;
+    delete variations[v];
+    const sv = variations[DEFAULT_VARIATION].meta.playData.songVariations;
+    variations[DEFAULT_VARIATION].meta.playData.songVariations = sv.filter((x) => x !== v);
+    switchTo(DEFAULT_VARIATION, curDiff);
+  };
+  function addDifficulty(copy) {
+    const df = askName("新しい難易度の名前（例: hard）");
+    if (!df) return;
+    if (difficulties().includes(df)) return say("その難易度はすでにあります。");
+    meta().playData.difficulties.push(df);
+    chart().notes[df] = copy ? clone(notes()) : [];
+    chart().scrollSpeed[df] = chart().scrollSpeed[curDiff] ?? 1;
+    meta().playData.ratings[df] = meta().playData.ratings[curDiff] ?? 1;
+    switchTo(curVar, df);
+  }
+  $("chtAddDiff").onclick = () => addDifficulty(false);
+  $("chtDupDiff").onclick = () => addDifficulty(true);
+  $("chtDelDiff").onclick = () => {
+    if (difficulties().length <= 1) return say("最後の難易度は削除できません。");
+    if (!window.confirm(`難易度「${curDiff}」のノーツを削除しますか？（Undo で戻せます）`)) return;
+    const df = curDiff;
+    meta().playData.difficulties = difficulties().filter((x) => x !== df);
+    delete chart().notes[df];
+    delete chart().scrollSpeed[df];
+    delete meta().playData.ratings[df];
+    switchTo(curVar, difficulties()[0]);
+  };
+
+  // ---- BPM・拍子 ----
+  function refreshTiming() {
+    const list = $("chtTimeList");
+    list.replaceChildren();
+    meta().timeChanges.forEach((tc, i) => {
+      const row = document.createElement("div");
+      row.className = "chtRow";
+      const mk = (key, title, step, min) => {
+        const el = Object.assign(document.createElement("input"), { type: "number", step, min, title, value: tc[key] });
+        el.onchange = () => changeTime(i, key, num(el.value, tc[key]));
+        return label(title, el);
+      };
+      row.append(mk("t", "ms", "1", i === 0 ? "" : "0"), mk("bpm", "BPM", "0.1", "1"), mk("n", "拍/小節", "1", "1"), mk("d", "分母", "1", "1"));
+      if (i > 0) {
+        const del = Object.assign(document.createElement("button"), { type: "button", textContent: "🗑", title: "この変更点を削除" });
+        del.onclick = () => {
+          applyRetime(() => meta().timeChanges.splice(i, 1));
+        };
+        row.append(del);
+      }
+      list.append(row);
+    });
+  }
+  /** timeChanges を変える。「step 位置を保つ」がオンなら、ノーツ・イベントの ms を新しい BPM に合わせて計算し直す */
+  function applyRetime(change) {
+    const old = timing;
+    const keep = $("chtKeepSteps").checked;
+    const snapNotes = keep ? chartsOfCurrentVariation().map((c) => c.map((o) => stepOf2(old, o.t))) : null;
+    const curStepKeep = old.msToStep(posMs);
+    change();
+    meta().timeChanges.sort((a, b) => a.t - b.t);
+    timing = new Timing(meta().timeChanges);
+    if (keep) {
+      chartsOfCurrentVariation().forEach((list, li) => list.forEach((o, i) => (o.t = round3(timing.stepToMs(snapNotes[li][i])))));
+      posMs = timing.stepToMs(curStepKeep);
+    }
+    commit();
+    refreshAll();
+  }
+  const stepOf2 = (tm, ms) => tm.msToStep(ms);
+  /** 再計算の対象: このバリエーションの全難易度のノーツ + イベント */
+  const chartsOfCurrentVariation = () => [...Object.values(chart().notes), events()];
+  function changeTime(i, key, value) {
+    if (key === "t" && i === 0) value = Math.min(0, value);
+    applyRetime(() => {
+      meta().timeChanges[i][key] = value;
+    });
+  }
+  $("chtAddTime").onclick = () => {
+    const m = timing.measureAtStep(Math.max(0, stepOf(posMs)));
+    const ms = Math.round(timing.stepToMs(Math.max(m.start, 0)));
+    if (meta().timeChanges.some((tc) => Math.abs(tc.t - ms) < 1)) return say("この位置にはすでに変更点があります。");
+    const at = meta().timeChanges[timing.indexAtMs(ms)];
+    applyRetime(() => meta().timeChanges.push({ t: ms, bpm: at.bpm, n: at.n, d: at.d }));
+    say(`${ms}ms（小節の頭）に変更点を追加しました。BPM を書き換えてください。`);
+  };
+
+  // ---- 音声トラック一覧 ----
+  function renderTracks() {
+    const box = $("chtTracks");
+    box.replaceChildren();
+    if (!audio.tracks.length) {
+      box.append(Object.assign(document.createElement("p"), { className: "tiny", textContent: "音声がまだありません。ファイルタブの「開く」「Inst を選ぶ」「Voices を追加」から読み込めます。" }));
+      return;
+    }
+    for (const t of audio.tracks) {
+      const row = document.createElement("div");
+      row.className = "chtRow" + (t.active === false ? " chtOff" : "");
+      const name = Object.assign(document.createElement("span"), { className: "chtRowName", textContent: t.id, title: t.active === false ? `${t.name}（このバリエーションでは使いません）` : t.name });
+      const vol = Object.assign(document.createElement("input"), { type: "range", min: "0", max: "1", step: "0.05", value: t.volume, title: "音量" });
+      vol.oninput = () => audio.setVolume(t.id, Number(vol.value));
+      const mute = Object.assign(document.createElement("input"), { type: "checkbox", checked: !t.muted, title: "音を出す" });
+      mute.onchange = () => audio.setMuted(t.id, !mute.checked);
+      const wave = Object.assign(document.createElement("input"), { type: "checkbox", checked: t.wave, title: "波形を表示" });
+      wave.onchange = () => ((t.wave = wave.checked), redraw());
+      const del = Object.assign(document.createElement("button"), { type: "button", textContent: "✕", title: "このトラックを外す" });
+      del.onclick = () => (audio.remove(t.id), renderTracks(), redraw());
+      row.append(name, vol, label("🔊", mute), label("〜", wave), del);
+      box.append(row);
+    }
+  }
+  $("chtRate").onchange = (e) => audio.setRate(Number(e.target.value));
+  $("chtHitSound").onchange = (e) => (hitSound = e.target.checked);
+
+  // ---- 編集パネル（選択中の中身・イベント） ----
+  const palette = $("chtPalette");
+  palette.replaceChildren(...EVENT_KINDS.map((k) => new Option(eventTitle(k), k)), new Option("カスタム…", "__custom"));
+  const paletteKind = () => (palette.value === "__custom" ? $("chtCustomKind").value.trim() : palette.value);
+  palette.onchange = () => ($("chtCustomRow").hidden = palette.value !== "__custom");
+  $("chtAddEventHead").onclick = () => {
+    const kind = paletteKind();
+    if (!kind) return say("イベントの名前を入れてください。");
+    const ev = { t: msOf(Math.max(0, Math.floor(stepOf(posMs) / snapSteps() + 1e-9) * snapSteps())), e: kind, v: EVENT_SCHEMAS[kind] ? defaultEventValue(kind) : {} };
+    events().push(ev);
+    sortEvents();
+    sel = new Set([ev]);
+    commit();
+    refreshEdit();
+    redraw();
+  };
+  const dirSel = $("chtNDir");
+  dirSel.replaceChildren(...[0, 1, 2, 3].flatMap((i) => [new Option(`Player ${DIR_NAMES[i]}`, i), ]), ...[4, 5, 6, 7].map((i) => new Option(`Opponent ${DIR_NAMES[i - 4]}`, i)));
+
+  function selectedNotes() {
+    return [...sel].filter((o) => !isEvent(o));
+  }
+  function selectedEvents() {
+    return [...sel].filter(isEvent);
+  }
+  function refreshEdit() {
+    const ns = selectedNotes(),
+      es = selectedEvents();
+    $("chtSelTitle").textContent = sel.size ? `選択中（ノーツ ${ns.length} / イベント ${es.length}）` : "選択中";
+    $("chtNoSel").hidden = sel.size > 0;
+    $("chtNoteFields").hidden = !ns.length || es.length > 0;
+    $("chtEventFields").hidden = es.length !== 1 || ns.length > 0;
+    if (!$("chtNoteFields").hidden) {
+      const n = ns[0],
+        multi = ns.length > 1;
+      setVal($("chtNLen"), multi ? "" : n.l || 0);
+      $("chtNLen").placeholder = multi ? "（複数）" : "";
+      setVal($("chtNKind"), ns.every((x) => (x.k || "") === (n.k || "")) ? n.k || "" : "");
+      setVal($("chtNTime"), multi ? "" : n.t);
+      $("chtNTime").disabled = multi;
+      dirSel.disabled = multi;
+      if (!multi) dirSel.value = n.d;
+      renderParams(ns);
+    }
+    if (!$("chtEventFields").hidden) renderEventForm(es[0]);
+  }
+  $("chtNLen").onchange = (e) => {
+    const v = Math.max(0, num(e.target.value));
+    for (const n of selectedNotes()) v > 0 ? (n.l = v) : delete n.l;
+    commit();
+    redraw();
+  };
+  $("chtNKind").onchange = (e) => {
+    const v = e.target.value.trim();
+    for (const n of selectedNotes()) v && v !== "normal" ? (n.k = v) : delete n.k;
+    commit();
+    redraw();
+  };
+  $("chtNTime").onchange = (e) => {
+    const n = selectedNotes()[0];
+    if (!n) return;
+    n.t = Math.max(0, num(e.target.value, n.t));
+    sortNotes();
+    commit();
+    redraw();
+  };
+  dirSel.onchange = () => {
+    const n = selectedNotes()[0];
+    if (!n) return;
+    n.d = Number(dirSel.value);
+    sortNotes();
+    commit();
+    redraw();
+  };
+  function renderParams(ns) {
+    const box = $("chtNParams");
+    box.replaceChildren();
+    if (ns.length !== 1) return $("chtNAddParam").setAttribute("hidden", "");
+    $("chtNAddParam").removeAttribute("hidden");
+    const n = ns[0];
+    (n.p ?? []).forEach((pr, i) => {
+      const row = document.createElement("div");
+      row.className = "chtRow";
+      const k = Object.assign(document.createElement("input"), { type: "text", value: pr.n, placeholder: "name" });
+      const v = Object.assign(document.createElement("input"), { type: "text", value: typeof pr.v === "string" ? pr.v : JSON.stringify(pr.v), placeholder: "value" });
+      k.onchange = () => ((pr.n = k.value), commit());
+      v.onchange = () => ((pr.v = parseLoose(v.value)), commit());
+      const del = Object.assign(document.createElement("button"), { type: "button", textContent: "✕" });
+      del.onclick = () => {
+        n.p.splice(i, 1);
+        if (!n.p.length) delete n.p;
+        commit();
+        refreshEdit();
+      };
+      row.append(k, v, del);
+      box.append(row);
+    });
+  }
+  /** 文字列 → 値。数値・true/false・JSON ならそれに、それ以外は文字列のまま */
+  function parseLoose(s) {
+    const t = String(s).trim();
+    if (t === "") return "";
+    try {
+      return JSON.parse(t);
+    } catch {
+      return s;
+    }
+  }
+  $("chtNAddParam").onclick = () => {
+    const n = selectedNotes()[0];
+    if (!n) return;
+    (n.p ??= []).push({ n: "param", v: "" });
+    commit();
+    refreshEdit();
+  };
+
+  const eKind = $("chtEKind");
+  function renderEventForm(ev) {
+    const known = EVENT_SCHEMAS[ev.e];
+    eKind.replaceChildren(...EVENT_KINDS.map((k) => new Option(eventTitle(k), k)));
+    if (!known) eKind.append(new Option(ev.e + "（カスタム）", ev.e));
+    eKind.value = ev.e;
+    setVal($("chtETime"), ev.t);
+    const form = $("chtEForm");
+    form.replaceChildren();
+    if (!known) {
+      // スキーマが分からないイベント: JSON をそのまま編集
+      const ta = Object.assign(document.createElement("textarea"), { rows: 6, value: JSON.stringify(ev.v, null, 1), spellcheck: false });
+      ta.style.width = "100%";
+      ta.onchange = () => {
+        try {
+          ev.v = JSON.parse(ta.value);
+          commit();
+          say("value を更新しました。");
+        } catch (e) {
+          say("JSON が正しくありません: " + e.message);
+        }
+      };
+      form.append(Object.assign(document.createElement("p"), { className: "tiny", textContent: "組み込みでないイベントです。value を JSON で編集します。" }), ta);
+      return;
+    }
+    if (ev.v === null || typeof ev.v !== "object" || Array.isArray(ev.v)) ev.v = defaultEventValue(ev.e);
+    const main = [],
+      adv = [];
+    for (const f of known.fields) (f.group === "advanced" ? adv : main).push(f);
+    for (const f of main) form.append(fieldEl(ev, f));
+    if (adv.length) {
+      const d = document.createElement("details");
+      d.className = "chtField";
+      d.append(Object.assign(document.createElement("summary"), { textContent: "advanced" }));
+      for (const f of adv) d.append(fieldEl(ev, f));
+      form.append(d);
+    }
+  }
+  function fieldEl(ev, f) {
+    const wrap = document.createElement("label");
+    wrap.className = "chtField";
+    const cur = ev.v[f.name] ?? f.def;
+    wrap.append(document.createTextNode(f.title + " "));
+    if (f.units) wrap.append(Object.assign(document.createElement("span"), { className: "chtUnits", textContent: `(${f.units})` }));
+    let el;
+    if (f.type === "enum") {
+      el = document.createElement("select");
+      for (const [t, v] of f.options) el.append(new Option(t, JSON.stringify(v)));
+      el.value = JSON.stringify(cur);
+      if (el.value !== JSON.stringify(cur)) el.append(new Option(String(cur), JSON.stringify(cur)), (el.value = JSON.stringify(cur)));
+      el.onchange = () => ((ev.v[f.name] = JSON.parse(el.value)), commit());
+    } else if (f.type === "bool") {
+      el = Object.assign(document.createElement("input"), { type: "checkbox", checked: !!cur });
+      el.onchange = () => ((ev.v[f.name] = el.checked), commit());
+    } else if (f.type === "string") {
+      el = Object.assign(document.createElement("input"), { type: "text", value: cur });
+      el.onchange = () => ((ev.v[f.name] = el.value), commit());
+    } else {
+      el = Object.assign(document.createElement("input"), { type: "number", value: cur });
+      if (f.step) el.step = f.step;
+      if (f.min !== undefined) el.min = f.min;
+      if (f.max !== undefined) el.max = f.max;
+      el.onchange = () => {
+        let v = num(el.value, f.def);
+        if (f.min !== undefined) v = Math.max(f.min, v);
+        if (f.max !== undefined) v = Math.min(f.max, v);
+        ev.v[f.name] = f.type === "int" ? Math.round(v) : v;
+        commit();
+      };
+    }
+    wrap.append(el);
+    return wrap;
+  }
+  eKind.onchange = () => {
+    const ev = selectedEvents()[0];
+    if (!ev) return;
+    ev.e = eKind.value;
+    ev.v = defaultEventValue(ev.e);
+    commit();
+    refreshEdit();
+    redraw();
+  };
+  $("chtETime").onchange = (e) => {
+    const ev = selectedEvents()[0];
+    if (!ev) return;
+    ev.t = Math.max(0, num(e.target.value, ev.t));
+    sortEvents();
+    commit();
+    redraw();
+  };
+  // 置くノーツの kind の候補（読み込んだチャートに出てくる種類）
+  function refreshKinds() {
+    const kinds = new Set();
+    for (const v of Object.values(variations)) for (const list of Object.values(v.chart.notes)) for (const n of list) if (n.k) kinds.add(n.k);
+    $("chtKinds").replaceChildren(...[...kinds].map((k) => Object.assign(document.createElement("option"), { value: k })));
+  }
+
+  function refreshAll() {
+    refreshSong();
+    refreshDiff();
+    refreshTiming();
+    refreshKinds();
+    renderTracks();
+    refreshEdit();
+    syncTransport();
+    redraw();
+  }
+
+  // ============================================================
+  // 8. ファイル保存
+  // ============================================================
+  function download(name, data, type = "application/json") {
+    const url = URL.createObjectURL(data instanceof Blob ? data : new Blob([data], { type }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  /** 保存前の整合: 難易度の一覧・notes・scrollSpeed がそろっているか */
+  function ensureConsistent() {
+    for (const { meta: m, chart: c } of Object.values(variations)) {
+      for (const df of m.playData.difficulties) {
+        c.notes[df] ??= [];
+        c.scrollSpeed[df] ??= c.scrollSpeed.default ?? 1;
+      }
+    }
+  }
+  const fileId = () => songId || slug(variations[DEFAULT_VARIATION].meta.songName);
+  const names = (v) => ({
+    chart: `${fileId()}-chart${v === DEFAULT_VARIATION ? "" : "-" + v}.json`,
+    meta: `${fileId()}-metadata${v === DEFAULT_VARIATION ? "" : "-" + v}.json`,
+  });
+  const pretty = () => !$("chtCompact").checked;
+  const jsonEntries = () => {
+    ensureConsistent();
+    const out = [];
+    for (const [v, { meta: m, chart: c }] of Object.entries(variations)) {
+      const n = names(v);
+      out.push({ name: n.meta, data: new TextEncoder().encode(serializeMetadata(m, pretty())) }, { name: n.chart, data: new TextEncoder().encode(serializeChart(c, pretty())) });
+    }
+    return out;
+  };
+  $("chtSaveChart").onclick = () => {
+    ensureConsistent();
+    download(names(curVar).chart, serializeChart(chart(), pretty()));
+    say(`${names(curVar).chart} を保存しました。`);
+  };
+  $("chtSaveMeta").onclick = () => {
+    ensureConsistent();
+    download(names(curVar).meta, serializeMetadata(meta(), pretty()));
+    say(`${names(curVar).meta} を保存しました。`);
+  };
+  $("chtSaveAllJson").onclick = () => {
+    download(`${fileId()}-json.zip`, writeZip(jsonEntries()));
+    state.app.unsaved?.clean();
+    say("全バリエーションの JSON を zip にして保存しました。");
+  };
+  function saveFnfc() {
+    const entries = jsonEntries();
+    entries.push({ name: "manifest.json", data: new TextEncoder().encode(JSON.stringify({ version: "1.0.0", songId: fileId() }, null, 2)) });
+    const warn = [];
+    for (const t of audio.tracks) {
+      const ext = t.ext || ".ogg";
+      if (ext !== ".ogg") warn.push(t.id + ext);
+      entries.push({ name: t.id + ext, data: t.bytes });
+    }
+    download(`${fileId()}.fnfc`, writeZip(entries), "application/zip");
+    state.app.unsaved?.clean();
+    say(`${fileId()}.fnfc を保存しました（${entries.length} ファイル）。${warn.length ? "\n注意: 公式の Chart Editor は音声が .ogg であることを期待します: " + warn.join(", ") : ""}`);
+  }
+  $("chtSaveFnfc").onclick = saveFnfc;
+
+  $("chtNew").onclick = () => {
+    if (!state.app.unsaved.confirmReplace()) return;
+    audio.clear();
+    variations = { [DEFAULT_VARIATION]: { meta: defaultMetadata(), chart: defaultChart() } };
+    curVar = DEFAULT_VARIATION;
+    curDiff = "normal";
+    songId = "";
+    posMs = 0;
+    sel.clear();
+    retiming();
+    resetHistory();
+    refreshAll();
+    state.app.unsaved?.clean();
+    say("新しい譜面を作りました。曲情報と音声を設定してください。");
+  };
+  const onFiles = (merge) => async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    if (files.length) await ingest(files, { merge });
+  };
+  $("chtOpen").onchange = onFiles(false);
+  $("chtAdd").onchange = onFiles(true);
+  $("chtInst").onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    const instId = meta().playData.characters.instrumental || "";
+    const ext = (f.name.match(/\.[^.]+$/) || [".ogg"])[0];
+    const ok = await loadAudioBytes("Inst" + (instId ? "-" + instId : "") + ext, new Uint8Array(await f.arrayBuffer()));
+    updateActiveTracks();
+    if (ok) say(`Inst を読み込みました（${f.name}）。`);
+  };
+  $("chtVoices").onchange = async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    let n = 0;
+    for (const f of files) {
+      const ext = (f.name.match(/\.[^.]+$/) || [".ogg"])[0];
+      // 名前が Voices- で始まらなければ、プレイヤー/相手のキャラ名を補う
+      let nm = baseName(f.name);
+      if (!/^voices/i.test(nm)) nm = "Voices-" + nm;
+      if (await loadAudioBytes(nm + ext, new Uint8Array(await f.arrayBuffer()))) n++;
+    }
+    updateActiveTracks();
+    if (n) say(`Voices を ${n} 本読み込みました。`);
+  };
+
+  // ============================================================
+  // 9. 再生・キーボード
+  // ============================================================
+  const seek = $("chtSeek");
+  let seeking = false;
+  function syncTransport() {
+    const len = songLengthMs();
+    seek.max = Math.round(len);
+    if (!seeking) seek.value = Math.round(posMs);
+    const step = stepOf(posMs),
+      m = timing.measureAtStep(Math.max(0, step));
+    const inMeasure = Math.floor(Math.max(0, step) - m.start + 1e-6);
+    const tc = meta().timeChanges[timing.indexAtMs(posMs)];
+    $("chtTime").textContent = `${fmtTime(posMs)} (${Math.round(posMs)}ms)`;
+    $("chtReadout").textContent = `小節 ${m.number + measureOffsetOf(m)} · step ${inMeasure} · ${tc.bpm} BPM · ${tc.n}/${tc.d}`;
+    $("chtPlay").textContent = audio.playing ? "⏸" : "▶";
+    $("chtHint").textContent = `${curVar} / ${curDiff}　ノーツ ${notes().length}・イベント ${events().length}　速度 ${chart().scrollSpeed[curDiff] ?? 1}×`;
+  }
+  const fmtTime = (ms) => {
+    const s = Math.max(0, ms) / 1000;
+    return `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, "0")}`;
+  };
+  seek.oninput = () => {
+    seeking = true;
+    setPos(Number(seek.value));
+  };
+  seek.onchange = () => (seeking = false);
+  function togglePlay() {
+    if (audio.playing) audio.pause();
+    else {
+      audio._startPos = posMs;
+      lastTickMs = posMs;
+      audio.play();
+    }
+    syncTransport();
+  }
+  $("chtPlay").onclick = togglePlay;
+  $("chtStop").onclick = () => (audio.pause(), setPos(0));
+
+  state.listen(window, "keyup", (e) => {
+    if (e.code === "Space") spaceDown = false;
+  });
+  state.listen(window, "keydown", (e) => {
+    if (!state.active || isTextEntry(e.target) || e.metaKey) return;
+    const k = e.key.toLowerCase();
+    if (e.code === "Space") {
+      e.preventDefault();
+      if (e.shiftKey) spaceDown = true;
+      else togglePlay();
+      return;
+    }
+    if (e.ctrlKey) {
+      if (k === "z" || k === "y") (e.preventDefault(), k === "y" || e.shiftKey ? redo() : undo());
+      else if (k === "a") (e.preventDefault(), selectAll());
+      else if (k === "c") (e.preventDefault(), copySel(false));
+      else if (k === "x") (e.preventDefault(), copySel(true));
+      else if (k === "v") (e.preventDefault(), pasteAtHead());
+      else if (k === "s") (e.preventDefault(), saveFnfc());
+      return;
+    }
+    const sn = snapSteps();
+    if (k === "arrowup" || k === "arrowdown") (e.preventDefault(), scrollBySteps((k === "arrowup" ? -1 : 1) * (e.shiftKey ? 4 : sn)));
+    else if (k === "arrowleft") (e.preventDefault(), setSnap(snapIdx - 1));
+    else if (k === "arrowright") (e.preventDefault(), setSnap(snapIdx + 1));
+    else if (k === "pageup" || k === "pagedown") {
+      e.preventDefault();
+      const m = timing.measureAtStep(Math.max(0, stepOf(posMs)));
+      const dir = k === "pageup" ? -1 : 1;
+      const target = dir > 0 ? m.start + m.len : Math.abs(stepOf(posMs) - m.start) > 1e-3 ? m.start : m.start - 1;
+      setPos(msOf(dir > 0 ? target : timing.measureAtStep(Math.max(0, target)).start));
+    } else if (k === "home") (e.preventDefault(), setPos(0));
+    else if (k === "end") (e.preventDefault(), setPos(songLengthMs()));
+    else if (k === "delete" || k === "backspace") (e.preventDefault(), deleteSelected());
+    else if (k === "escape") ((sel = new Set()), refreshEdit(), redraw());
+    else if (k === "m") (e.preventDefault(), mirrorSel(e.shiftKey));
+    else if (k === "h") panels.toggleAll();
+    else if (k === "1") setTool("place");
+    else if (k === "2") setTool("select");
+    else if (k === "3") setTool("pan");
+  });
+
+  // 初期表示
+  resetHistory();
+  refreshAll();
+
+  return {
+    onShow() {
+      resize();
+      syncHud();
+      redraw();
+    },
+    onHide() {
+      audio.pause(); // 別の画面へ移ったら止める
+      syncTransport();
+    },
+    undo,
+    redo,
+    // テスト・デバッグ用（開発者コンソールから app.states.get("chart").editor.api で触れる）
+    api: {
+      get doc() { return { variations, curVar, curDiff, songId }; },
+      get audio() { return audio; },
+      setPos, timing: () => timing, ingest,
+    },
+  };
+}
+
+return { mountChartEditor };
+})();
+
+/* ===== funkin-studio/js/states/ChartEditorState.js ===== */
+const __m43 = (() => {
+/* ============================================================
+   states/ChartEditorState.js — Chart Editor（V-Slice の chart.json / metadata.json の編集）の画面
+   ------------------------------------------------------------
+   構造は Stage Editor と同じ（入れ物 + chart/editor.js のロジック + chart/template.js の HTML）。
+   ============================================================ */
+const { EditorState } = __m18;
+const { template } = __m38;
+const { mountChartEditor } = __m42;
+
+class ChartEditorState extends EditorState {
+  static id = "chart";
+  static template = template;
+  static hudLabel = "Chart Editor";
+  static hudBack = "funkinMenu";
+
+  create() {
+    this.editor = mountChartEditor(this);
+  }
+  onShow() {
+    this.editor.onShow();
+  }
+  onHide() {
+    this.editor.onHide();
+  }
+  undo() {
+    this.editor.undo();
+  }
+  redo() {
+    this.editor.redo();
+  }
+}
+
+return { ChartEditorState };
+})();
+
+/* ===== funkin-studio/js/main.js ===== */
+const __m44 = (() => {
 /* ============================================================
    main.js — アプリの入口（Haxe の Main.hx / FlxGame の起動に相当）
    ------------------------------------------------------------
@@ -11992,6 +14969,7 @@ const { AnimateEditorState } = __m22;
 const { SparrowEditorState } = __m25;
 const { CharacterEditorState } = __m31;
 const { StageEditorState } = __m37;
+const { ChartEditorState } = __m43;
 
 const app = new App(document.getElementById("app"));
 
@@ -12011,6 +14989,7 @@ app.states.register(
   SparrowEditorState,
   CharacterEditorState,
   StageEditorState,
+  ChartEditorState,
 );
 
 startColorLab();

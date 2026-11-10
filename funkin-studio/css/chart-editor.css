@@ -1,0 +1,118 @@
+/* Chart Editor 専用スタイル。土台（全画面・Hud パネル）は hud.css */
+#chartWorkspace #chtCanvas {
+  background: var(--studio-canvas, #1d222a) !important;
+  background-image: none !important;
+  cursor: crosshair;
+  touch-action: none;
+}
+#chartWorkspace .hudDockLeft {
+  bottom: 130px;
+}
+#chartWorkspace .hudDockRight {
+  bottom: 130px;
+}
+#chartWorkspace .hudPanel h3 {
+  margin: 12px 0 4px;
+  font-size: 13px;
+  opacity: 0.85;
+}
+#chartWorkspace .hudPanel label {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+}
+#chartWorkspace .hudPanel .row > label {
+  flex: 1 1 0;
+  min-width: 0;
+}
+#chartWorkspace .hudPanel .row > label input[type="number"],
+#chartWorkspace .hudPanel .row > label input[type="text"],
+#chartWorkspace .hudPanel .row > label select,
+#chartWorkspace .hudPanel label > input[type="text"],
+#chartWorkspace .hudPanel label > input[type="number"],
+#chartWorkspace .hudPanel label > select,
+#chartWorkspace .hudPanel label > input[type="file"] {
+  width: 100%;
+}
+#chartWorkspace .chtInline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  font-size: 12px;
+}
+#chartWorkspace .chtInline select {
+  width: auto;
+}
+#chartWorkspace .hudBar button[aria-pressed="true"] {
+  background: var(--accent);
+  color: #fff;
+}
+#chtStatus {
+  white-space: pre-wrap;
+}
+.chtFileBtn {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  margin: 0 !important;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  background: var(--studio-button, #2a3550);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.chtFileBtn:hover {
+  filter: brightness(1.15);
+}
+.chtTable {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0;
+  max-height: 28vh;
+  overflow-y: auto;
+}
+.chtRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+.chtRow > * {
+  min-width: 0;
+}
+.chtRow input[type="number"],
+.chtRow input[type="text"] {
+  width: 100%;
+  flex: 1 1 0;
+}
+.chtRow .chtRowName {
+  flex: 0 0 auto;
+  max-width: 7em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chtRow.chtOff {
+  opacity: 0.5;
+}
+.chtField {
+  margin-top: 6px;
+}
+.chtField > summary {
+  cursor: pointer;
+  font-size: 12px;
+  opacity: 0.85;
+}
+.chtUnits {
+  opacity: 0.6;
+  font-size: 11px;
+}
+#chtTime {
+  min-width: 11em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

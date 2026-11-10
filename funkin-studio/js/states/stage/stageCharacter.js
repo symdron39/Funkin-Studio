@@ -51,6 +51,8 @@ export class StageCharacter {
   }
   reset() {
     this.json = null; // character.json
+    this.jsonName = "";
+    this.need = null; // 表示に必要なアトラス { path, kind, ref }（json を読んだ時点で決まる）
     this.atlas = null; // SpriteAtlas / AnimateAtlas
     this.view = null; // 描画用にまとめた値（下の build）
     this.fileNames = [];
@@ -59,39 +61,61 @@ export class StageCharacter {
   get loaded() {
     return !!this.view;
   }
+  /** json は読めたが、アトラスのファイルを待っている状態 */
+  get waiting() {
+    return !!this.json && !this.view;
+  }
 
-  /** ファイル（character.json とアトラスのファイルを一緒に）から読み込む。足りないものがあれば Error（何が足りないか書く） */
-  async loadFiles(files) {
-    const list = [...files];
-    let json = null,
-      jsonFile = null;
-    for (const f of list.filter((f) => /\.json$/i.test(f.name))) {
+  /**
+   * ファイルの中から character.json を探して読む（animations 配列を持つ JSON）。見つかれば true。
+   * アトラスはまだ読まない（= 分散方式の1段階目。resolve で後から探す）
+   */
+  async setJsonFrom(files) {
+    for (const f of [...files].filter((f) => /\.json$/i.test(f.name))) {
+      let j;
       try {
-        const j = JSON.parse((await f.text()).replace(/^﻿/, ""));
-        if (Array.isArray(j?.animations)) {
-          json = j;
-          jsonFile = f;
-          break;
-        }
+        j = JSON.parse((await f.text()).replace(/^\uFEFF/, ""));
       } catch {
-        /* spritemap などは読めても character.json ではない。次へ */
+        continue; // spritemap などは character.json ではない。次へ
       }
+      if (!Array.isArray(j?.animations)) continue;
+      const rt = String(j.renderType || "sparrow").toLowerCase();
+      if (!RENDER_TYPES.includes(rt)) throw Error(`renderType「${j.renderType}」は未対応です（${RENDER_TYPES.join(" / ")} に対応）`);
+      const ref = referenceAnimOf(j),
+        path = (ref?.assetPath || j.assetPath || "").trim();
+      if (!path) throw Error("assetPath がありません（character.json か、基準アニメに assetPath が必要です）");
+      this.reset();
+      this.json = j;
+      this.jsonName = f.name;
+      this.need = { path, kind: atlasKindOf(j, ref?.assetPath ? ref : null), ref };
+      return true;
     }
-    if (!json) throw Error("character.json（animations 配列を持つ JSON）が選択されていません");
-    const rt = String(json.renderType || "sparrow").toLowerCase();
-    if (!RENDER_TYPES.includes(rt)) throw Error(`renderType「${json.renderType}」は未対応です（${RENDER_TYPES.join(" / ")} に対応）`);
+    return false;
+  }
 
-    const ref = referenceAnimOf(json),
-      path = (ref?.assetPath || json.assetPath || "").trim(),
-      kind = atlasKindOf(json, ref?.assetPath ? ref : null);
-    if (!path) throw Error("assetPath がありません（character.json か、基準アニメに assetPath が必要です）");
-    const rest = list.filter((f) => f !== jsonFile);
-    const atlas = kind === "animate" ? await findAnimateAtlas(rest, path) : await findSpriteAtlas(rest, path, kind);
-    this.json = json;
+  /**
+   * ファイルの山（pool）から、表示に必要なアトラスを探して読む。無ければ Error（何が足りないか書く）。
+   * 成功すると view ができる。呼び直してもよい（足りないファイルを足したあとなど）
+   */
+  async resolve(pool) {
+    if (!this.json) throw Error("character.json がまだ選択されていません");
+    const { path, kind, ref } = this.need;
+    const list = [...pool];
+    const atlas = kind === "animate" ? await findAnimateAtlas(list, path) : await findSpriteAtlas(list, path, kind);
     this.atlas = atlas;
-    this.fileNames = [jsonFile.name, atlas.label];
+    this.fileNames = [this.jsonName, atlas.label];
     this.view = this.build(ref, path, kind);
     this.error = "";
+  }
+
+  /**
+   * 一括方式: character.json とアトラスのファイルを一緒に渡す。pool は、それまでに集めたファイル（分散方式で足したもの）
+   * ファイルの中に character.json が無くても、すでに json を読んでいればそれを使う
+   */
+  async loadFiles(files, pool = []) {
+    const list = [...files];
+    if (!(await this.setJsonFrom(list)) && !this.json) throw Error("character.json（animations 配列を持つ JSON）が選択されていません");
+    await this.resolve([...list, ...pool]);
   }
 
   /** 基準フレームなど、描画に必要な値を決める */

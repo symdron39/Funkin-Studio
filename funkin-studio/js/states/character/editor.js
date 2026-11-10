@@ -304,7 +304,19 @@ export function mountCharacterEditor(state) {
   }
   // Sparrow: prefix で始まるスプライトを、末尾の連番の順に並べて返す
   // （list を省略すると、いま選んでいるアニメのアトラス。基準フレームの探索では別アトラスを渡す）
+  // 結果は（アトラスごと・prefix ごとに）覚えておく。再生中は毎フレーム呼ばれるので、数千スプライトの絞り込み+並べ替えを繰り返さないため。
+  // ※ pool（スプライト配列）は読み込み直すと別の配列になるので、配列が変われば自然に捨てられる（WeakMap）
+  const framesCache = new WeakMap();
   function sparrowFrames(prefix, pool = sprites) {
+    let byPrefix = framesCache.get(pool);
+    if (!byPrefix) framesCache.set(pool, (byPrefix = new Map()));
+    const hit = byPrefix.get(prefix);
+    if (hit) return hit;
+    const found = sparrowFramesUncached(prefix, pool);
+    byPrefix.set(prefix, found);
+    return found;
+  }
+  function sparrowFramesUncached(prefix, pool) {
     const list = pool.filter((x) => x.name.startsWith(prefix));
     const tail = (x) => x.name.slice(prefix.length);
     list.sort((a, b) => {

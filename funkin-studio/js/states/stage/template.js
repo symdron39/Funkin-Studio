@@ -45,6 +45,7 @@ export const template = `
             <h3>画像アセット</h3>
             <label>画像・XML・TXT・AnimateAtlas を登録（複数可）<input id="stgImages" type="file" accept="image/*,.xml,.txt,.json,text/xml,text/plain,application/json" multiple /></label>
             <label class="stgDesktopOnly">フォルダごと登録（AnimateAtlas 向け・PC）<input id="stgAtlasDir" type="file" webkitdirectory multiple /></label>
+            <label class="stgDesktopOnly" title="mod のフォルダ全体を選ぶと、json とアセットが別のフォルダにあっても、assetPath から自動で探します。中身は必要になったときだけ読むので、大きなフォルダでも軽いです">mod フォルダ全体を登録（PC）<input id="stgPoolDir" type="file" webkitdirectory multiple /></label>
             <details>
               <summary>結び付けのルール</summary>
               <p class="tiny">
@@ -143,8 +144,19 @@ export const template = `
                 <label>Scroll Y<input id="stgCScrY" type="number" step="0.05" /></label>
               </div>
               <h3>表示するキャラクター</h3>
-              <label>character.json とアトラスのファイルを一緒に選択<input id="stgCharFiles" type="file" accept=".json,.png,.xml,.txt,image/*" multiple /></label>
-              <label class="stgDesktopOnly">フォルダごと選択（Multi 系・AnimateAtlas 向け・PC）<input id="stgCharDir" type="file" webkitdirectory multiple /></label>
+              <p class="tiny">読み込み方は2通りです。どちらも、選んだファイルは「ファイルの山」に集まり、あとから探されます。</p>
+              <details open>
+                <summary>① 一括: character.json とアトラスを一度に</summary>
+                <label>まとめて選択<input id="stgCharFiles" type="file" accept=".json,.png,.xml,.txt,image/*" multiple /></label>
+                <label class="stgDesktopOnly">フォルダごと選択（PC）<input id="stgCharDir" type="file" webkitdirectory multiple /></label>
+              </details>
+              <details open>
+                <summary>② 分散: json → アトラスを別々に</summary>
+                <label>character.json だけ選択<input id="stgCharJson" type="file" accept=".json,application/json" /></label>
+                <label>アトラスのファイルを追加（何度でも・別フォルダからでも）<input id="stgCharAssets" type="file" multiple /></label>
+                <label class="stgDesktopOnly">フォルダごと追加（PC）<input id="stgCharAssetsDir" type="file" webkitdirectory multiple /></label>
+              </details>
+              <div id="stgCharNeeds" class="stgAssetList"></div>
               <p class="tiny">対応: sparrow / packer / multisparrow / animateatlas / multianimateatlas。表示に使うのは基準アニメ（danceRight→danceLeft→idle）が使うアトラスだけです。</p>
               <div class="row"><button id="stgCharClear" type="button">キャラを外す</button></div>
               <p id="stgCharInfo" class="tiny"></p>

@@ -95,18 +95,25 @@ export function startAutosave(app) {
   // ============================================================
   // 3. 自動保存
   // ============================================================
-  // sig(): 今の編集状態の「指紋」（JSON文字列）。前回保存したものと同じなら保存を省く。まだ何も読み込んでいなければ null。
-  const sig = () =>
-    refreshA()?.anim && A.map && A.img?.naturalWidth
-      ? JSON.stringify([
-          A.anim,
-          A.map,
-          A.pngFileName,
-          A.img.src,
-          A.symbol,
-          Number(document.getElementById("frame")?.value) || 0,
-        ])
+  // 「何も変わっていない」ことを安く確かめるための軽い指紋（数字と短い文字列だけ。巨大な JSON は触らない）。
+  // 編集のたびに Undo 履歴が1件増える（またはシンボル・フレーム・画像が変わる）ので、これが同じなら中身も同じとみなせる…
+  // ただしドラッグ中の編集は Undo 履歴が増えないので、ポインタを離した・キー入力・入力欄の変更では「確実に変化あり」の印（strong）を立てる。
+  const light = () => {
+    const a = refreshA();
+    return a?.anim && a.map && a.img?.naturalWidth
+      ? [a.anUndo?.length, a.anRedo?.length, a.symbol, Number(document.getElementById("frame")?.value) || 0, a.img.src, a.pngFileName].join("|")
       : null;
+  };
+  let lastLight = null, // 最後に保存した時点の軽い指紋
+    strong = true; // 「確実に変化したかも」の印。起動後の最初の1回は確認する
+  // sig(): 今の編集状態の「指紋」（JSON文字列）。前回保存したものと同じなら保存を省く。まだ何も読み込んでいなければ null。
+  // 重い処理（Animation.json / spritemap 全体の JSON 化）なので、変化があり得るときだけ呼び、結果は保存にも使い回す。
+  const sig = () => {
+    if (!light()) return null;
+    const animStr = JSON.stringify(A.anim),
+      mapStr = JSON.stringify(A.map);
+    return { animStr, mapStr, text: [animStr, mapStr, A.pngFileName, A.img.src, A.symbol, Number(document.getElementById("frame")?.value) || 0].join("\u0000") };
+  };
   // 保存の本体。force=true は「今すぐ保存」（変化が無くても保存する）。
   // 保存中に呼ばれたら pending を立てておき、終わったあとで1回だけやり直す。
   // 画像は blob（バイナリ）のまま保存する（fetch(img.src) で取り出す）。
@@ -115,11 +122,16 @@ export function startAutosave(app) {
       pending = true;
       return;
     }
-    const signature = sig();
-    if (!signature) {
+    if (!force && !strong && light() === lastLight) return; // 変化なし（重い JSON 化をしない）
+    const cur = light();
+    const parts = sig();
+    if (!parts) {
       if (force) update("先にAnimateAtlasを読み込んでください");
       return;
     }
+    strong = false;
+    lastLight = cur;
+    const signature = parts.text;
     if (!force && signature === lastSignature) return;
     writing = true;
     try {
@@ -128,8 +140,8 @@ export function startAutosave(app) {
       if (!response.ok) throw Error("Atlas image unavailable");
       const blob = await response.blob();
       const data = {
-        anim: JSON.stringify(A.anim),
-        map: JSON.stringify(A.map),
+        anim: parts.animStr, // 変化の判定で作った文字列を、そのまま保存にも使う
+        map: parts.mapStr,
         image: blob,
         pngFileName: A.pngFileName,
         symbol: A.symbol,
@@ -200,7 +212,8 @@ export function startAutosave(app) {
       A.recenterPreview();
       A.frameLabelRefresh();
       A.legacyEditRefresh();
-      lastSignature = sig();
+      lastSignature = sig()?.text ?? "";
+      lastLight = light();
       update("復元しました: " + new Date(data.updated).toLocaleString());
     } catch (e) {
       update("復元失敗: " + e.message);
@@ -214,6 +227,8 @@ export function startAutosave(app) {
     try {
       await drop();
       lastSignature = "";
+      lastLight = null;
+      strong = true;
       update("復元データを削除しました");
     } catch (e) {
       update("削除失敗: " + e.message);
@@ -227,8 +242,23 @@ export function startAutosave(app) {
   // ============================================================
   // 画面が見えているときは4秒ごと、タブが隠れたとき、ページを離れるときに saveLocal() を呼ぶ。
   // 内容が前回と同じなら saveLocal の中で何もしないので、頻繁に呼んでも問題ない。
+  // 保存の判断は、ポインタを押している間（ドラッグ中）は見送り、ブラウザが手すきのとき（requestIdleCallback）に行う。
+  //   → 以前は4秒ごとに巨大な JSON を丸ごと文字列化していて、大きなアトラスを開いていると周期的に画面が固まった。
+  const idle = (fn) => (window.requestIdleCallback ? requestIdleCallback(fn, { timeout: 3000 }) : setTimeout(fn, 50));
+  let pointerDown = false;
+  document.addEventListener("pointerdown", () => (pointerDown = true), true);
+  document.addEventListener(
+    "pointerup",
+    () => {
+      pointerDown = false;
+      strong = true;
+    },
+    true,
+  );
+  for (const ev of ["keyup", "input", "change", "drop"]) document.addEventListener(ev, () => (strong = true), true);
   setInterval(() => {
-    if (!document.hidden) saveLocal();
+    if (document.hidden || pointerDown) return;
+    idle(() => saveLocal());
   }, 4000);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) saveLocal();

@@ -203,3 +203,10 @@ Number("abc")     // NaN （NaN === NaN も false。Number.isFinite() で調べ�
 
 - MDN Web Docs（日本語）: https://developer.mozilla.org/ja/ — `MDN addEventListener` のように検索するのが早い
 - javascript.info（日本語あり）: https://ja.javascript.info/
+
+
+## Chart Editor で出てくる JS の書き方
+- `new Set([...])` … Haxe の `Map<T,Bool>` の代わり。選択中のノーツを「オブジェクトそのもの」で持つ（`sel.has(note)`）。
+- `Float32Array` … 型付きの配列（Haxe の `haxe.ds.Vector<Float>`）。波形のピークを軽く持つのに使う。
+- `async / await` … 音声のデコードや ZIP の展開のような「あとで終わる処理」を、上から下へ読める形で書く（Haxe の `Future` / コールバックに相当）。
+- `canvas.setPointerCapture(id)` … ドラッグ中、ポインタが canvas の外に出ても pointermove を受け取り続ける。

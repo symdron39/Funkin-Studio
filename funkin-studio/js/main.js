@@ -34,6 +34,7 @@ import { AnimateEditorState } from "./states/AnimateEditorState.js";
 import { SparrowEditorState } from "./states/SparrowEditorState.js";
 import { CharacterEditorState } from "./states/CharacterEditorState.js";
 import { StageEditorState } from "./states/StageEditorState.js";
+import { ChartEditorState } from "./states/ChartEditorState.js";
 
 const app = new App(document.getElementById("app"));
 
@@ -53,6 +54,7 @@ app.states.register(
   SparrowEditorState,
   CharacterEditorState,
   StageEditorState,
+  ChartEditorState,
 );
 
 startColorLab();

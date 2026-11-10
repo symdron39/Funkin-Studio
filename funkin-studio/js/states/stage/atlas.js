@@ -6,7 +6,7 @@
      ・AnimateAtlas      … Animation.json の「タイムライン」が、spritemap の小さな四角を行列で並べて絵を作る
    この違いを呼び出し側（props・キャラ）に見せないよう、どちらも同じ形の「フレーム」を返す:
 
-       frame = { w, h, bx, by, draw(ctx, x, y, ref, stageMatrix, img) }
+       frame = { w, h, bx, by, draw(ctx, x, y, ref, stageMatrix, tint) }
          w, h   : フレームの枠の大きさ（V-Slice の frameWidth / frameHeight。ここから hitbox・足元・カメラ焦点が決まる）
          bx, by : 枠の左上の、アトラス座標での位置（Sparrow は 0,0）
          draw   : 枠の左上が (x, y) に来るように描く（Flixel と同じ）
@@ -33,13 +33,39 @@ class SpriteFrame {
     this.bx = 0;
     this.by = 0;
   }
-  /** img を渡すと、その画像で描く（tint 済みの画像に差し替えるとき用） */
-  draw(ctx, x, y, ref, stageMatrix, img) {
+  /**
+   * tint（{ r, g, b }）を渡すと、その色を掛けて描く（Flixel の color = 乗算）。
+   * 色を掛けるのは「使うスプライト1枚分」だけ（小さなキャンバスを作って覚える）。
+   * アトラス全体を色付きで作り直すと、大きなアトラスでは数百ms 固まり、メモリも食うため。
+   */
+  draw(ctx, x, y, ref, stageMatrix, tint) {
     const sp = this.sp;
     const sw = sp.rotated ? sp.height : sp.width,
       sh = sp.rotated ? sp.width : sp.height;
     // frameX / frameY は「トリミングされた分」の負のオフセット
-    paintSparrow(ctx, sp, img || this.image, x - (sp.frameX || 0), y - (sp.frameY || 0), sw, sh);
+    const dx = x - (sp.frameX || 0),
+      dy = y - (sp.frameY || 0);
+    if (!tint) return paintSparrow(ctx, sp, this.image, dx, dy, sw, sh);
+    ctx.drawImage(this._tinted(tint, sw, sh), dx, dy);
+  }
+  _tinted(tint, sw, sh) {
+    const key = `${tint.r},${tint.g},${tint.b}`;
+    this._tints ??= new Map();
+    let c = this._tints.get(key);
+    if (!c) {
+      c = document.createElement("canvas");
+      c.width = Math.max(1, sw);
+      c.height = Math.max(1, sh);
+      const g = c.getContext("2d");
+      paintSparrow(g, this.sp, this.image, 0, 0, sw, sh);
+      g.globalCompositeOperation = "multiply";
+      g.fillStyle = `rgb(${tint.r},${tint.g},${tint.b})`;
+      g.fillRect(0, 0, c.width, c.height);
+      g.globalCompositeOperation = "destination-in"; // 透明な部分は透明のまま（乗算で塗られた分を削る）
+      paintSparrow(g, this.sp, this.image, 0, 0, sw, sh);
+      this._tints.set(key, c);
+    }
+    return c;
   }
 }
 
@@ -51,6 +77,7 @@ export class SpriteAtlas {
     this.sprites = sprites;
     this.label = label;
     this._cache = new Map();
+    this._seq = new Map(); // frames() の結果（再生中に毎フレーム探し直さないため）
   }
   frameOf(sp) {
     let f = this._cache.get(sp);
@@ -86,6 +113,14 @@ export class SpriteAtlas {
    *   indexOnly（packer の prop）: frameIndices をファイル順の番号としてそのまま使う（Stage.hx: animation.add(name, frameIndices)）
    */
   frames(anim, { indexOnly = false } = {}) {
+    const key = `${indexOnly ? "i" : "p"}|${anim?.prefix ?? anim?.name ?? ""}|${JSON.stringify(anim?.frameIndices ?? null)}`;
+    const hit = this._seq.get(key);
+    if (hit) return hit;
+    const seq = this._frames(anim, indexOnly);
+    this._seq.set(key, seq);
+    return seq;
+  }
+  _frames(anim, indexOnly) {
     if (indexOnly) {
       const all = this.all(),
         ix = Array.isArray(anim?.frameIndices) && anim.frameIndices.length ? anim.frameIndices : null;
@@ -124,6 +159,18 @@ class AnimateFrame {
     this.atlas = atlas;
     this.spec = spec;
   }
+  /**
+   * このフレームを作る「スプライトと行列」の一覧 [{ sp, m }]。タイムラインをたどるのは重いので、初回だけ計算して使い回す
+   * （再生中に毎フレームたどり直すと、大きなアトラスでは画面が固まる原因になる）
+   */
+  get list() {
+    if (!this._list) {
+      const out = [];
+      this.atlas.traverse(this.spec, (sp, m) => out.push({ sp, m }));
+      this._list = out;
+    }
+    return this._list;
+  }
   /** 枠（描画した全スプライトを囲む四角）。初回だけ計算してキャッシュする */
   get box() {
     if (!this._box) {
@@ -131,7 +178,7 @@ class AnimateFrame {
         y0 = Infinity,
         x1 = -Infinity,
         y1 = -Infinity;
-      this.atlas.traverse(this.spec, (sp, m) => {
+      for (const { sp, m } of this.list) {
         for (const [px, py] of [[0, 0], [sp.w, 0], [0, sp.h], [sp.w, sp.h]]) {
           const x = m[0] * px + m[2] * py + m[4],
             y = m[1] * px + m[3] * py + m[5];
@@ -140,7 +187,7 @@ class AnimateFrame {
           x1 = Math.max(x1, x);
           y1 = Math.max(y1, y);
         }
-      });
+      }
       this._box = Number.isFinite(x0) ? { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) } : { x: 0, y: 0, w: 1, h: 1 };
     }
     return this._box;
@@ -159,14 +206,18 @@ class AnimateFrame {
   }
   draw(ctx, x, y, ref, stageMatrix) {
     // 既定: このフレーム自身の枠の左上を (x, y) に置く。stageMatrix: ステージ原点を基準枠に対して固定する
-    const origin = stageMatrix && ref ? [x - ref.bx, y - ref.by] : [x - this.bx, y - this.by];
-    this.atlas.traverse(this.spec, (sp, m) => {
-      ctx.save();
-      ctx.transform(1, 0, 0, 1, origin[0], origin[1]);
-      ctx.transform(...m);
+    const ox = stageMatrix && ref ? x - ref.bx : x - this.bx,
+      oy = stageMatrix && ref ? y - ref.by : y - this.by;
+    // スプライトごとに save / restore すると、数百枚あるフレームで非常に遅い。
+    // 今の変換を1回だけ控えて、スプライトごとに setTransform（= 控えた変換 × 原点 × そのスプライトの行列）で描く
+    const t = ctx.getTransform();
+    const base = mul([t.a, t.b, t.c, t.d, t.e, t.f], [1, 0, 0, 1, ox, oy]);
+    for (const { sp, m } of this.list) {
+      const M = mul(base, m);
+      ctx.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
       ctx.drawImage(sp.image, sp.x, sp.y, sp.w, sp.h, 0, 0, sp.w, sp.h);
-      ctx.restore();
-    });
+    }
+    ctx.setTransform(t);
   }
 }
 
@@ -178,6 +229,8 @@ export class AnimateAtlas {
     this.label = label;
     this.legacy = !!animation?.ANIMATION;
     this._frames = new Map(); // フレームの枠は計算が重いので、同じフレームは作り回す
+    this._seq = new Map(); // frames() の結果
+    this._symMap = null;
     this.sprites = new Map(); // spritemap のスプライト名 → { x, y, w, h, rotated, image }
     for (const { json, image } of parts) {
       for (const item of json?.ATLAS?.SPRITES || []) {
@@ -202,7 +255,9 @@ export class AnimateAtlas {
     if (sp) emit(sp, sp.rotated ? mul(m, ROT(sp.w)) : m);
   }
   _symbol(name) {
-    return (this.animation.SD?.S || []).find((x) => x.SN === name);
+    // シンボルは数百個あることがあり、毎回の線形探索は遅いので、名前 → シンボルの表を1回だけ作る
+    if (!this._symMap) this._symMap = new Map((this.animation.SD?.S || []).map((x) => [x.SN, x]));
+    return this._symMap.get(name);
   }
   _modern(name, fr, m, depth, emit) {
     if (depth > 20) return;
@@ -292,6 +347,12 @@ export class AnimateAtlas {
    *   frameIndices    : 全体の中の番号で絞り込む
    */
   frames(anim) {
+    const key = JSON.stringify([anim?.prefix ?? anim?.name ?? "", anim?.animType ?? "", anim?.frameIndices ?? null]);
+    let seq = this._seq.get(key);
+    if (!seq) this._seq.set(key, (seq = this._framesOf(anim)));
+    return seq;
+  }
+  _framesOf(anim) {
     const a = anim || {};
     const pref = String(a.prefix ?? a.name ?? "");
     let all = [];
@@ -380,38 +441,65 @@ export function animateGroups(files) {
   return dirs.map((dir) => ({ dir, files: list.filter((f) => relDir(f) === dir) }));
 }
 
+/** ファイルの置き場所つきの名前（フォルダごと選んだときは「フォルダ/…/名前」、直接選んだときは名前だけ） */
+export const relPath = (f) => f.webkitRelativePath || f.name;
+// ファイルが数千個あっても探せるよう、正規化した名前は1回だけ計算する
+const _pathCache = new WeakMap();
+const pathNoExt = (f) => {
+  let v = _pathCache.get(f);
+  if (v === undefined) _pathCache.set(f, (v = norm(relPath(f)).replace(/\.[^./]+$/, "")));
+  return v;
+};
+
 /**
- * assetPath（フォルダ）に対応する AnimateAtlas を、選ばれたファイルから探して作る。
- *   1. フォルダ名が assetPath と合う組  2. 候補が1組だけならそれ
+ * ファイルの山（pool）から、assetPath に合うファイルを探す。
+ *   ① 置き場所つきの名前の末尾が assetPath と一致する（mod のフォルダ全体を選んだときは、images/characters/bf.png のように完全に特定できる）
+ *   ② 無ければ、拡張子を除いた名前が assetPath の最後の1つと一致する（ファイルを直接選んだとき）
+ * extRe: 対象の拡張子（例 /\.png$/i）
+ */
+export function matchFile(pool, assetPath, extRe) {
+  const want = norm(assetPath);
+  if (!want) return null;
+  const cand = pool.filter((f) => extRe.test(f.name));
+  return cand.find((f) => pathNoExt(f) === want || pathNoExt(f).endsWith("/" + want)) || cand.find((f) => stem(f.name) === lastSeg(want)) || null;
+}
+
+/**
+ * assetPath（フォルダ）に対応する AnimateAtlas を、ファイルの山から探して作る。
+ *   1. フォルダ名が assetPath と合う組  2. 候補が1組だけならそれ（strict のときは 1 だけ）
  * 見つからなければ Error（何をどう選べばよいか書く）
  */
-export async function findAnimateAtlas(files, assetPath) {
+export async function findAnimateAtlas(files, assetPath, { strict = false } = {}) {
   const groups = animateGroups(files);
-  if (!groups.length) throw Error(`AnimateAtlas「${assetPath}」の Animation.json が選択されていません（spritemap1.json / spritemap1.png も一緒に）`);
+  if (!groups.length) throw Error(`AnimateAtlas「${assetPath}」の Animation.json が見つかりません（spritemap1.json / spritemap1.png も一緒に）`);
   const want = norm(assetPath);
   const hit = groups.find((g) => norm(g.dir) === want || (g.dir && (norm(g.dir).endsWith("/" + want) || want.endsWith("/" + norm(g.dir)) || lastSeg(g.dir) === lastSeg(want))));
-  const pick = hit || (groups.length === 1 ? groups[0] : null);
+  const pick = hit || (!strict && groups.length === 1 ? groups[0] : null);
   if (!pick) throw Error(`AnimateAtlas が ${groups.length} セットあり、「${assetPath}」がどれか分かりません。フォルダごと選ぶか、1セットずつ選んでください`);
   return buildAnimateAtlas(pick.files, assetPath);
 }
 
 /**
- * assetPath に対応する Sparrow / Packer アトラスを、選ばれたファイルから探して作る。
- * ファイル名（拡張子なし）が assetPath の末尾と合う PNG + (XML | TXT)。合うものが無くて PNG と定義が1つずつなら、それを使う。
+ * assetPath に対応する Sparrow / Packer アトラスを、ファイルの山から探して作る。
+ * PNG と (XML | TXT) を matchFile で探す。合うものが無くて PNG と定義が1つずつなら、それを使う。
  */
 export async function findSpriteAtlas(files, assetPath, kind) {
   const list = [...files];
-  const pngs = list.filter((f) => /\.(png|webp|jpe?g)$/i.test(f.name) && !isSpritemapPng(f, list));
-  const defs = list.filter((f) => (kind === "packer" ? /\.txt$/i.test(f.name) : /\.xml$/i.test(f.name)));
-  const key = lastSeg(assetPath);
-  const png = pngs.find((f) => stem(f.name) === key) || (pngs.length === 1 && defs.length === 1 ? pngs[0] : null);
-  const def = defs.find((f) => stem(f.name) === key) || (defs.length === 1 && png ? defs[0] : null);
+  const png = matchFile(list, assetPath, /\.(png|webp|jpe?g)$/i) || soleOf(list, /\.(png|webp|jpe?g)$/i, kind);
+  const def = matchFile(list, assetPath, kind === "packer" ? /\.txt$/i : /\.xml$/i) || soleOf(list, kind === "packer" ? /\.txt$/i : /\.xml$/i, kind);
   const ext = kind === "packer" ? "TXT" : "XML";
-  if (!png) throw Error(`「${assetPath}」の画像（${key}.png）が選択されていません`);
-  if (!def) throw Error(`「${assetPath}」の ${ext}（${key}.${ext.toLowerCase()}）が選択されていません`);
+  const key = lastSeg(assetPath);
+  if (!png) throw Error(`「${assetPath}」の画像（${key}.png）が見つかりません`);
+  if (!def) throw Error(`「${assetPath}」の ${ext}（${key}.${ext.toLowerCase()}）が見つかりません`);
   const text = await def.text();
   const sprites = kind === "packer" ? parsePackerText(text) : parseSparrowXml(text);
   return new SpriteAtlas(kind, await loadImage(png), sprites, `${png.name} + ${def.name}`);
+}
+/** 該当する種類のファイルが1つしか無ければそれ（spritemap の PNG は除く）。選んだ数が少ないときの救済 */
+function soleOf(list, re) {
+  const animDirs = new Set(list.filter((f) => isAnimationJsonName(f.name)).map(relDir));
+  const hits = list.filter((f) => re.test(f.name) && !(/^spritemap\d*\.png$/i.test(f.name) && animDirs.has(relDir(f))));
+  return hits.length === 1 ? hits[0] : null;
 }
 /** spritemapN.png（AnimateAtlas の部品）か。同じ場所に Animation.json があれば、そちらの部品として扱う */
 export function isSpritemapPng(f, list) {

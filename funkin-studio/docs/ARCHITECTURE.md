@@ -22,9 +22,11 @@ funkin-studio/
       SparrowEditorState.js
       CharacterEditorState.js
       StageEditorState.js        ← Stage Editor（Funkin' Editor の中。画面クラスは入れ物だけ）
+      ChartEditorState.js        ← Chart Editor（同上）
       animate/  template.js(HTML)  editor.js(ロジック)  partsPanel.js(パーツ管理パネル)
       sparrow/  template.js  editor.js
       character/ template.js  editor.js
+      chart/     template.js  editor.js  chartData.js  audio.js  zip.js
       stage/     template.js  editor.js  stageData.js  stageCharacter.js  atlas.js  sparrowAtlas.js
     ui/Hud.js                   ← 上部バー（Undo/Redo/Home/言語）
     ui/Viewport.js              ← 全画面プレビューのパン/ズーム（= FlxCamera）。グリッド・基準線も描く
@@ -173,3 +175,32 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 
 - `core/appInfo.js` に `SUPPORTED_VERSIONS`（対応している V-Slice のバージョン範囲）を1か所だけ置き、ヘッダー表示（`ui/Hud.js`）と、書き出す character.json の `generatedBy`（`Funkin' Studio (0.8.6-0.8.8)` の形）が同じ値を使う。
 - `generatedBy` はユーザーが編集できない。Character Editor で書き出すとき、元ファイルに別の値があっても常にこの値へ上書きする。対応バージョンを上げるときは `SUPPORTED_VERSIONS` だけを書き換える。
+
+## ファイルの山（pool）と読み込み方式（Stage Editor）
+
+- 選んだファイルは全部 `pool`（`File` の配列。中身は読まない）に集まる。キャラの読み込みと prop 画像の自動結び付けは、必要になったときだけ pool から探して読む。
+- 探し方（`atlas.js` の `matchFile`）: ①置き場所つきの名前の末尾が assetPath と一致 → ②ファイル名（拡張子なし）が一致。フォルダごと選ぶと `webkitRelativePath` が入るので、`images/characters/bf.png` のように完全に特定できる。
+- **キャラの読み込みは2方式**:
+  - 一括: character.json とアトラスを一度に選ぶ（従来どおり）。
+  - 分散: ①character.json だけ選ぶ（`StageCharacter.setJsonFrom`）→ ②アトラスのファイルを別フォルダからでも何度でも足す（足すたびに `resolve(pool)` を再試行）。「mod フォルダ全体を登録」で pool に入れておけば②は不要。
+- stage.json を開いたとき・ファイルを足したときに、画像の無い prop を pool から自動で結び付ける（`linkFromPool`）。
+
+## 重さの対策（v3.8 / v3.9）
+
+- **画像は ImageBitmap で持つ（v3.9。XML+PNG で固まる主因）**: `<img>` のままだと、ブラウザは「デコードした画像」を容量の上限つきのキャッシュに置き、あふれると捨てる。大きなアトラスが何十枚もあると、毎フレーム捨てられた PNG をデコードし直して画面が固まる。`loadImage`（`stage/sparrowAtlas.js`）は `createImageBitmap` を使い、デコード済みのピクセルを持ち続ける（`naturalWidth/Height` も付けて、既存コードと互換）。計測（40アトラス（2048²）・120 prop を再生）: 1フレーム約620ms → 16.7ms（60fps）、読み込み 4.1秒 → 1.2秒。
+- **色（tint）はスプライト1枚単位（v3.9）**: 以前はアトラス全体を色付きで作り直していた（大きいと数百ms 固まる・メモリを食う）。今は使うスプライト1枚分だけ小さなキャンバスに作って覚える。
+- **Autosave**: 以前は4秒ごとに Animation.json / spritemap 全体を `JSON.stringify` して変化を調べていた（数十MBだと周期的に固まる可能性）。今は「確実に変化したかも」の印（ポインタを離した・キー入力・入力欄の変更）と軽い指紋（Undo 件数・シンボル・フレーム・画像）で、変化がないときは何もしない。判定はポインタ操作中を避け、手すき（`requestIdleCallback`）に行い、判定で作った文字列を保存にも使い回す。
+- **AnimateAtlas の描画**: フレームごとの「スプライト+行列」の一覧を初回だけ作って使い回す（毎回タイムラインをたどり直さない）。シンボルは表（Map）で引く。描画はスプライトごとの `save/restore` をやめ、`setTransform` に変更。
+- **フレーム列の探し直し**: `frames()`（prefix での絞り込みと並べ替え）の結果を、アトラスごとに覚える。Character Editor の `sparrowFrames` も同様。
+- **Stage Editor の描画ループ**: 画面の外の物は描かない。再生中の描画頻度は、アニメの最大フレームレートまでに抑える。
+- 備考: Character Editor / Sparrow Editor / Animate Editor の画像は従来の `<img>` のまま（アトラスは基本1枚なので、上の問題は起きにくい）。
+
+
+## Chart Editor（states/chart/）
+- **データ**（`chartData.js`）: V-Slice 0.8.x の `SongData.hx` に合わせた metadata / chart の既定値・整形・書き出し。`version` と `generatedBy` は書き出しのたびに上書き。知らない欄は消さずに残す。組み込みイベント7種（FocusCamera / ZoomCamera / ScrollSpeed / SetCameraBop / SetHealthIcon / PlayAnimation / SetTargetBopSpeed）は `EVENT_SCHEMAS`（0.8.6 の `getEventSchema` を写したもの）。フォームはこのスキーマから自動生成。スキーマに無いイベントは value を JSON で編集。
+- **時間**: ノーツ・イベントは ms で保存。グリッドの位置は `Timing`（`Conductor.hx` と同じ式: beatLength = 60000/bpm × 4/分母、1拍 = 4 step）で step に変換する。
+- **列**: 左から 相手(d=4-7) / プレイヤー(d=0-3) / イベント。`noteDataToGridColumn` と同じ入れ替え。
+- **ファイル**: `.fnfc`（= ZIP。`manifest.json` + `<id>-chart[-var].json` + `<id>-metadata[-var].json` + `Inst[-id].ogg` + `Voices-<char>[-var].ogg`）を `zip.js` で読み書き（読みは DecompressionStream、書きは無圧縮）。JSON と音声は複数選択で一度に、または「追加」であとから足せる。
+- **音声**（`audio.js`）: Web Audio。トラックごとに音量・ミュート・波形（10ms ごとのピーク）。いまのバリエーションで使うトラックだけが鳴る。再生位置は AudioContext の時計から計算。
+- **履歴**: Stage Editor と同じ JSON スナップショット方式（variations 全体 + いまの難易度）。選択は Undo で解除。
+- **未対応**: ノーツ種類（kind）ごとの params スキーマ、スクリプトが定義するイベントのスキーマ（HScript 対応のときに読む予定）、beatTuplets（`bt`）の編集（値は残す）、ライブ入力。

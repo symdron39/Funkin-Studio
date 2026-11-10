@@ -6,17 +6,32 @@
    ※ Character Editor 側は動作確認済みのまま触らないため、同じコードが2か所にある。将来ここへ統合できる。
    ============================================================ */
 
-/** File → 読み込み済みの HTMLImageElement（decode まで待つ） */
+/**
+ * File → デコード済みの画像（ImageBitmap）。
+ * <img> のままだと、ブラウザは「デコードした画像」を容量の上限つきのキャッシュに置き、あふれると捨てる。
+ * 大きなアトラスが何十枚もあると、毎フレーム捨てられた画像を PNG からデコードし直して、画面が固まる。
+ * ImageBitmap はデコード済みのピクセルをそのまま持ち続けるので、これが起きない。
+ * 既存コードが使う naturalWidth / naturalHeight も付けておく。
+ */
 export async function loadImage(file) {
-  const img = new Image();
-  const url = URL.createObjectURL(file);
+  let bmp;
   try {
-    img.src = url;
-    await img.decode();
-  } finally {
-    URL.revokeObjectURL(url); // decode が終わった画像は URL が無くても描ける
+    bmp = await createImageBitmap(file); // PNG / WebP / JPEG をデコード（メインスレッドを塞がない）
+  } catch {
+    // createImageBitmap が使えない・失敗したときは、従来どおり <img> で読む
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    try {
+      img.src = url;
+      await img.decode();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+    return img;
   }
-  return img;
+  Object.defineProperty(bmp, "naturalWidth", { value: bmp.width });
+  Object.defineProperty(bmp, "naturalHeight", { value: bmp.height });
+  return bmp;
 }
 
 /** XML 文字列 → スプライト一覧 [{name, x, y, width, height, frameX, frameY, frameWidth, frameHeight, rotated}] */
