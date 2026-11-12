@@ -10568,9 +10568,13 @@ function makeInfo(path, stripExt) {
   const segs = splitPath(path).map((s) => s.toLowerCase());
   if (stripExt && segs.length) segs[segs.length - 1] = segs[segs.length - 1].replace(/\.[^./]+$/, "");
   // 最初に出てくる images / data / … から後ろを「ルート以降のパス」、手前を origin（mod フォルダ名）とする
-  let root = segs.findIndex((s, i) => (stripExt ? i < segs.length - 1 : true) && ANCHORS.has(s));
-  if (root < 0) root = 0;
-  return { segs, root, noExt: segs.slice(root).join("/"), origin: segs.slice(0, root).join("/"), flat: segs.length <= 1 };
+  const isA = (i) => (stripExt ? i < segs.length - 1 : i < segs.length) && ANCHORS.has(segs[i]);
+  let first = segs.findIndex((_, i) => isA(i));
+  if (first < 0) first = 0;
+  // assets/shared/images/… や assets/preload/images/… の shared / preload は「ラッパー」なので飛ばし、images/ を本当のルートにする
+  let root = first;
+  while ((segs[root] === "shared" || segs[root] === "preload") && isA(root + 1)) root++;
+  return { segs, root, noExt: segs.slice(root).join("/"), origin: segs.slice(0, first).join("/"), flat: segs.length <= 1 };
 }
 const _cache = new WeakMap();
 /** { segs: 小文字の各フォルダ名, root: ルートの位置, noExt: 拡張子なしのルート以降, origin } */
@@ -10591,6 +10595,7 @@ function normAsset(p) {
   return String(p || "")
     .replace(/^[^:/\\]+:/, "")
     .replace(/\\/g, "/")
+    .replace(/\/\*+$/, "") // "stages/*" のような末尾のワイルドカードはフォルダ指定として扱う
     .replace(/^\/+|\/+$/g, "")
     .replace(/\.[a-z0-9]+$/i, "")
     .toLowerCase();

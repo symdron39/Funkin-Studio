@@ -225,3 +225,4 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 - zip は `openZipLazy` で一覧だけ読み、`LazyZipFile.blob()` で必要な時にだけ展開（スマホ向け）。
 - ノートスキン（runtime/noteStyle.js）も同じ規則（パス + origin）で画像/XML を選ぶ。
 - 次版: プレイテストへステージ・キャラ追加（同じ pool を使う）。
+- v3.13.1: `assets/shared/images/…` や `preload/images/…` の shared / preload は「ラッパー」として飛ばし、images/ をルートにする（origin は shared の手前まで）。assetPath 末尾の `/*` はフォルダ指定として無視。
