@@ -46,6 +46,12 @@ export const template = `
             <label>画像・XML・TXT・AnimateAtlas を登録（複数可）<input id="stgImages" type="file" accept="image/*,.xml,.txt,.json,text/xml,text/plain,application/json" multiple /></label>
             <label class="stgDesktopOnly">フォルダごと登録（AnimateAtlas 向け・PC）<input id="stgAtlasDir" type="file" webkitdirectory multiple /></label>
             <label class="stgDesktopOnly" title="mod のフォルダ全体を選ぶと、json とアセットが別のフォルダにあっても、assetPath から自動で探します。中身は必要になったときだけ読むので、大きなフォルダでも軽いです">mod フォルダ全体を登録（PC）<input id="stgPoolDir" type="file" webkitdirectory multiple /></label>
+            <label title="mod を zip にして 1 つ選びます（スマホ可）。zip の中身は必要になったものだけ取り出すので、大きな mod でも軽いです">mod パックを zip で登録<input id="stgPoolZip" type="file" accept=".zip,application/zip,application/x-zip-compressed" /></label>
+            <div id="stgPack" hidden>
+              <div id="stgPackInfo" class="tiny"></div>
+              <div class="row"><label>ステージ <select id="stgPackStage"></select></label><button id="stgPackOpen" type="button">開く</button></div>
+              <div class="row"><label>キャラ <select id="stgPackChar"></select></label><button id="stgPackLoadChar" type="button">選択中のスロットへ</button></div>
+            </div>
             <details>
               <summary>結び付けのルール</summary>
               <p class="tiny">

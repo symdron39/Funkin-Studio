@@ -1113,8 +1113,13 @@ body:has(.hudWorkspace:not([hidden])) {
     <style>
 /* ===== ./funkin-studio/css/chart-editor.css ===== */
 /* Chart Editor 専用スタイル。土台（全画面・Hud パネル）は hud.css */
+/* 背景はテーマの「キャンバス色」（明るい色）を使わず、目に優しい暗色に固定する */
+#chartWorkspace,
+#chartWorkspace .hudWorkspace {
+  background: #161a21 !important;
+}
 #chartWorkspace #chtCanvas {
-  background: var(--studio-canvas, #1d222a) !important;
+  background: #161a21 !important;
   background-image: none !important;
   cursor: crosshair;
   touch-action: none;
@@ -1229,6 +1234,74 @@ body:has(.hudWorkspace:not([hidden])) {
   min-width: 11em;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+/* ---- プレイテスト ---- */
+.chtPlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  background: #0d1016;
+  color: #e8ecf4;
+}
+.chtPlay[hidden] {
+  display: none;
+}
+#chtPlayCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+.chtPlayPauseBtn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+}
+.chtPlayCard {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(560px, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  padding: 14px 16px;
+  border: 1px solid var(--line, #3a4660);
+  border-radius: 12px;
+  background: rgba(24, 29, 40, 0.96);
+  z-index: 3;
+}
+.chtPlayCard[hidden] {
+  display: none;
+}
+.chtPlayCard h2 {
+  margin: 0 0 6px;
+}
+.chtPlayCard label {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+}
+.chtPlayCard .row > label {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.chtPlayCard input[type="number"],
+.chtPlayCard input[type="text"],
+.chtPlayCard select {
+  width: 100%;
+}
+#chtPlayInfo {
+  white-space: pre-wrap;
+  margin-bottom: 6px;
+}
+#chtPlayHist {
+  width: 100%;
+  margin: 8px 0;
+  border-radius: 6px;
 }
 
 </style>
@@ -8637,6 +8710,7 @@ const __m29 = (() => {
  * 既存コードが使う naturalWidth / naturalHeight も付けておく。
  */
 async function loadImage(file) {
+  if (file.lazy) file = await file.blob(); // zip の中のファイル: ここで初めて取り出す
   let bmp;
   try {
     bmp = await createImageBitmap(file); // PNG / WebP / JPEG をデコード（メインスレッドを塞がない）
@@ -9945,6 +10019,12 @@ const template = `
             <label>画像・XML・TXT・AnimateAtlas を登録（複数可）<input id="stgImages" type="file" accept="image/*,.xml,.txt,.json,text/xml,text/plain,application/json" multiple /></label>
             <label class="stgDesktopOnly">フォルダごと登録（AnimateAtlas 向け・PC）<input id="stgAtlasDir" type="file" webkitdirectory multiple /></label>
             <label class="stgDesktopOnly" title="mod のフォルダ全体を選ぶと、json とアセットが別のフォルダにあっても、assetPath から自動で探します。中身は必要になったときだけ読むので、大きなフォルダでも軽いです">mod フォルダ全体を登録（PC）<input id="stgPoolDir" type="file" webkitdirectory multiple /></label>
+            <label title="mod を zip にして 1 つ選びます（スマホ可）。zip の中身は必要になったものだけ取り出すので、大きな mod でも軽いです">mod パックを zip で登録<input id="stgPoolZip" type="file" accept=".zip,application/zip,application/x-zip-compressed" /></label>
+            <div id="stgPack" hidden>
+              <div id="stgPackInfo" class="tiny"></div>
+              <div class="row"><label>ステージ <select id="stgPackStage"></select></label><button id="stgPackOpen" type="button">開く</button></div>
+              <div class="row"><label>キャラ <select id="stgPackChar"></select></label><button id="stgPackLoadChar" type="button">選択中のスロットへ</button></div>
+            </div>
             <details>
               <summary>結び付けのルール</summary>
               <p class="tiny">
@@ -10287,8 +10367,367 @@ function serializeStage(doc, compact = true) {
 return { STAGE_VERSION, CHAR_IDS, CHAR_LABEL, clone, round3, defaultCharacter, defaultStage, normalizeStage, normalizeProp, newProp, newRect, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas, serializeStage };
 })();
 
-/* ===== funkin-studio/js/states/stage/atlas.js ===== */
+/* ===== funkin-studio/js/states/chart/zip.js ===== */
 const __m34 = (() => {
+/* ============================================================
+   chart/zip.js — .fnfc（= ZIP）の読み書き（外部ライブラリなし）
+   ------------------------------------------------------------
+   読み: 中央ディレクトリを読み、deflate は DecompressionStream("deflate-raw")、無圧縮はそのまま。
+   書き: 無圧縮（store）で作る。音声（ogg/mp3）は元々圧縮済みなので、サイズはほぼ変わらない。
+   ============================================================ */
+let crcTable = null;
+function crc32(bytes) {
+  if (!crcTable) {
+    crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      crcTable[n] = c >>> 0;
+    }
+  }
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 255] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+async function inflateRaw(data) {
+  const ds = new DecompressionStream("deflate-raw");
+  const stream = new Blob([data]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** @returns Map<名前, Uint8Array> */
+async function readZip(buffer) {
+  const u8 = new Uint8Array(buffer),
+    dv = new DataView(buffer);
+  let eocd = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("ZIP として読めません（終端が見つかりません）");
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const dec = new TextDecoder();
+  const out = new Map();
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true),
+      csize = dv.getUint32(p + 20, true),
+      nlen = dv.getUint16(p + 28, true),
+      xlen = dv.getUint16(p + 30, true),
+      clen = dv.getUint16(p + 32, true),
+      lho = dv.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nlen));
+    p += 46 + nlen + xlen + clen;
+    if (name.endsWith("/")) continue;
+    const lnlen = dv.getUint16(lho + 26, true),
+      lxlen = dv.getUint16(lho + 28, true);
+    const start = lho + 30 + lnlen + lxlen;
+    const raw = u8.subarray(start, start + csize);
+    if (method === 0) out.set(name, raw.slice());
+    else if (method === 8) out.set(name, await inflateRaw(raw));
+    else throw new Error(`未対応の圧縮方式です (${name}: method ${method})`);
+  }
+  return out;
+}
+
+/** @param entries [{ name, data: Uint8Array }] @returns Blob */
+function writeZip(entries) {
+  const enc = new TextEncoder();
+  const parts = [],
+    central = [];
+  let offset = 0;
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  for (const { name, data } of entries) {
+    const nameBytes = enc.encode(name),
+      crc = crc32(data);
+    const head = new DataView(new ArrayBuffer(30));
+    head.setUint32(0, 0x04034b50, true);
+    head.setUint16(4, 20, true);
+    head.setUint16(6, 0x0800, true); // UTF-8 名
+    head.setUint16(10, dosTime, true);
+    head.setUint16(12, dosDate, true);
+    head.setUint32(14, crc, true);
+    head.setUint32(18, data.length, true);
+    head.setUint32(22, data.length, true);
+    head.setUint16(26, nameBytes.length, true);
+    parts.push(head, nameBytes, data);
+    const c = new DataView(new ArrayBuffer(46));
+    c.setUint32(0, 0x02014b50, true);
+    c.setUint16(4, 20, true);
+    c.setUint16(6, 20, true);
+    c.setUint16(8, 0x0800, true);
+    c.setUint16(12, dosTime, true);
+    c.setUint16(14, dosDate, true);
+    c.setUint32(16, crc, true);
+    c.setUint32(20, data.length, true);
+    c.setUint32(24, data.length, true);
+    c.setUint16(28, nameBytes.length, true);
+    c.setUint32(42, offset, true);
+    central.push(c, nameBytes);
+    offset += 30 + nameBytes.length + data.length;
+  }
+  const cdSize = central.reduce((s, x) => s + (x.byteLength ?? x.length), 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, entries.length, true);
+  end.setUint16(10, entries.length, true);
+  end.setUint32(12, cdSize, true);
+  end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end], { type: "application/zip" });
+}
+
+/**
+ * ZIP を「中身を読まずに」開く。中央ディレクトリ（名前と位置の一覧）だけ読み、
+ * 各ファイルは read() を呼んだときにだけ取り出す。数百MBの mod パックでもメモリを食わない。
+ * @param file File | Blob
+ * @returns [{ name, size, read(): Promise<Uint8Array> }]
+ */
+async function openZipLazy(file) {
+  const total = file.size;
+  const tailLen = Math.min(total, 65557);
+  const tail = new DataView(await file.slice(total - tailLen, total).arrayBuffer());
+  let eocd = -1;
+  for (let i = tailLen - 22; i >= 0; i--) {
+    if (tail.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("ZIP として読めません（終端が見つかりません）");
+  let count = tail.getUint16(eocd + 10, true);
+  const cdSize = tail.getUint32(eocd + 12, true),
+    cdOff = tail.getUint32(eocd + 16, true);
+  if (cdOff === 0xffffffff || cdSize === 0xffffffff || count === 0xffff) throw new Error("4GB を超える ZIP（ZIP64）は未対応です。mod を分けてください");
+  const cd = new DataView(await file.slice(cdOff, cdOff + cdSize).arrayBuffer());
+  const u8 = new Uint8Array(cd.buffer);
+  const dec = new TextDecoder();
+  const out = [];
+  let p = 0;
+  for (let n = 0; n < count && p + 46 <= cd.byteLength; n++) {
+    if (cd.getUint32(p, true) !== 0x02014b50) break;
+    const flags = cd.getUint16(p + 8, true),
+      method = cd.getUint16(p + 10, true),
+      csize = cd.getUint32(p + 20, true),
+      usize = cd.getUint32(p + 24, true),
+      nlen = cd.getUint16(p + 28, true),
+      xlen = cd.getUint16(p + 30, true),
+      clen = cd.getUint16(p + 32, true),
+      lho = cd.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nlen)).replace(/\\/g, "/");
+    p += 46 + nlen + xlen + clen;
+    if (name.endsWith("/") || (flags & 1)) continue; // フォルダ / 暗号化は対象外
+    out.push({
+      name,
+      size: usize,
+      async read() {
+        const head = new DataView(await file.slice(lho, lho + 30).arrayBuffer());
+        const start = lho + 30 + head.getUint16(26, true) + head.getUint16(28, true);
+        const raw = new Uint8Array(await file.slice(start, start + csize).arrayBuffer());
+        if (method === 0) return raw;
+        if (method === 8) return inflateRaw(raw);
+        throw new Error(`未対応の圧縮方式です (${name}: method ${method})`);
+      },
+    });
+  }
+  return out;
+}
+
+return { readZip, writeZip, openZipLazy };
+})();
+
+/* ===== funkin-studio/js/services/ModPack.js ===== */
+const __m35 = (() => {
+/* ============================================================
+   services/ModPack.js — mod パック（フォルダ / zip）のファイルを「パス付き」で扱う共通部品
+   ------------------------------------------------------------
+   なぜ必要か:
+     以前は assetPath を「ファイル名だけ」や「末尾のフォルダ名だけ」で探していたため、
+     別のフォルダに同じ名前のファイルがあると、先に見つかった方（= 間違った方）を拾うことがあった。
+     ここでは、ファイルの置き場所を FNF の構造（images/ data/ scripts/ …）に合わせて正規化し、
+     assetPath に「どれだけ正確に合うか」を点数で比べて選ぶ。同点（どちらか決められない）のときは、
+     黙って選ばずに注意を出す。
+   ・rootedOf(): "Mod/images/characters/bf.png" → "images/characters/bf"（最初の images/data/… から後ろ。拡張子なし・小文字）
+   ・originOf(): "Mod/images/…" → "mod"（どの mod / フォルダに属するか。同じ origin のファイルを優先する）
+   ・LazyZipFile: zip の中の 1 ファイル。File と同じ使い方ができ、中身は読まれたときだけ取り出す
+   ============================================================ */
+const { openZipLazy } = __m34;
+
+/** FNF の mod / assets 直下に来るフォルダ名。この名前が最初に出てきた所を「ルート」とみなす */
+const ANCHORS = new Set(["images", "data", "scripts", "sounds", "music", "songs", "shaders", "fonts", "videos", "preload", "shared"]);
+
+const splitPath = (p) => String(p || "").replace(/\\/g, "/").split("/").filter(Boolean);
+const relPathOf = (f) => f.webkitRelativePath || f.name;
+
+function makeInfo(path, stripExt) {
+  const segs = splitPath(path).map((s) => s.toLowerCase());
+  if (stripExt && segs.length) segs[segs.length - 1] = segs[segs.length - 1].replace(/\.[^./]+$/, "");
+  // 最初に出てくる images / data / … から後ろを「ルート以降のパス」、手前を origin（mod フォルダ名）とする
+  let root = segs.findIndex((s, i) => (stripExt ? i < segs.length - 1 : true) && ANCHORS.has(s));
+  if (root < 0) root = 0;
+  return { segs, root, noExt: segs.slice(root).join("/"), origin: segs.slice(0, root).join("/"), flat: segs.length <= 1 };
+}
+const _cache = new WeakMap();
+/** { segs: 小文字の各フォルダ名, root: ルートの位置, noExt: 拡張子なしのルート以降, origin } */
+function infoOf(f) {
+  let v = _cache.get(f);
+  if (!v) _cache.set(f, (v = makeInfo(relPathOf(f), true)));
+  return v;
+}
+/** ファイルパス（文字列）版: { noExt, origin, flat, segs } */
+const infoOfPath = (path) => makeInfo(path, true);
+/** フォルダのパス版（AnimateAtlas のフォルダ用） */
+const infoOfDir = (dir) => makeInfo(dir, false);
+const rootedOf = (f) => infoOf(f).noExt;
+const originOf = (f) => infoOf(f).origin;
+
+/** assetPath を比べやすい形にする: "weeb:Characters/BF.png" → "characters/bf" */
+function normAsset(p) {
+  return String(p || "")
+    .replace(/^[^:/\\]+:/, "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "")
+    .replace(/\.[a-z0-9]+$/i, "")
+    .toLowerCase();
+}
+
+/**
+ * ファイル(path = ルート以降のパス)が assetPath にどれだけ合うか。0 = 合わない。
+ *   100 : images/<assetPath> と完全一致（または assetPath が data/… で始まっていて一致）
+ *    60+: 末尾が assetPath と一致（フォルダ階層が違うだけ。一致した階層数ぶん加点）
+ *    20 : assetPath が 1 階層だけで、ファイル名が一致（弱い）
+ *    10 : 置き場所の情報が無いファイル（スマホで直接選んだ等）の名前が一致
+ */
+function scorePath(info, assetPath, dirPrefix = "images") {
+  const want = normAsset(assetPath);
+  if (!want) return 0;
+  const ws = want.split("/");
+  const full = info.segs;
+  if (info.noExt === `${dirPrefix}/${want}` || info.noExt === want) return 100;
+  // 末尾の一致
+  let n = 0;
+  while (n < ws.length && n < full.length && full[full.length - 1 - n] === ws[ws.length - 1 - n]) n++;
+  if (n === ws.length && ws.length >= 2) return 60 + n;
+  if (n === ws.length && ws.length === 1) return info.flat ? 10 : 20;
+  return 0;
+}
+
+/**
+ * pool から assetPath に合うファイルを順位づけして返す（高い順）。
+ * @param opts { origin: 参照元の origin（同じ mod を優先）, dirPrefix, files: 点数計算に使う拡張子の正規表現は extRe }
+ */
+function rankFiles(pool, assetPath, extRe, opts = {}) {
+  const out = [];
+  for (const f of pool) {
+    if (!extRe.test(f.name)) continue;
+    const info = infoOf(f);
+    let s = scorePath(info, assetPath, opts.dirPrefix ?? "images");
+    if (!s) continue;
+    if (opts.origin !== undefined && info.origin === opts.origin) s += 25;
+    out.push({ f, score: s, info });
+  }
+  return out.sort((a, b) => b.score - a.score);
+}
+
+/** 同点 1 位が複数あるか（= どれか決められない） */
+function topTies(ranked) {
+  if (!ranked.length) return [];
+  const top = ranked[0].score;
+  const ties = ranked.filter((r) => r.score === top);
+  const key = (r) => r.info.origin + "|" + r.info.noExt;
+  return new Set(ties.map(key)).size > 1 ? ties : ties.slice(0, 1); // 別の場所のものが同点で並んだときだけ「決められない」
+}
+
+// ---------------------------------------------------------------- 注意の通知
+const notes = new Set();
+let sink = null;
+/** 取り違えそうなときの注意文の受け取り先（Stage Editor が say に繋ぐ） */
+function setAssetNoteSink(fn) {
+  sink = fn;
+}
+function assetNote(msg) {
+  if (notes.has(msg)) return;
+  notes.add(msg);
+  sink?.(msg);
+}
+const clearAssetNotes = () => notes.clear();
+
+// ---------------------------------------------------------------- zip の 1 ファイル（File と同じ使い方）
+class LazyZipFile {
+  constructor(entry, zipName) {
+    this._e = entry;
+    this.name = entry.name.split("/").pop();
+    this.webkitRelativePath = entry.name; // zip 内のパス（mod フォルダの入れ子もそのまま）
+    this.size = entry.size;
+    this.lastModified = 0;
+    this.zip = zipName;
+    this.lazy = true;
+  }
+  async arrayBuffer() {
+    const u8 = await this._e.read();
+    return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+  }
+  async blob() {
+    const u8 = await this._e.read();
+    const ext = (this.name.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase();
+    const type = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" }[ext] || "";
+    return new Blob([u8], { type });
+  }
+  async text() {
+    return new TextDecoder().decode(await this._e.read());
+  }
+  slice(...a) {
+    return this.blob().then((b) => b.slice(...a));
+  }
+}
+
+/** zip（File）→ LazyZipFile[]。中身は読まない（名前と位置だけ） */
+async function openModZip(file) {
+  const entries = await openZipLazy(file);
+  return entries.filter((e) => !/(^|\/)(__MACOSX|\.DS_Store)(\/|$)/.test(e.name)).map((e) => new LazyZipFile(e, file.name));
+}
+
+// ---------------------------------------------------------------- mod の中身の一覧
+/** data/stages/*.json などを一覧にする。{ id, file, origin } */
+function listData(pool, dir) {
+  const out = [];
+  for (const f of pool) {
+    if (!/\.json$/i.test(f.name)) continue;
+    const info = infoOf(f);
+    const m = info.noExt.match(new RegExp(`^data/${dir}/(.+)$`));
+    if (m) out.push({ id: m[1], file: f, origin: info.origin });
+  }
+  return out.sort((a, b) => a.id.localeCompare(b.id));
+}
+/** mod のざっくりした要約 */
+function summarize(pool) {
+  const c = { images: 0, scripts: 0, data: 0, other: 0 };
+  for (const f of pool) {
+    const r = infoOf(f).noExt.split("/")[0];
+    if (r === "images") c.images++;
+    else if (r === "scripts") c.scripts++;
+    else if (r === "data") c.data++;
+    else c.other++;
+  }
+  return {
+    ...c,
+    stages: listData(pool, "stages"),
+    characters: listData(pool, "characters"),
+    noteStyles: listData(pool, "notestyles"),
+    origins: [...new Set(pool.map(originOf))].filter(Boolean),
+  };
+}
+
+return { relPathOf, infoOf, infoOfPath, infoOfDir, rootedOf, originOf, normAsset, scorePath, rankFiles, topTies, setAssetNoteSink, assetNote, clearAssetNotes, LazyZipFile, openModZip, listData, summarize };
+})();
+
+/* ===== funkin-studio/js/states/stage/atlas.js ===== */
+const __m36 = (() => {
 /* ============================================================
    stage/atlas.js — 絵の形式ごとの違いを「フレーム」にそろえる（Sparrow / Packer / AnimateAtlas）
    ------------------------------------------------------------
@@ -10311,6 +10750,7 @@ const __m34 = (() => {
    ※ AnimateAtlas の描画ロジックは Character Editor（states/character/editor.js）と同じ。あちらは触らない方針のため重複している。
    ============================================================ */
 const { loadImage, parseSparrowXml, parsePackerText, sparrowSequenceOf, paintSparrow } = __m29;
+const { rankFiles, topTies, assetNote, infoOf, infoOfDir, scorePath, originOf } = __m35;
 
 // ============================================================
 // 1. Sparrow / Packer（切り出す形式）
@@ -10748,11 +11188,14 @@ const pathNoExt = (f) => {
  *   ② 無ければ、拡張子を除いた名前が assetPath の最後の1つと一致する（ファイルを直接選んだとき）
  * extRe: 対象の拡張子（例 /\.png$/i）
  */
-function matchFile(pool, assetPath, extRe) {
-  const want = norm(assetPath);
-  if (!want) return null;
-  const cand = pool.filter((f) => extRe.test(f.name));
-  return cand.find((f) => pathNoExt(f) === want || pathNoExt(f).endsWith("/" + want)) || cand.find((f) => stem(f.name) === lastSeg(want)) || null;
+function matchFile(pool, assetPath, extRe, opts = {}) {
+  const ranked = rankFiles(pool, assetPath, extRe, opts);
+  if (!ranked.length) return null;
+  const ties = topTies(ranked);
+  if (ties.length > 1) {
+    assetNote(`「${assetPath}」に合うファイルが複数あります（${ties.slice(0, 3).map((t) => relPath(t.f)).join(" / ")}）。どれか決められないため ${relPath(ranked[0].f)} を使いました。違う場合は、アセット一覧の「選択」で指定してください。`);
+  }
+  return ranked[0].f;
 }
 
 /**
@@ -10760,11 +11203,20 @@ function matchFile(pool, assetPath, extRe) {
  *   1. フォルダ名が assetPath と合う組  2. 候補が1組だけならそれ（strict のときは 1 だけ）
  * 見つからなければ Error（何をどう選べばよいか書く）
  */
-async function findAnimateAtlas(files, assetPath, { strict = false } = {}) {
+async function findAnimateAtlas(files, assetPath, { strict = false, origin } = {}) {
   const groups = animateGroups(files);
   if (!groups.length) throw Error(`AnimateAtlas「${assetPath}」の Animation.json が見つかりません（spritemap1.json / spritemap1.png も一緒に）`);
-  const want = norm(assetPath);
-  const hit = groups.find((g) => norm(g.dir) === want || (g.dir && (norm(g.dir).endsWith("/" + want) || want.endsWith("/" + norm(g.dir)) || lastSeg(g.dir) === lastSeg(want))));
+  // フォルダの置き場所を点数で比べる（同名フォルダが複数あっても、assetPath の階層まで合うものを選ぶ）
+  const scored = groups
+    .map((g) => {
+      const info = g.dir ? infoOfDir(g.dir) : null;
+      const base = info ? scorePath(info, assetPath, "images") : 0;
+      return { g, score: base && origin !== undefined && info.origin === origin ? base + 25 : base };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score);
+  if (scored.length > 1 && scored[0].score === scored[1].score) assetNote(`AnimateAtlas「${assetPath}」に合うフォルダが複数あります（${scored.slice(0, 3).map((x) => x.g.dir).join(" / ")}）。${scored[0].g.dir} を使いました。違う場合は、フォルダを直接選んでください。`);
+  const hit = scored[0]?.g;
   const pick = hit || (!strict && groups.length === 1 ? groups[0] : null);
   if (!pick) throw Error(`AnimateAtlas が ${groups.length} セットあり、「${assetPath}」がどれか分かりません。フォルダごと選ぶか、1セットずつ選んでください`);
   return buildAnimateAtlas(pick.files, assetPath);
@@ -10774,10 +11226,13 @@ async function findAnimateAtlas(files, assetPath, { strict = false } = {}) {
  * assetPath に対応する Sparrow / Packer アトラスを、ファイルの山から探して作る。
  * PNG と (XML | TXT) を matchFile で探す。合うものが無くて PNG と定義が1つずつなら、それを使う。
  */
-async function findSpriteAtlas(files, assetPath, kind) {
+async function findSpriteAtlas(files, assetPath, kind, opts = {}) {
   const list = [...files];
-  const png = matchFile(list, assetPath, /\.(png|webp|jpe?g)$/i) || soleOf(list, /\.(png|webp|jpe?g)$/i, kind);
-  const def = matchFile(list, assetPath, kind === "packer" ? /\.txt$/i : /\.xml$/i) || soleOf(list, kind === "packer" ? /\.txt$/i : /\.xml$/i, kind);
+  const png = matchFile(list, assetPath, /\.(png|webp|jpe?g)$/i, opts) || soleOf(list, /\.(png|webp|jpe?g)$/i, kind);
+  const defRe = kind === "packer" ? /\.txt$/i : /\.xml$/i;
+  // 定義(XML/TXT)は、選んだ PNG と同じフォルダ・同じ名前のものを最優先（別の mod の XML と組み合わさらないように）
+  const sibling = png && list.find((f) => defRe.test(f.name) && relDir(f) === relDir(png) && stem(f.name) === stem(png.name));
+  const def = sibling || matchFile(list, assetPath, defRe, { ...opts, origin: png ? originOf(png) : opts.origin }) || soleOf(list, defRe, kind);
   const ext = kind === "packer" ? "TXT" : "XML";
   const key = lastSeg(assetPath);
   if (!png) throw Error(`「${assetPath}」の画像（${key}.png）が見つかりません`);
@@ -10801,7 +11256,7 @@ return { SpriteAtlas, AnimateAtlas, isAnimationJsonName, isSpritemapJsonName, bu
 })();
 
 /* ===== funkin-studio/js/states/stage/stageCharacter.js ===== */
-const __m35 = (() => {
+const __m37 = (() => {
 /* ============================================================
    stage/stageCharacter.js — ステージ上に「実物のキャラクター」を出すための部品
    ------------------------------------------------------------
@@ -10827,7 +11282,8 @@ const __m35 = (() => {
    ■ 左右反転: BF は !flipX、DAD / GF は flipX（Stage.addCharacter）。反転は「表示中フレーム自身の枠」の中で行う。
    ■ カメラ焦点: originalPosition + (幅/2, 高さ/2) + キャラの cameraOffsets + ステージ側の cameraOffsets
    ============================================================ */
-const { findSpriteAtlas, findAnimateAtlas } = __m34;
+const { findSpriteAtlas, findAnimateAtlas } = __m36;
+const { originOf } = __m35;
 
 const RENDER_TYPES = ["sparrow", "packer", "multisparrow", "animateatlas", "multianimateatlas"];
 
@@ -10891,6 +11347,7 @@ class StageCharacter {
       this.reset();
       this.json = j;
       this.jsonName = f.name;
+      this.origin = originOf(f); // 同じ mod のアトラスを優先して探す
       this.need = { path, kind: atlasKindOf(j, ref?.assetPath ? ref : null), ref };
       return true;
     }
@@ -10905,7 +11362,7 @@ class StageCharacter {
     if (!this.json) throw Error("character.json がまだ選択されていません");
     const { path, kind, ref } = this.need;
     const list = [...pool];
-    const atlas = kind === "animate" ? await findAnimateAtlas(list, path) : await findSpriteAtlas(list, path, kind);
+    const atlas = kind === "animate" ? await findAnimateAtlas(list, path) : await findSpriteAtlas(list, path, kind, { origin: this.origin });
     this.atlas = atlas;
     this.fileNames = [this.jsonName, atlas.label];
     this.view = this.build(ref, path, kind);
@@ -10992,7 +11449,7 @@ return { RENDER_TYPES, atlasKindOf, referenceAnimOf, StageCharacter };
 })();
 
 /* ===== funkin-studio/js/states/stage/editor.js ===== */
-const __m36 = (() => {
+const __m38 = (() => {
 /* ============================================================
    stage/editor.js — Stage Editor（V-Slice のステージ JSON の編集）のロジック
    ------------------------------------------------------------
@@ -11017,8 +11474,9 @@ const { Viewport, isTextEntry } = __m27;
 const { HudPanels } = __m28;
 const { defaultStage, normalizeStage, newProp, newRect, serializeStage, clone, round3, CHAR_IDS, CHAR_LABEL, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas } = __m33;
 const { loadImage, parseSparrowXml, parsePackerText } = __m29;
-const { SpriteAtlas, animateGroups, buildAnimateAtlas, isSpritemapPng, matchFile, relPath, findAnimateAtlas } = __m34;
-const { StageCharacter } = __m35;
+const { normAsset, infoOf, infoOfDir, setAssetNoteSink, openModZip, summarize } = __m35;
+const { SpriteAtlas, animateGroups, buildAnimateAtlas, isSpritemapPng, matchFile, relPath, findAnimateAtlas } = __m36;
+const { StageCharacter } = __m37;
 
 const SEL_COLOR = "#ffb020"; // 選択枠の色
 const PLACEHOLDER = { bf: "#4a8cff", dad: "#a15cff", gf: "#ff6fb1" }; // キャラ未読み込み時のシルエット色
@@ -11073,14 +11531,20 @@ function mountStageEditor(state) {
   //   linked : assetPath → 画像                         … 一覧の「選択」で手動指定したもの（こちらが優先）
   //   xml / linkedXml : 同じ仕組みの Sparrow XML 版（アニメ付き prop 用。{ sprites, name }）
   //   animate / linkedAnimate : AnimateAtlas（Animation.json + spritemap）の版。assetPath はフォルダなので、フォルダ名（最後の1つ）で結び付ける
-  const assets = { byBase: new Map(), linked: new Map(), xml: new Map(), linkedXml: new Map(), animate: new Map(), linkedAnimate: new Map() };
+  //
+  // 取り違え対策（v3.13）: 置き場所（フォルダ）が分かるファイルは「パス」で結び付ける。
+  //   byPath : "images/characters/bf"（ルート以降・拡張子なし・小文字）→ 画像 / xml / animate  … assetPath と完全に合うものだけ
+  //   byBase : ファイル名だけ。置き場所の情報が無いファイル（スマホで直接選んだ等）専用。
+  //            フォルダつきのファイルは byBase に入れない（別フォルダの同名ファイルを拾わないため）
+  const assets = { byBase: new Map(), linked: new Map(), xml: new Map(), linkedXml: new Map(), animate: new Map(), linkedAnimate: new Map(), byPath: new Map(), xmlByPath: new Map(), animateByPath: new Map() };
   const segOf = (path) => String(path).replace(/\\/g, "/").split("/").filter(Boolean).pop()?.toLowerCase() ?? "";
-  const animateFor = (path) => (!path || path.startsWith("#") ? null : (assets.linkedAnimate.get(path) ?? assets.animate.get(segOf(path)) ?? null));
+  const wantRoot = (path) => "images/" + normAsset(path);
+  const animateFor = (path) => (!path || path.startsWith("#") ? null : (assets.linkedAnimate.get(path) ?? assets.animateByPath.get(wantRoot(path)) ?? assets.animateByPath.get(normAsset(path)) ?? assets.animate.get(segOf(path)) ?? null));
   const xmlFor = (path) =>
-    !path || path.startsWith("#") ? null : (assets.linkedXml.get(path) ?? assets.xml.get(baseName(path).toLowerCase()) ?? null);
+    !path || path.startsWith("#") ? null : (assets.linkedXml.get(path) ?? assets.xmlByPath.get(wantRoot(path)) ?? assets.xmlByPath.get(normAsset(path)) ?? assets.xml.get(baseName(path).toLowerCase()) ?? null);
   const isXmlFile = (f) => /\.xml$/i.test(f.name);
   const assetFor = (path) =>
-    !path || path.startsWith("#") ? null : (assets.linked.get(path) ?? assets.byBase.get(baseName(path).toLowerCase()) ?? null);
+    !path || path.startsWith("#") ? null : (assets.linked.get(path) ?? assets.byPath.get(wantRoot(path)) ?? assets.byPath.get(normAsset(path)) ?? assets.byBase.get(baseName(path).toLowerCase()) ?? null);
 
   // ---- ファイルの山（pool）----
   // 選んだファイルは全部ここに集まる（中身はまだ読まない。ファイルの「手」を持つだけなので軽い）。
@@ -11088,6 +11552,9 @@ function mountStageEditor(state) {
   // → mod のフォルダ全体を一度だけ選べば、json とアセットが別のフォルダにあっても、毎回ファイルを動かさずに済む。
   const pool = [];
   const poolKeys = new Set();
+  let stageOrigin; // いま開いているステージ JSON が属する mod（同じ mod のアセットを優先して探す）
+  setAssetNoteSink((m) => say("⚠ " + m)); // 同名ファイルがあって決められないときの注意
+  state.addDisposer(() => setAssetNoteSink(null));
   function addPool(files) {
     let n = 0;
     for (const f of files) {
@@ -11112,7 +11579,8 @@ function mountStageEditor(state) {
       try {
         const atlas = await buildAnimateAtlas(g.files, g.dir);
         const key = g.dir ? segOf(g.dir) : "";
-        if (key) assets.animate.set(key, atlas);
+        if (g.dir) assets.animateByPath.set(infoOfDir(g.dir).noExt, atlas);
+        else if (key) assets.animate.set(key, atlas);
         else {
           // フォルダ名が分からない（スマホなど）: まだ画像の無い AnimateAtlas の prop が1つだけなら、それに結び付ける
           const open = [...new Set(doc.props.filter((p) => !isSolid(p) && animTypeOf(p) === "animateatlas" && isAnimated(p)).map((p) => p.assetPath))].filter((x) => !animateFor(x));
@@ -11131,13 +11599,15 @@ function mountStageEditor(state) {
         if (isXmlFile(f) || /\.txt$/i.test(f.name)) {
           const packer = /\.txt$/i.test(f.name);
           const x = { sprites: packer ? parsePackerText(await f.text()) : parseSparrowXml(await f.text()), name: f.name, kind: packer ? "packer" : "sparrow" };
-          assets.xml.set(baseName(f.name).toLowerCase(), x);
+          if (infoOf(f).flat) assets.xml.set(baseName(f.name).toLowerCase(), x);
+          else assets.xmlByPath.set(infoOf(f).noExt, x);
           out.xmls.push({ file: f, xml: x });
           continue;
         }
         if (/\.json$/i.test(f.name)) continue; // stage.json や character.json はここでは使わない
         const entry = { image: await loadImage(f), name: f.name, tints: new Map() };
-        assets.byBase.set(baseName(f.name).toLowerCase(), entry);
+        if (infoOf(f).flat) assets.byBase.set(baseName(f.name).toLowerCase(), entry);
+        else assets.byPath.set(infoOf(f).noExt, entry);
         out.push({ file: f, entry });
       } catch (e) {
         say(`読み込めませんでした: ${f.name}（${e.message}）`);
@@ -11363,21 +11833,21 @@ function mountStageEditor(state) {
       try {
         if (type === "animateatlas") {
           if (!animateFor(path)) {
-            const a = await findAnimateAtlas(pool, path, { strict: true });
+            const a = await findAnimateAtlas(pool, path, { strict: true, origin: stageOrigin });
             assets.linkedAnimate.set(path, a);
             n++;
           }
           continue;
         }
         if (!assetFor(path)) {
-          const f = matchFile(pool, path, /\.(png|webp|jpe?g)$/i);
+          const f = matchFile(pool, path, /\.(png|webp|jpe?g)$/i, { origin: stageOrigin });
           if (f) {
             const [r] = await registerImages([f]);
             if (r) n++;
           }
         }
         if ((type === "sparrow" || type === "packer") && !xmlFor(path)) {
-          const f = matchFile(pool, path, type === "packer" ? /\.txt$/i : /\.xml$/i);
+          const f = matchFile(pool, path, type === "packer" ? /\.txt$/i : /\.xml$/i, { origin: stageOrigin });
           if (f) {
             const r = await registerImages([f]);
             if (r.xmls.length) n++;
@@ -11415,8 +11885,56 @@ function mountStageEditor(state) {
   async function afterPoolChanged() {
     const a = await linkFromPool();
     const b = await resolveWaitingChars();
+    renderPack();
     return { props: a, chars: b };
   }
+  // ---- mod パック（zip / フォルダ）の中身の一覧: ステージとキャラをそこから選んで開く ----
+  let packStages = [],
+    packChars = [];
+  function renderPack() {
+    $("stgPack").hidden = !pool.length;
+    if (!pool.length) return;
+    const sm = summarize(pool);
+    packStages = sm.stages;
+    packChars = sm.characters;
+    $("stgPackInfo").textContent = `登録済み ${pool.length} ファイル（images ${sm.images} / data ${sm.data} / scripts ${sm.scripts}）。ステージ ${sm.stages.length} 件・キャラ ${sm.characters.length} 体${sm.origins.length > 1 ? `。mod が ${sm.origins.length} 個混ざっています（${sm.origins.slice(0, 3).join(", ")}${sm.origins.length > 3 ? "…" : ""}）` : ""}`;
+    const fill = (sel, list) => {
+      sel.textContent = "";
+      list.forEach((x, i) => sel.append(new Option(x.id + (x.origin ? `（${x.origin}）` : ""), String(i))));
+    };
+    fill($("stgPackStage"), packStages);
+    fill($("stgPackChar"), packChars);
+  }
+  $("stgPackOpen").onclick = async () => {
+    const it = packStages[Number($("stgPackStage").value)];
+    if (!it || !state.app.unsaved.confirmReplace()) return;
+    try {
+      const next = normalizeStage(JSON.parse((await it.file.text()).replace(/^\uFEFF/, "")));
+      stageOrigin = it.origin;
+      loadDoc(next, `「${next.name}」を読み込みました（prop ${next.props.length} 個）。画像は mod パックから探します…`);
+      const n = await linkFromPool();
+      say(`「${next.name}」を読み込み、prop の画像 ${n} 件を mod パックから結び付けました。`);
+    } catch (err) {
+      say("読み込みエラー: " + err.message);
+    }
+  };
+  $("stgPackLoadChar").onclick = async () => {
+    const it = packChars[Number($("stgPackChar").value)];
+    const ch = selChar();
+    if (!it) return;
+    if (!ch) return say("先に、キャラのスロット（bf / dad / gf）を選択してください。");
+    try {
+      if (!(await ch.setJsonFrom([it.file]))) throw Error("character.json（animations 配列を持つ JSON）ではありません");
+      try {
+        await ch.resolve(pool);
+      } catch (err) {
+        ch.error = err.message;
+      }
+      charDone(ch, `${ch.view?.name ?? ch.json.name ?? "キャラ"} の character.json を読みました`);
+    } catch (err) {
+      say("読み込みエラー: " + err.message);
+    }
+  };
 
   // ============================================================
   // 3. 履歴（Undo / Redo）
@@ -12205,9 +12723,26 @@ function mountStageEditor(state) {
     if (!files.length) return;
     const n = addPool(files);
     say(`${n} 個のファイルを登録しました（読み込みは必要になったときだけ）。`);
+    stageOrigin = undefined;
     const r = await afterPoolChanged();
     if (r.chars || r.props) say(`${n} 個のファイルを登録し、キャラ ${r.chars} 体・prop の画像 ${r.props} 件を結び付けました。`);
     renderAssets();
+  };
+  // mod パックを zip で（スマホ可）。zip の中身は読まず、名前の一覧だけを pool に入れる
+  $("stgPoolZip").onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    say("zip を開いています…");
+    try {
+      const files = await openModZip(f);
+      const n = addPool(files);
+      const r = await afterPoolChanged();
+      say(`${f.name}: ${n} 個のファイルを登録しました（読み込みは必要になったときだけ）。${r.chars || r.props ? `キャラ ${r.chars} 体・prop の画像 ${r.props} 件を結び付けました。` : ""}下の「mod パック」からステージやキャラを開けます。`);
+      renderAssets();
+    } catch (err) {
+      say(`zip を開けません: ${err.message}`);
+    }
   };
   $("stgCharClear").onclick = () => {
     if (sel?.kind !== "char") return;
@@ -12413,7 +12948,7 @@ return { mountStageEditor };
 })();
 
 /* ===== funkin-studio/js/states/StageEditorState.js ===== */
-const __m37 = (() => {
+const __m39 = (() => {
 /* ============================================================
    states/StageEditorState.js — Stage Editor（V-Slice のステージ JSON の編集）の画面
    ------------------------------------------------------------
@@ -12422,7 +12957,7 @@ const __m37 = (() => {
    ============================================================ */
 const { EditorState } = __m18;
 const { template } = __m32;
-const { mountStageEditor } = __m36;
+const { mountStageEditor } = __m38;
 
 class StageEditorState extends EditorState {
   static id = "stage";
@@ -12451,7 +12986,7 @@ return { StageEditorState };
 })();
 
 /* ===== funkin-studio/js/states/chart/template.js ===== */
-const __m38 = (() => {
+const __m40 = (() => {
 /* ============================================================
    chart/template.js — Chart Editor 画面の HTML
    ------------------------------------------------------------
@@ -12474,6 +13009,8 @@ const template = `
           <button type="button" data-hud-toggle="timing" data-ja="⏱ BPM" data-en="⏱ BPM">⏱ BPM</button>
           <button type="button" data-hud-toggle="edit" data-ja="✏ 編集" data-en="✏ Edit">✏ 編集</button>
           <button type="button" data-hud-toggle="audio" data-ja="🔊 音声" data-en="🔊 Audio">🔊 音声</button>
+          <span class="hudSep"></span>
+          <button id="chtPlayBtn" type="button" title="この難易度をプレイテスト (P)">🎮 プレイテスト</button>
           <span class="hudSep"></span>
           <button id="chtToolPlace" type="button" aria-pressed="true" title="配置: クリックでノーツ/イベントを置く・ドラッグで長さ・選択物をドラッグで移動 (1)">✏ 配置</button>
           <button id="chtToolSelect" type="button" aria-pressed="false" title="選択: ドラッグで範囲選択 (2)">▭ 選択</button>
@@ -12505,6 +13042,12 @@ const template = `
               <label class="chtFileBtn">Inst を選ぶ<input id="chtInst" type="file" hidden /></label>
               <label class="chtFileBtn">Voices を追加<input id="chtVoices" type="file" multiple hidden /></label>
             </div>
+            <h3>イベントのスクリプト（HScript）</h3>
+            <label>.hxc / .hx を読み込む（複数可・modの zip も可）
+              <input id="chtScripts" type="file" multiple />
+            </label>
+            <div id="chtScriptList" class="chtTable"></div>
+            <p class="tiny">SongEvent を継承したクラスから、イベントの ID・名前・項目を読み取って、イベントの種類に追加します（スクリプトは実行しません）。読み込んだものはこのブラウザに記憶されます。</p>
             <h3>個別に保存（いまのバリエーション）</h3>
             <div class="row">
               <button id="chtSaveChart" type="button">chart.json</button>
@@ -12671,6 +13214,58 @@ const template = `
 
         <div id="chtToast" class="hudToast" hidden></div>
       </div>
+
+      <div id="chtPlayRoot" class="chtPlay" hidden>
+        <canvas id="chtPlayCanvas"></canvas>
+        <button id="chtPlayPause" class="chtPlayPauseBtn" type="button" title="一時停止 (Esc)">⏸</button>
+        <div id="chtPlayCard" class="chtPlayCard">
+          <h2 id="chtPlayTitle">プレイテスト</h2>
+          <div id="chtPlayInfo" class="tiny"></div>
+          <div id="chtPlayOpts">
+            <div class="row">
+              <label>開始位置
+                <select id="chtPlayStartFrom"><option value="playhead">再生位置から</option><option value="head">先頭から</option></select>
+              </label>
+              <label>速度倍率<input id="chtPlaySpeed" type="number" step="0.1" min="0.1" /></label>
+            </div>
+            <div class="row">
+              <label>入力オフセット (ms)<input id="chtPlayOffset" type="number" step="1" /></label>
+              <label>再生速度
+                <select id="chtPlayRate"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option></select>
+              </label>
+            </div>
+            <div class="row">
+              <label><input id="chtPlayDown" type="checkbox" /> ダウンスクロール</label>
+              <label><input id="chtPlayOpp" type="checkbox" /> 相手ノーツを表示</label>
+              <label><input id="chtPlayBot" type="checkbox" /> ボット</label>
+              <label><input id="chtPlayHit" type="checkbox" /> ヒット音</label>
+            </div>
+            <div class="row">
+              <label>ノートスキン <select id="chtPlaySkin"></select></label>
+              <button id="chtPlaySkinLoad" type="button">スキンを読み込む…</button>
+              <input id="chtPlaySkinFiles" type="file" multiple accept=".json,.png,.xml,.zip" hidden />
+            </div>
+            <div id="chtPlaySkinInfo" class="tiny"></div>
+            <div class="row">
+              <label><input id="chtPlayScripts" type="checkbox" /> イベントスクリプトを実行（読み込み済みの .hxc）</label>
+            </div>
+            <div class="row">
+              <label>キー 左<input id="chtPlayKey0" type="text" maxlength="2" /></label>
+              <label>下<input id="chtPlayKey1" type="text" maxlength="2" /></label>
+              <label>上<input id="chtPlayKey2" type="text" maxlength="2" /></label>
+              <label>右<input id="chtPlayKey3" type="text" maxlength="2" /></label>
+            </div>
+          </div>
+          <canvas id="chtPlayHist" width="360" height="90" hidden></canvas>
+          <div class="row">
+            <button id="chtPlayGo" class="primary" type="button">開始</button>
+            <button id="chtPlayRestart" type="button" hidden>最初から</button>
+            <button id="chtPlayApply" type="button" hidden>ズレを補正</button>
+            <button id="chtPlayExit" type="button">エディタへ戻る</button>
+          </div>
+          <p class="tiny">Esc: 一時停止 / 再開。スマホは画面をタップ（右側のレーンが自分）。ズレの + は「遅い」です。</p>
+        </div>
+      </div>
     </section>
 `;
 
@@ -12678,7 +13273,7 @@ return { template };
 })();
 
 /* ===== funkin-studio/js/states/chart/chartData.js ===== */
-const __m39 = (() => {
+const __m41 = (() => {
 /* ============================================================
    chart/chartData.js — Chart Editor のデータ（metadata / chart）と時間計算
    ------------------------------------------------------------
@@ -12783,16 +13378,50 @@ const EVENT_SCHEMAS = {
     ],
   },
 };
-const EVENT_KINDS = Object.keys(EVENT_SCHEMAS);
+const BUILTIN = JSON.parse(JSON.stringify(EVENT_SCHEMAS));
+/** いま使えるイベントの種類（組み込み + 読み込んだスクリプト） */
+const eventKinds = () => Object.keys(EVENT_SCHEMAS);
+const isCustomEvent = (kind) => !!EVENT_SCHEMAS[kind]?.custom;
+/** HScript から読んだイベント定義を登録する（同じ ID の組み込みは上書き。外すと元に戻る） */
+function registerEventSchema(id, title, fields) {
+  EVENT_SCHEMAS[id] = { title, fields, custom: true };
+}
+function unregisterEventSchema(id) {
+  if (BUILTIN[id]) EVENT_SCHEMAS[id] = JSON.parse(JSON.stringify(BUILTIN[id]));
+  else delete EVENT_SCHEMAS[id];
+}
+
+const getEventSchema = (kind) => EVENT_SCHEMAS[kind];
 
 function eventTitle(kind) {
-  return EVENT_SCHEMAS[kind]?.title ?? kind;
+  return getEventSchema(kind)?.title ?? kind;
 }
 /** スキーマの既定値だけで作った value */
 function defaultEventValue(kind) {
   const v = {};
-  for (const f of EVENT_SCHEMAS[kind]?.fields ?? []) v[f.name] = f.def;
+  for (const f of getEventSchema(kind)?.fields ?? []) v[f.name] = f.def;
   return v;
+}
+
+/** 譜面の難しさの目安（プレイヤー側ノーツ中心） */
+function chartStats(notes) {
+  const player = notes.filter((n) => n.d < STRUMLINE_SIZE).sort((a, b) => a.t - b.t);
+  const opp = notes.length - player.length;
+  const holds = player.filter((n) => n.l > 0).length;
+  let peak = 0,
+    j = 0;
+  for (let i = 0; i < player.length; i++) {
+    while (player[i].t - player[j].t > 1000) j++;
+    peak = Math.max(peak, i - j + 1);
+  }
+  let chord = 0,
+    run = 0;
+  for (let i = 0; i < player.length; i++) {
+    run = i > 0 && Math.abs(player[i].t - player[i - 1].t) < 1 ? run + 1 : 1;
+    chord = Math.max(chord, run);
+  }
+  const span = player.length > 1 ? (player[player.length - 1].t - player[0].t) / 1000 : 0;
+  return { player: player.length, opponent: opp, holds, peakNps: peak, avgNps: span > 0 ? player.length / span : 0, maxChord: chord, spanSec: span };
 }
 
 // ------------------------------------------------------------
@@ -12964,11 +13593,11 @@ class Timing {
   }
 }
 
-return { METADATA_VERSION, CHART_VERSION, STRUMLINE_SIZE, STEPS_PER_BEAT, DEFAULT_VARIATION, SNAP_QUANTS, BASE_QUANT_INDEX, DIR_NAMES, clone, round3, EVENT_SCHEMAS, EVENT_KINDS, eventTitle, defaultEventValue, defaultMetadata, defaultChart, normalizeMetadata, normalizeChart, serializeMetadata, serializeChart, Timing };
+return { METADATA_VERSION, CHART_VERSION, STRUMLINE_SIZE, STEPS_PER_BEAT, DEFAULT_VARIATION, SNAP_QUANTS, BASE_QUANT_INDEX, DIR_NAMES, clone, round3, EVENT_SCHEMAS, eventKinds, isCustomEvent, registerEventSchema, unregisterEventSchema, getEventSchema, eventTitle, defaultEventValue, chartStats, defaultMetadata, defaultChart, normalizeMetadata, normalizeChart, serializeMetadata, serializeChart, Timing };
 })();
 
 /* ===== funkin-studio/js/states/chart/audio.js ===== */
-const __m40 = (() => {
+const __m42 = (() => {
 /* ============================================================
    chart/audio.js — Chart Editor の音声（Inst / Voices の複数トラック）
    ------------------------------------------------------------
@@ -13039,6 +13668,18 @@ class AudioEngine {
   position() {
     if (!this.playing) return this._startPos;
     return this._startPos + (this.ctx.currentTime - this._startCtx) * 1000 * this.rate;
+  }
+  /**
+   * performance.now() 基準の時刻 perfMs に「耳に届いている」曲の位置(ms)。入力の時刻と突き合わせるのに使う。
+   * getOutputTimestamp は出力の遅延まで含めた時計。使えない環境では currentTime で代用する。
+   */
+  positionAt(perfMs) {
+    if (!this.playing) return this._startPos;
+    const ts = this.ctx.getOutputTimestamp?.();
+    let ct;
+    if (ts && ts.performanceTime > 0 && ts.contextTime > 0) ct = ts.contextTime + (perfMs - ts.performanceTime) / 1000;
+    else ct = this.ctx.currentTime + (perfMs - performance.now()) / 1000;
+    return this._startPos + (ct - this._startCtx) * 1000 * this.rate;
   }
   seek(ms) {
     const was = this.playing;
@@ -13119,126 +13760,3760 @@ function computePeaks(buffer) {
 return { PEAK_MS, AudioEngine };
 })();
 
-/* ===== funkin-studio/js/states/chart/zip.js ===== */
-const __m41 = (() => {
+/* ===== funkin-studio/js/states/chart/scriptEvents.js ===== */
+const __m43 = (() => {
 /* ============================================================
-   chart/zip.js — .fnfc（= ZIP）の読み書き（外部ライブラリなし）
+   chart/scriptEvents.js — HScript（.hxc）から「イベントのスキーマ」と「ノーツ kind」を読み取る
    ------------------------------------------------------------
-   読み: 中央ディレクトリを読み、deflate は DecompressionStream("deflate-raw")、無圧縮はそのまま。
-   書き: 無圧縮（store）で作る。音声（ogg/mp3）は元々圧縮済みなので、サイズはほぼ変わらない。
+   ゲームのように HScript を実行するのではなく、ソースを字句解析して、次の形だけを取り出す（実行はしない）:
+     ・class X extends SongEvent … super('ID') / getTitle() の戻り値 / getEventSchema() が返すリテラル
+         [{ name:'a', title:'A', defaultValue:1, type:'float', ... }]   または   new SongEventSchema([ {…} ])
+         type は 'enum' のような文字列でも SongEventFieldType.ENUM でもよい。keys: ['表示' => '値', …] を選択肢にする
+     ・class X extends ScriptedNoteKind … super('id', '表示名')
+   読み取れないもの（関数で選択肢を作る enum など）は、文字列の入力欄にして警告を出す。
    ============================================================ */
-let crcTable = null;
-function crc32(bytes) {
-  if (!crcTable) {
-    crcTable = new Uint32Array(256);
-    for (let n = 0; n < 256; n++) {
-      let c = n;
-      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-      crcTable[n] = c >>> 0;
-    }
-  }
-  let c = 0xffffffff;
-  for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 255] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
 
-async function inflateRaw(data) {
-  const ds = new DecompressionStream("deflate-raw");
-  const stream = new Blob([data]).stream().pipeThrough(ds);
-  return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-
-/** @returns Map<名前, Uint8Array> */
-async function readZip(buffer) {
-  const u8 = new Uint8Array(buffer),
-    dv = new DataView(buffer);
-  let eocd = -1;
-  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) {
-    if (dv.getUint32(i, true) === 0x06054b50) {
-      eocd = i;
-      break;
-    }
-  }
-  if (eocd < 0) throw new Error("ZIP として読めません（終端が見つかりません）");
-  const count = dv.getUint16(eocd + 10, true);
-  let p = dv.getUint32(eocd + 16, true);
-  const dec = new TextDecoder();
-  const out = new Map();
-  for (let n = 0; n < count; n++) {
-    if (dv.getUint32(p, true) !== 0x02014b50) break;
-    const method = dv.getUint16(p + 10, true),
-      csize = dv.getUint32(p + 20, true),
-      nlen = dv.getUint16(p + 28, true),
-      xlen = dv.getUint16(p + 30, true),
-      clen = dv.getUint16(p + 32, true),
-      lho = dv.getUint32(p + 42, true);
-    const name = dec.decode(u8.subarray(p + 46, p + 46 + nlen));
-    p += 46 + nlen + xlen + clen;
-    if (name.endsWith("/")) continue;
-    const lnlen = dv.getUint16(lho + 26, true),
-      lxlen = dv.getUint16(lho + 28, true);
-    const start = lho + 30 + lnlen + lxlen;
-    const raw = u8.subarray(start, start + csize);
-    if (method === 0) out.set(name, raw.slice());
-    else if (method === 8) out.set(name, await inflateRaw(raw));
-    else throw new Error(`未対応の圧縮方式です (${name}: method ${method})`);
+/** コメントを消す（文字列の中の // は消さない）。位置がずれないよう、改行は残す */
+function stripComments(src) {
+  let out = "",
+    i = 0,
+    q = null;
+  while (i < src.length) {
+    const c = src[i],
+      n = src[i + 1];
+    if (q) {
+      out += c;
+      if (c === "\\") out += src[++i] ?? "";
+      else if (c === q) q = null;
+      i++;
+    } else if (c === '"' || c === "'") {
+      q = c;
+      out += c;
+      i++;
+    } else if (c === "/" && n === "/") {
+      while (i < src.length && src[i] !== "\n") i++;
+    } else if (c === "/" && n === "*") {
+      i += 2;
+      while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) {
+        if (src[i] === "\n") out += "\n";
+        i++;
+      }
+      i += 2;
+    } else out += src[i++];
   }
   return out;
 }
 
-/** @param entries [{ name, data: Uint8Array }] @returns Blob */
-function writeZip(entries) {
-  const enc = new TextEncoder();
-  const parts = [],
-    central = [];
-  let offset = 0;
-  const now = new Date();
-  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
-  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
-  for (const { name, data } of entries) {
-    const nameBytes = enc.encode(name),
-      crc = crc32(data);
-    const head = new DataView(new ArrayBuffer(30));
-    head.setUint32(0, 0x04034b50, true);
-    head.setUint16(4, 20, true);
-    head.setUint16(6, 0x0800, true); // UTF-8 名
-    head.setUint16(10, dosTime, true);
-    head.setUint16(12, dosDate, true);
-    head.setUint32(14, crc, true);
-    head.setUint32(18, data.length, true);
-    head.setUint32(22, data.length, true);
-    head.setUint16(26, nameBytes.length, true);
-    parts.push(head, nameBytes, data);
-    const c = new DataView(new ArrayBuffer(46));
-    c.setUint32(0, 0x02014b50, true);
-    c.setUint16(4, 20, true);
-    c.setUint16(6, 20, true);
-    c.setUint16(8, 0x0800, true);
-    c.setUint16(12, dosTime, true);
-    c.setUint16(14, dosDate, true);
-    c.setUint32(16, crc, true);
-    c.setUint32(20, data.length, true);
-    c.setUint32(24, data.length, true);
-    c.setUint16(28, nameBytes.length, true);
-    c.setUint32(42, offset, true);
-    central.push(c, nameBytes);
-    offset += 30 + nameBytes.length + data.length;
+/** open 位置（"{" や "("）の対応する閉じ括弧の位置。文字列は飛ばす */
+function matchClose(s, open) {
+  const pairs = { "{": "}", "(": ")", "[": "]" };
+  const o = s[open],
+    c = pairs[o];
+  let depth = 0,
+    q = null;
+  for (let i = open; i < s.length; i++) {
+    const ch = s[i];
+    if (q) {
+      if (ch === "\\") i++;
+      else if (ch === q) q = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") q = ch;
+    else if (ch === o) depth++;
+    else if (ch === c && --depth === 0) return i;
   }
-  const cdSize = central.reduce((s, x) => s + (x.byteLength ?? x.length), 0);
-  const end = new DataView(new ArrayBuffer(22));
-  end.setUint32(0, 0x06054b50, true);
-  end.setUint16(8, entries.length, true);
-  end.setUint16(10, entries.length, true);
-  end.setUint32(12, cdSize, true);
-  end.setUint32(16, offset, true);
-  return new Blob([...parts, ...central, end], { type: "application/zip" });
+  return -1;
 }
 
-return { readZip, writeZip };
+// ---- リテラルの小さなパーサ ----
+class Lit {
+  constructor(s, i = 0) {
+    this.s = s;
+    this.i = i;
+  }
+  ws() {
+    while (this.i < this.s.length && /\s/.test(this.s[this.i])) this.i++;
+  }
+  peek() {
+    this.ws();
+    return this.s[this.i];
+  }
+  eat(t) {
+    this.ws();
+    if (this.s.startsWith(t, this.i)) {
+      this.i += t.length;
+      return true;
+    }
+    return false;
+  }
+  value() {
+    const c = this.peek();
+    if (c === "{") return this.object();
+    if (c === "[") return this.arrayOrMap();
+    if (c === '"' || c === "'") return this.string();
+    if (/[-\d.]/.test(c ?? "")) {
+      const m = /^-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/i.exec(this.s.slice(this.i));
+      if (m) {
+        this.i += m[0].length;
+        return Number(m[0]);
+      }
+    }
+    const m = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*/.exec(this.s.slice(this.i));
+    if (!m) throw new Error(`読み取れない記述: ${this.s.slice(this.i, this.i + 20)}`);
+    this.i += m[0].length;
+    const id = m[0];
+    if (id === "true") return true;
+    if (id === "false") return false;
+    if (id === "null") return null;
+    if (id === "new") {
+      this.ws();
+      const m2 = /^[A-Za-z_$][\w$.<>]*/.exec(this.s.slice(this.i));
+      this.i += m2 ? m2[0].length : 0;
+    }
+    if (this.peek() === "(") {
+      const close = matchClose(this.s, this.i);
+      const inner = this.s.slice(this.i + 1, close).trim();
+      this.i = close + 1;
+      // new SongEventSchema([...]) のように中身が1つのリテラルならそれを返す。関数呼び出しは「計算が必要」の印にする
+      if (id === "new" && inner) {
+        try {
+          return new Lit(inner).value();
+        } catch {
+          return { call: inner };
+        }
+      }
+      return { call: id };
+    }
+    return { ident: id };
+  }
+  string() {
+    const q = this.s[this.i++];
+    let out = "";
+    while (this.i < this.s.length && this.s[this.i] !== q) {
+      let c = this.s[this.i++];
+      if (c === "\\") {
+        const n = this.s[this.i++];
+        c = n === "n" ? "\n" : n === "t" ? "\t" : n;
+      }
+      out += c;
+    }
+    this.i++;
+    return out;
+  }
+  object() {
+    this.eat("{");
+    const o = {};
+    while (this.peek() !== "}") {
+      if (this.i >= this.s.length) throw new Error("} が見つかりません");
+      this.ws();
+      let key;
+      if (this.peek() === '"' || this.peek() === "'") key = this.string();
+      else {
+        const m = /^[A-Za-z_$][\w$]*/.exec(this.s.slice(this.i));
+        if (!m) throw new Error("キー名を読めません");
+        key = m[0];
+        this.i += key.length;
+      }
+      if (!this.eat(":")) throw new Error(`: がありません (${key})`);
+      o[key] = this.value();
+      this.eat(",");
+    }
+    this.eat("}");
+    return o;
+  }
+  arrayOrMap() {
+    this.eat("[");
+    const items = [],
+      pairs = [];
+    let isMap = false;
+    while (this.peek() !== "]") {
+      if (this.i >= this.s.length) throw new Error("] が見つかりません");
+      const v = this.value();
+      if (this.eat("=>")) {
+        isMap = true;
+        pairs.push([v, this.value()]);
+      } else items.push(v);
+      this.eat(",");
+    }
+    this.eat("]");
+    return isMap ? { map: pairs } : items;
+  }
+}
+
+const TYPE_ALIAS = { integer: "int", int: "int", float: "float", string: "string", bool: "bool", boolean: "bool", enum: "enum", frame: "frame" };
+
+/** スキーマのリテラル（配列）→ フォーム用のフィールド一覧 */
+function toFields(list, warnings, group) {
+  const fields = [];
+  for (const f of Array.isArray(list) ? list : []) {
+    if (!f || typeof f !== "object" || typeof f.name !== "string") continue;
+    let t = f.type;
+    if (t && typeof t === "object") t = t.ident ? t.ident.split(".").pop() : "string";
+    t = TYPE_ALIAS[String(t ?? "string").toLowerCase()] ?? "string";
+    if (t === "frame") {
+      fields.push(...toFields(f.children, warnings, f.name));
+      continue;
+    }
+    const field = { name: f.name, title: typeof f.title === "string" ? f.title : f.name, type: t };
+    if (group) field.group = group;
+    for (const k of ["step", "min", "max"]) if (typeof f[k] === "number") field[k] = f[k];
+    if (typeof f.units === "string") field.units = f.units;
+    let def = f.defaultValue;
+    if (def && typeof def === "object") def = undefined; // 定数の参照などは分からない
+    if (t === "enum") {
+      if (f.keys?.map) field.options = f.keys.map.map(([k, v]) => [String(k), typeof v === "object" ? String(v?.ident ?? "") : v]);
+      else {
+        field.type = "string";
+        field.dynamic = true; // 候補は実行時に決まる（キャラ ID など）→ 入力欄 + 候補リスト
+        warnings.push(`「${f.name}」の選択肢は関数で作られるため、文字列の入力欄にしました。`);
+      }
+    }
+    if (field.type === "enum") def = def ?? field.options[0]?.[1];
+    field.def = def ?? (field.type === "bool" ? false : field.type === "string" ? "" : 0);
+    fields.push(field);
+  }
+  return fields;
+}
+
+/** .hxc のソース → { events, noteKinds, warnings } */
+function parseHxc(srcRaw) {
+  const src = stripComments(srcRaw);
+  const result = { events: [], noteKinds: [], warnings: [] };
+  const classRe = /class\s+(\w+)\s+extends\s+(SongEvent|ScriptedSongEvent|ScriptedNoteKind)\b[^{]*\{/g;
+  let m;
+  while ((m = classRe.exec(src))) {
+    const open = m.index + m[0].length - 1,
+      close = matchClose(src, open);
+    if (close < 0) continue;
+    const body = src.slice(open + 1, close);
+    classRe.lastIndex = close;
+    const sup = /super\s*\(\s*(['"])(.*?)\1(?:\s*,\s*(['"])(.*?)\3)?/.exec(body);
+    if (!sup) {
+      result.warnings.push(`${m[1]}: super('ID') が見つかりません`);
+      continue;
+    }
+    if (m[2] === "ScriptedNoteKind") {
+      result.noteKinds.push({ id: sup[2], title: sup[4] ?? sup[2] });
+      continue;
+    }
+    const ev = { id: sup[2], className: m[1], title: sup[2], fields: [], warnings: [] };
+    const tm = /function\s+getTitle\s*\([^)]*\)[^{]*\{\s*return\s+(['"])(.*?)\1/.exec(body);
+    if (tm) ev.title = tm[2];
+    const sm = /function\s+getEventSchema\s*\([^)]*\)[^{]*\{/.exec(body);
+    if (sm) {
+      const sOpen = sm.index + sm[0].length - 1,
+        sClose = matchClose(body, sOpen);
+      const sBody = body.slice(sOpen + 1, sClose);
+      const rm = /\breturn\b/.exec(sBody);
+      try {
+        if (!rm) throw new Error("return が見つかりません");
+        const lit = new Lit(sBody, rm.index + rm[0].length).value();
+        ev.fields = toFields(Array.isArray(lit) ? lit : [], ev.warnings);
+      } catch (e) {
+        ev.warnings.push(`スキーマを読めませんでした（${e.message}）。value を JSON で編集してください。`);
+      }
+    } else ev.warnings.push("getEventSchema が無いので、value を JSON で編集します。");
+    result.events.push(ev);
+  }
+  return result;
+}
+
+return { parseHxc };
+})();
+
+/* ===== funkin-studio/js/runtime/hscript.js ===== */
+const __m44 = (() => {
+/* ============================================================
+   runtime/hscript.js — HScript（Haxe のサブセット）の軽量インタプリタ
+   ------------------------------------------------------------
+   ・.hxc のクラス定義（class X extends SongEvent / Module など）を読み込んで動かす。
+   ・対応: import/using（無視）、class（extends・static・var・function・new）、
+     var / final、if / for(in) / while / do-while / switch / try-catch / throw / return / break / continue、
+     関数式 function(){} と (a,b)->x、匿名オブジェクト、配列、Map リテラル ['a'=>1]、配列内包 [for(..) ..]、
+     文字列補間 'x=$x ${y}'、?? ?. ??= ... 範囲 a...b、new、cast、型注釈（読み飛ばし）。
+   ・非対応: マクロ、プロパティの get/set、enum の引数付きパターン、正規表現リテラル。
+     パースできない場合は行番号付きのエラーを出す。
+   ・ホスト側（runtime.js）が globals（FlxG・PlayState など）と bases（SongEvent・Module）を渡す。
+   ・知らない名前は「スタブ」（何を呼んでも落ちない代役）になり、未対応 API として記録される。
+   ============================================================ */
+
+class HScriptError extends Error {}
+class ThrowSignal {
+  constructor(v) {
+    this.value = v;
+  }
+}
+const BRK = { sig: "brk" },
+  CONT = { sig: "cont" };
+class Ret {
+  constructor(v) {
+    this.sig = "ret";
+    this.v = v;
+  }
+}
+
+/** Haxe の Map（StringMap / IntMap / ObjectMap 共通） */
+class HMap {
+  constructor() {
+    this.m = new Map();
+  }
+  get(k) {
+    return this.m.has(k) ? this.m.get(k) : null;
+  }
+  set(k, v) {
+    this.m.set(k, v);
+  }
+  exists(k) {
+    return this.m.has(k);
+  }
+  remove(k) {
+    return this.m.delete(k);
+  }
+  clear() {
+    this.m.clear();
+  }
+  keys() {
+    return [...this.m.keys()];
+  }
+  iterator() {
+    return [...this.m.values()];
+  }
+  keyValueIterator() {
+    return [...this.m.entries()].map(([key, value]) => ({ key, value }));
+  }
+  get length() {
+    return this.m.size;
+  }
+}
+
+// ---------------------------------------------------------------- 字句解析
+const OPS = [">>>=", "<<=", ">>=", ">>>", "??=", "...", "=>", "->", "==", "!=", "<=", ">=", "&&", "||", "??", "?.", "++", "--", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<", ">>"];
+const isIdStart = (c) => /[A-Za-z_$]/.test(c);
+const isIdChar = (c) => /[A-Za-z0-9_$]/.test(c);
+
+function lex(src) {
+  const toks = [];
+  let i = 0,
+    line = 1;
+  const n = src.length;
+  const push = (t, v, extra) => toks.push({ t, v, line, ...extra });
+  while (i < n) {
+    const c = src[i];
+    if (c === "\n") {
+      line++;
+      i++;
+      continue;
+    }
+    if (/\s/.test(c)) {
+      i++;
+      continue;
+    }
+    if (c === "/" && src[i + 1] === "/") {
+      while (i < n && src[i] !== "\n") i++;
+      continue;
+    }
+    if (c === "/" && src[i + 1] === "*") {
+      i += 2;
+      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) {
+        if (src[i] === "\n") line++;
+        i++;
+      }
+      i += 2;
+      continue;
+    }
+    if (c === "#" && /^#(if|else|elseif|end)\b/.test(src.slice(i, i + 9))) {
+      // 条件付きコンパイルは行ごと読み飛ばす（全部有効として扱うのは危険なので無視）
+      while (i < n && src[i] !== "\n") i++;
+      continue;
+    }
+    if (/[0-9]/.test(c) || (c === "." && /[0-9]/.test(src[i + 1] || ""))) {
+      let j = i;
+      if (c === "0" && /[xX]/.test(src[i + 1] || "")) {
+        j += 2;
+        while (j < n && /[0-9a-fA-F]/.test(src[j])) j++;
+        push("num", parseInt(src.slice(i, j), 16));
+      } else {
+        while (j < n && /[0-9]/.test(src[j])) j++;
+        if (src[j] === "." && src[j + 1] !== "." && /[0-9]/.test(src[j + 1] || "")) {
+          j++;
+          while (j < n && /[0-9]/.test(src[j])) j++;
+        } else if (src[j] === "." && src[j + 1] !== "." && !isIdStart(src[j + 1] || " ")) j++; // "1." のような書き方
+        if (/[eE]/.test(src[j] || "") && /[0-9+-]/.test(src[j + 1] || "")) {
+          j += 2;
+          while (j < n && /[0-9]/.test(src[j])) j++;
+        }
+        push("num", parseFloat(src.slice(i, j)));
+      }
+      i = j;
+      continue;
+    }
+    if (isIdStart(c)) {
+      let j = i + 1;
+      while (j < n && isIdChar(src[j])) j++;
+      push("id", src.slice(i, j));
+      i = j;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      const q = c,
+        interp = c === "'";
+      const startLine = line;
+      let j = i + 1,
+        buf = "";
+      const parts = [];
+      const flush = () => {
+        if (buf) parts.push(buf);
+        buf = "";
+      };
+      while (j < n && src[j] !== q) {
+        let ch = src[j];
+        if (ch === "\n") line++;
+        if (ch === "\\") {
+          const e = src[j + 1];
+          j += 2;
+          if (e === "n") buf += "\n";
+          else if (e === "t") buf += "\t";
+          else if (e === "r") buf += "\r";
+          else if (e === "0") buf += "\0";
+          else if (e === "x") {
+            buf += String.fromCharCode(parseInt(src.slice(j, j + 2), 16));
+            j += 2;
+          } else if (e === "u") {
+            buf += String.fromCharCode(parseInt(src.slice(j, j + 4), 16));
+            j += 4;
+          } else buf += e;
+          continue;
+        }
+        if (interp && ch === "$") {
+          if (src[j + 1] === "$") {
+            buf += "$";
+            j += 2;
+            continue;
+          }
+          if (src[j + 1] === "{") {
+            let depth = 1,
+              k = j + 2;
+            while (k < n && depth) {
+              if (src[k] === "{") depth++;
+              else if (src[k] === "}") depth--;
+              k++;
+            }
+            flush();
+            parts.push({ src: src.slice(j + 2, k - 1), line });
+            j = k;
+            continue;
+          }
+          if (isIdStart(src[j + 1] || " ")) {
+            let k = j + 2;
+            while (k < n && isIdChar(src[k])) k++;
+            flush();
+            parts.push({ src: src.slice(j + 1, k), line });
+            j = k;
+            continue;
+          }
+        }
+        buf += ch;
+        j++;
+      }
+      flush();
+      i = j + 1;
+      toks.push({ t: "str", v: parts.length === 1 && typeof parts[0] === "string" ? parts[0] : parts.length === 0 ? "" : null, parts, line: startLine });
+      continue;
+    }
+    let op = OPS.find((o) => src.startsWith(o, i));
+    if (!op) op = c;
+    push("op", op);
+    i += op.length;
+  }
+  push("eof", "");
+  return toks;
+}
+
+// ---------------------------------------------------------------- 構文解析
+const BIN = {
+  "??": 3,
+  "||": 4,
+  "&&": 5,
+  "...": 6,
+  "==": 7,
+  "!=": 7,
+  "<": 7,
+  ">": 7,
+  "<=": 7,
+  ">=": 7,
+  "|": 8,
+  "&": 8,
+  "^": 8,
+  "<<": 9,
+  ">>": 9,
+  ">>>": 9,
+  "+": 10,
+  "-": 10,
+  "*": 11,
+  "/": 11,
+  "%": 11,
+};
+const ASSIGN = new Set(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", ">>>=", "??="]);
+const MODS = new Set(["public", "private", "static", "override", "inline", "final", "dynamic", "extern", "macro", "overload"]);
+
+class Parser {
+  constructor(src, baseLine = 0) {
+    this.toks = lex(src);
+    if (baseLine) for (const t of this.toks) t.line += baseLine - 1;
+    this.p = 0;
+  }
+  get cur() {
+    return this.toks[this.p];
+  }
+  peek(k = 1) {
+    return this.toks[Math.min(this.p + k, this.toks.length - 1)];
+  }
+  err(msg) {
+    const t = this.cur;
+    throw new HScriptError(`構文エラー（${t.line} 行目）: ${msg}（「${t.t === "eof" ? "ファイル末尾" : t.v ?? "文字列"}」の付近）`);
+  }
+  is(v) {
+    const t = this.cur;
+    return t.t === "op" && t.v === v;
+  }
+  isId(v) {
+    const t = this.cur;
+    return t.t === "id" && t.v === v;
+  }
+  eat(v) {
+    if (this.is(v)) {
+      this.p++;
+      return true;
+    }
+    return false;
+  }
+  eatId(v) {
+    if (this.isId(v)) {
+      this.p++;
+      return true;
+    }
+    return false;
+  }
+  expect(v) {
+    if (!this.eat(v)) this.err(`「${v}」が必要です`);
+  }
+  ident() {
+    const t = this.cur;
+    if (t.t !== "id") this.err("名前が必要です");
+    this.p++;
+    return t.v;
+  }
+
+  // ---- ファイル全体
+  parseModule() {
+    const classes = [];
+    while (this.cur.t !== "eof") {
+      this.skipMeta();
+      if (this.isId("import") || this.isId("using") || this.isId("package")) {
+        while (!this.is(";") && this.cur.t !== "eof") this.p++;
+        this.eat(";");
+        continue;
+      }
+      let sawMod = false;
+      while (this.cur.t === "id" && MODS.has(this.cur.v) && this.peek().t === "id") {
+        this.p++;
+        sawMod = true;
+      }
+      if (this.isId("class")) {
+        classes.push(this.parseClass());
+        continue;
+      }
+      if (this.isId("typedef") || this.isId("enum") || this.isId("abstract") || this.isId("interface")) {
+        this.skipDecl();
+        continue;
+      }
+      if (this.isId("function") || this.isId("var")) {
+        // クラス外の関数・変数（HScript のスクリプトファイル形式）は非対応
+        this.err("クラスの外の関数/変数は未対応です（class の中に書いてください）");
+      }
+      if (sawMod) continue;
+      this.err("クラス定義が必要です");
+    }
+    return classes;
+  }
+  skipDecl() {
+    while (!this.is("{") && !this.is(";") && this.cur.t !== "eof") this.p++;
+    if (this.eat(";")) return;
+    this.skipBraces();
+  }
+  skipBraces() {
+    let depth = 0;
+    do {
+      if (this.is("{")) depth++;
+      else if (this.is("}")) depth--;
+      this.p++;
+    } while (depth > 0 && this.cur.t !== "eof");
+  }
+  skipMeta() {
+    while (this.is("@")) {
+      this.p++;
+      this.eat(":");
+      this.ident();
+      while (this.eat(".")) this.ident();
+      if (this.is("(")) this.skipParens();
+    }
+  }
+  skipParens() {
+    let depth = 0;
+    do {
+      if (this.is("(")) depth++;
+      else if (this.is(")")) depth--;
+      this.p++;
+    } while (depth > 0 && this.cur.t !== "eof");
+  }
+  /** 型注釈を読み飛ばす（Array<Dynamic> や String->Void など） */
+  skipType() {
+    if (this.eat("(")) {
+      let depth = 1;
+      while (depth && this.cur.t !== "eof") {
+        if (this.is("(")) depth++;
+        else if (this.is(")")) depth--;
+        this.p++;
+      }
+    } else if (this.eat("{")) {
+      this.p--;
+      this.skipBraces();
+    } else {
+      this.eat("?");
+      this.ident();
+      while (this.eat(".")) this.ident();
+      if (this.is("<")) {
+        let depth = 0;
+        do {
+          if (this.is("<")) depth++;
+          else if (this.is(">")) depth--;
+          else if (this.is(">>")) depth -= 2;
+          else if (this.is(">>>")) depth -= 3;
+          else if (this.is(">=")) {
+            // List<T>=x のように ">" と "=" がくっついた場合は "=" を残す
+            this.toks[this.p] = { ...this.cur, v: "=" };
+            depth--;
+            if (depth <= 0) break;
+            continue;
+          }
+          this.p++;
+        } while (depth > 0 && this.cur.t !== "eof");
+      }
+    }
+    if (this.eat("->")) this.skipType();
+  }
+  parseClass() {
+    this.p++; // class
+    const name = this.ident();
+    if (this.is("<")) this.skipType2();
+    let ext = null;
+    while (this.isId("extends") || this.isId("implements")) {
+      const isExt = this.cur.v === "extends";
+      this.p++;
+      let nm = this.ident();
+      while (this.eat(".")) nm = this.ident();
+      if (this.is("<")) this.skipType2();
+      if (isExt) ext = nm;
+    }
+    this.expect("{");
+    const cls = { name, ext, fields: [], methods: new Map(), statics: new Map(), ctor: null, line: this.cur.line };
+    while (!this.is("}")) {
+      if (this.cur.t === "eof") this.err("クラスが閉じていません");
+      this.skipMeta();
+      const mods = new Set();
+      while (this.cur.t === "id" && MODS.has(this.cur.v)) {
+        // "final x = 1;" は変数宣言。"final function" のときだけ修飾子
+        if (this.cur.v === "final" && !(this.peek().t === "id" && (this.peek().v === "function" || MODS.has(this.peek().v)))) break;
+        mods.add(this.toks[this.p++].v);
+      }
+      if (this.isId("var") || this.isId("final")) {
+        this.p++;
+        const fname = this.ident();
+        if (this.is("(")) this.err("プロパティの get/set は未対応です");
+        if (this.eat(":")) this.skipType();
+        let init = null;
+        if (this.eat("=")) init = this.parseExpr();
+        this.eat(";");
+        cls.fields.push({ name: fname, init, isStatic: mods.has("static") });
+      } else if (this.isId("function")) {
+        this.p++;
+        const fname = this.ident();
+        if (this.is("<")) this.skipType2();
+        const params = this.parseParams();
+        if (this.eat(":")) this.skipType();
+        const body = this.parseBlock();
+        const m = { name: fname, params, body, isStatic: mods.has("static"), isOverride: mods.has("override") };
+        if (fname === "new") cls.ctor = m;
+        else (m.isStatic ? cls.statics : cls.methods).set(fname, m);
+      } else this.err("クラスの中は var / function だけ書けます");
+    }
+    this.expect("}");
+    return cls;
+  }
+  skipType2() {
+    let depth = 0;
+    do {
+      if (this.is("<")) depth++;
+      else if (this.is(">")) depth--;
+      else if (this.is(">>")) depth -= 2;
+      else if (this.is(">=")) {
+        this.toks[this.p] = { ...this.cur, v: "=" };
+        depth--;
+        if (depth <= 0) break;
+        continue;
+      }
+      this.p++;
+    } while (depth > 0 && this.cur.t !== "eof");
+  }
+  parseParams() {
+    this.expect("(");
+    const ps = [];
+    while (!this.is(")")) {
+      const opt = this.eat("?");
+      const name = this.ident();
+      if (this.eat(":")) this.skipType();
+      let def = null;
+      if (this.eat("=")) def = this.parseExpr();
+      ps.push({ name, def, opt });
+      if (!this.eat(",")) break;
+    }
+    this.expect(")");
+    return ps;
+  }
+
+  // ---- 文
+  parseBlock() {
+    this.expect("{");
+    const body = [];
+    while (!this.is("}")) {
+      if (this.cur.t === "eof") this.err("「}」が足りません");
+      body.push(this.parseStmt());
+    }
+    this.expect("}");
+    return { k: "block", body };
+  }
+  parseStmt() {
+    const t = this.cur;
+    const line = t.line;
+    if (t.t === "op") {
+      if (t.v === "{") return this.parseBlock();
+      if (t.v === ";") {
+        this.p++;
+        return { k: "block", body: [] };
+      }
+      if (t.v === "@") {
+        this.skipMeta();
+        return this.parseStmt();
+      }
+    }
+    if (t.t === "id") {
+      switch (t.v) {
+        case "var":
+        case "final": {
+          this.p++;
+          const decls = [];
+          do {
+            const name = this.ident();
+            if (this.eat(":")) this.skipType();
+            let init = null;
+            if (this.eat("=")) init = this.parseExpr();
+            decls.push({ name, init });
+          } while (this.eat(","));
+          this.eat(";");
+          return { k: "var", decls, line };
+        }
+        case "if": {
+          this.p++;
+          this.expect("(");
+          const c = this.parseExpr();
+          this.expect(")");
+          const a = this.parseStmt();
+          let b = null;
+          if (this.eatId("else")) b = this.parseStmt();
+          return { k: "if", c, a, b };
+        }
+        case "while": {
+          this.p++;
+          this.expect("(");
+          const c = this.parseExpr();
+          this.expect(")");
+          return { k: "while", c, body: this.parseStmt() };
+        }
+        case "do": {
+          this.p++;
+          const body = this.parseStmt();
+          if (!this.eatId("while")) this.err("do の後に while が必要です");
+          this.expect("(");
+          const c = this.parseExpr();
+          this.expect(")");
+          this.eat(";");
+          return { k: "dowhile", c, body };
+        }
+        case "for": {
+          this.p++;
+          this.expect("(");
+          let kn = null,
+            vn = this.ident();
+          if (this.eat("=>")) {
+            kn = vn;
+            vn = this.ident();
+          }
+          if (!this.eatId("in")) this.err("for の in が必要です");
+          const it = this.parseExpr();
+          this.expect(")");
+          return { k: "for", kn, vn, it, body: this.parseStmt() };
+        }
+        case "return": {
+          this.p++;
+          let e = null;
+          if (!this.is(";") && !this.is("}")) e = this.parseExpr();
+          this.eat(";");
+          return { k: "return", e };
+        }
+        case "break":
+          this.p++;
+          this.eat(";");
+          return { k: "break" };
+        case "continue":
+          this.p++;
+          this.eat(";");
+          return { k: "continue" };
+        case "throw": {
+          this.p++;
+          const e = this.parseExpr();
+          this.eat(";");
+          return { k: "throw", e };
+        }
+        case "try": {
+          this.p++;
+          const body = this.parseStmt();
+          const catches = [];
+          while (this.eatId("catch")) {
+            this.expect("(");
+            const name = this.ident();
+            if (this.eat(":")) this.skipType();
+            this.expect(")");
+            catches.push({ name, body: this.parseStmt() });
+          }
+          return { k: "try", body, catches };
+        }
+        case "switch": {
+          const e = this.parseSwitch();
+          return { k: "expr", e, line };
+        }
+        case "function":
+          if (this.peek().t === "id") {
+            this.p++;
+            const name = this.ident();
+            const params = this.parseParams();
+            if (this.eat(":")) this.skipType();
+            const body = this.parseBlock();
+            return { k: "var", decls: [{ name, init: { k: "func", params, body } }], line };
+          }
+      }
+    }
+    const e = this.parseExpr();
+    if (!this.eat(";") && !this.is("}")) {
+      // ブロックを末尾に持つ式（関数式など）の後は ; 省略可
+      const prev = this.toks[this.p - 1];
+      if (!(prev && prev.t === "op" && prev.v === "}")) this.err("「;」が必要です");
+    }
+    return { k: "expr", e, line };
+  }
+  parseSwitch() {
+    this.p++; // switch
+    this.expect("(");
+    const e = this.parseExpr();
+    this.expect(")");
+    this.expect("{");
+    const cases = [];
+    while (!this.is("}")) {
+      let pats = null,
+        guard = null;
+      if (this.eatId("default")) pats = null;
+      else if (this.eatId("case")) {
+        pats = [];
+        do pats.push(this.parseBin(9));
+        while (this.eat("|") || this.eat(","));
+        if (this.eatId("if")) {
+          this.expect("(");
+          guard = this.parseExpr();
+          this.expect(")");
+        }
+      } else this.err("case / default が必要です");
+      this.expect(":");
+      const body = [];
+      while (!this.isId("case") && !this.isId("default") && !this.is("}")) {
+        if (this.cur.t === "eof") this.err("switch が閉じていません");
+        body.push(this.parseStmt());
+      }
+      cases.push({ pats, guard, body });
+    }
+    this.expect("}");
+    return { k: "switch", e, cases };
+  }
+
+  // ---- 式
+  parseExpr() {
+    const left = this.parseTernary();
+    const t = this.cur;
+    if (t.t === "op" && ASSIGN.has(t.v)) {
+      this.p++;
+      const right = this.parseExpr();
+      if (!["id", "field", "index"].includes(left.k)) this.err("代入できない式です");
+      return { k: "assign", op: t.v, target: left, value: right, line: t.line };
+    }
+    return left;
+  }
+  parseTernary() {
+    const c = this.parseBin(3);
+    if (this.is("?")) {
+      this.p++;
+      const a = this.parseExpr();
+      this.expect(":");
+      const b = this.parseExpr();
+      return { k: "cond", c, a, b };
+    }
+    return c;
+  }
+  parseBin(min) {
+    let left = this.parseUnary();
+    for (;;) {
+      const t = this.cur;
+      if (t.t !== "op") break;
+      const prec = BIN[t.v];
+      if (!prec || prec < min) break;
+      this.p++;
+      const right = this.parseBin(prec + 1);
+      left = t.v === "&&" || t.v === "||" || t.v === "??" ? { k: "logic", op: t.v, a: left, b: right } : t.v === "..." ? { k: "range", a: left, b: right } : { k: "bin", op: t.v, a: left, b: right, line: t.line };
+    }
+    return left;
+  }
+  parseUnary() {
+    const t = this.cur;
+    if (t.t === "op") {
+      if (t.v === "!" || t.v === "-" || t.v === "~" || t.v === "+") {
+        this.p++;
+        const e = this.parseUnary();
+        if (t.v === "-" && e.k === "num") return { k: "num", v: -e.v };
+        return { k: "un", op: t.v, e };
+      }
+      if (t.v === "++" || t.v === "--") {
+        this.p++;
+        return { k: "incdec", op: t.v, prefix: true, target: this.parseUnary(), line: t.line };
+      }
+    }
+    if (t.t === "id" && t.v === "new") {
+      this.p++;
+      let name = this.ident();
+      while (this.eat(".")) name = this.ident();
+      if (this.is("<")) this.skipType2();
+      this.expect("(");
+      const args = this.parseArgs();
+      return this.parsePostfix({ k: "new", name, args, line: t.line });
+    }
+    return this.parsePostfix(this.parsePrimary());
+  }
+  parseArgs() {
+    const args = [];
+    while (!this.is(")")) {
+      args.push(this.parseExpr());
+      if (!this.eat(",")) break;
+    }
+    this.expect(")");
+    return args;
+  }
+  parsePostfix(e) {
+    for (;;) {
+      const t = this.cur;
+      if (t.t !== "op") break;
+      if (t.v === ".") {
+        this.p++;
+        e = { k: "field", o: e, n: this.ident(), line: t.line };
+      } else if (t.v === "?.") {
+        this.p++;
+        e = { k: "field", o: e, n: this.ident(), opt: true, line: t.line };
+      } else if (t.v === "(") {
+        this.p++;
+        e = { k: "call", f: e, args: this.parseArgs(), line: t.line };
+      } else if (t.v === "[") {
+        this.p++;
+        const i = this.parseExpr();
+        this.expect("]");
+        e = { k: "index", o: e, i, line: t.line };
+      } else if (t.v === "++" || t.v === "--") {
+        this.p++;
+        e = { k: "incdec", op: t.v, prefix: false, target: e, line: t.line };
+      } else break;
+    }
+    return e;
+  }
+  /** "(" から対応する ")" の次が "->" なら、アロー関数 */
+  isArrowAhead() {
+    let depth = 0,
+      i = this.p;
+    for (; i < this.toks.length; i++) {
+      const t = this.toks[i];
+      if (t.t === "op" && t.v === "(") depth++;
+      else if (t.t === "op" && t.v === ")") {
+        depth--;
+        if (depth === 0) break;
+      } else if (t.t === "eof") return false;
+    }
+    const nx = this.toks[i + 1];
+    return !!nx && nx.t === "op" && nx.v === "->";
+  }
+  parsePrimary() {
+    const t = this.cur;
+    const line = t.line;
+    if (t.t === "num") {
+      this.p++;
+      return { k: "num", v: t.v };
+    }
+    if (t.t === "str") {
+      this.p++;
+      if (t.v !== null) return { k: "str", v: t.v };
+      const parts = t.parts.map((p) => {
+        if (typeof p === "string") return p;
+        const sub = new Parser(p.src, p.line);
+        const e = sub.parseExpr();
+        return e;
+      });
+      return { k: "interp", parts };
+    }
+    if (t.t === "op") {
+      if (t.v === "(") {
+        if (this.isArrowAhead()) {
+          const params = this.parseParams();
+          this.expect("->");
+          return { k: "func", params, body: { k: "return", e: this.parseExpr() }, line };
+        }
+        this.p++;
+        const e = this.parseExpr();
+        if (this.eat(":")) this.skipType(); // (x : Type) 型チェック式
+        this.expect(")");
+        return { k: "paren", e };
+      }
+      if (t.v === "[") return this.parseArrayLit();
+      if (t.v === "{") return this.parseObjectLit();
+    }
+    if (t.t === "id") {
+      switch (t.v) {
+        case "true":
+          this.p++;
+          return { k: "lit", v: true };
+        case "false":
+          this.p++;
+          return { k: "lit", v: false };
+        case "null":
+          this.p++;
+          return { k: "lit", v: null };
+        case "this":
+          this.p++;
+          return { k: "this" };
+        case "function": {
+          this.p++;
+          if (this.cur.t === "id") this.p++; // 名前付き関数式
+          const params = this.parseParams();
+          if (this.eat(":")) this.skipType();
+          return { k: "func", params, body: this.parseBlock(), line };
+        }
+        case "cast": {
+          this.p++;
+          this.expect("(");
+          const e = this.parseExpr();
+          if (this.eat(",")) this.skipType();
+          this.expect(")");
+          return e;
+        }
+        case "untyped":
+          this.p++;
+          return this.parseUnary();
+        case "if": {
+          this.p++;
+          this.expect("(");
+          const c = this.parseExpr();
+          this.expect(")");
+          const a = this.parseExpr();
+          let b = null;
+          if (this.eatId("else")) b = this.parseExpr();
+          return { k: "cond", c, a, b };
+        }
+        case "switch":
+          return this.parseSwitch();
+      }
+      this.p++;
+      // x -> expr（引数 1 個のアロー）
+      if (this.is("->")) {
+        this.p++;
+        return { k: "func", params: [{ name: t.v, def: null }], body: { k: "return", e: this.parseExpr() }, line };
+      }
+      return { k: "id", n: t.v, line };
+    }
+    this.err("式が必要です");
+  }
+  parseArrayLit() {
+    this.p++; // [
+    if (this.isId("for") || this.isId("while")) {
+      // 配列内包 [for (x in it) expr]
+      this.p++;
+      this.expect("(");
+      let kn = null,
+        vn = this.ident();
+      if (this.eat("=>")) {
+        kn = vn;
+        vn = this.ident();
+      }
+      if (!this.eatId("in")) this.err("for の in が必要です");
+      const it = this.parseExpr();
+      this.expect(")");
+      const e = this.parseExpr();
+      this.expect("]");
+      return { k: "comp", kn, vn, it, e };
+    }
+    const items = [];
+    let isMap = false;
+    while (!this.is("]")) {
+      const a = this.parseExpr();
+      if (this.eat("=>")) {
+        isMap = true;
+        items.push([a, this.parseExpr()]);
+      } else items.push(a);
+      if (!this.eat(",")) break;
+    }
+    this.expect("]");
+    return isMap ? { k: "map", items } : { k: "array", items };
+  }
+  parseObjectLit() {
+    this.p++; // {
+    const props = [];
+    while (!this.is("}")) {
+      const t = this.cur;
+      let key;
+      if (t.t === "id") key = t.v;
+      else if (t.t === "str" && t.v !== null) key = t.v;
+      else this.err("オブジェクトのキーが必要です");
+      this.p++;
+      this.expect(":");
+      props.push([key, this.parseExpr()]);
+      if (!this.eat(",")) break;
+    }
+    this.expect("}");
+    return { k: "object", props };
+  }
+}
+
+// ---------------------------------------------------------------- 実行
+class Scope {
+  constructor(parent) {
+    this.v = new Map();
+    this.parent = parent;
+  }
+  find(n) {
+    for (let s = this; s; s = s.parent) if (s.v.has(n)) return s;
+    return null;
+  }
+}
+
+/** 未対応 API の代役。何をされても落ちず、使われたことだけ記録する */
+const isStub = (o) => typeof o === "function" && o.__stub !== undefined;
+function makeStub(path, onUse) {
+  const cache = new Map();
+  const target = function () {};
+  const px = new Proxy(target, {
+    get(_, prop) {
+      if (prop === Symbol.toPrimitive) return () => 0;
+      if (typeof prop === "symbol") return undefined;
+      if (prop === "then") return undefined;
+      if (prop === "toString" || prop === "valueOf") return () => path;
+      if (prop === "length") return 0;
+      if (prop === "__stub") return path;
+      if (!cache.has(prop)) cache.set(prop, makeStub(`${path}.${prop}`, onUse));
+      return cache.get(prop);
+    },
+    set() {
+      onUse(path, true);
+      return true;
+    },
+    apply() {
+      onUse(path);
+      return makeStub(`${path}()`, onUse);
+    },
+    construct() {
+      onUse(path);
+      return makeStub(`new ${path}`, onUse);
+    },
+  });
+  return px;
+}
+
+const ARR_SHIM = {
+  copy: (a) => a.slice(),
+  remove: (a, x) => {
+    const i = a.indexOf(x);
+    if (i < 0) return false;
+    a.splice(i, 1);
+    return true;
+  },
+  insert: (a, i, x) => void a.splice(i, 0, x),
+  contains: (a, x) => a.includes(x),
+  iterator: (a) => a,
+  resize: (a, n) => void (a.length = n),
+};
+
+class HScript {
+  /**
+   * @param host { globals: {name: value}, bases: {名前: {init(inst,args), methods:{}}}, warn(msg), onStub(path, isSet) }
+   */
+  constructor(host) {
+    this.host = host;
+    this.classes = new Map(); // 名前 → クラス定義（読み込んだファイル全部）
+    this.stubs = new Map();
+    this.steps = 0;
+    this.depth = 0;
+  }
+  load(source, fileName = "") {
+    const defs = new Parser(source).parseModule();
+    for (const c of defs) {
+      c.file = fileName;
+      c.staticVals = new Map();
+      this.classes.set(c.name, c);
+    }
+    // static var の初期化
+    for (const c of defs)
+      for (const f of c.fields)
+        if (f.isStatic) c.staticVals.set(f.name, f.init ? this.ev(f.init, new Scope(null), { cls: c, self: null }) : null);
+    return defs;
+  }
+  /** ベースクラスをたどって、指定名を継承しているか */
+  extendsOf(cls, name) {
+    for (let c = cls; c; c = this.classes.get(c.ext)) {
+      if (c.name === name || c.ext === name) return true;
+      if (!this.classes.has(c.ext)) return false;
+    }
+    return false;
+  }
+  rootBase(cls) {
+    let c = cls;
+    while (c && this.classes.has(c.ext)) c = this.classes.get(c.ext);
+    return c ? c.ext : null;
+  }
+  instantiate(cls, args = []) {
+    const inst = { __cls: cls };
+    this.initFields(cls, inst);
+    this.runCtor(cls, inst, args);
+    return inst;
+  }
+  initFields(cls, inst) {
+    const parent = this.classes.get(cls.ext);
+    if (parent) this.initFields(parent, inst);
+    for (const f of cls.fields) if (!f.isStatic) inst[f.name] = f.init ? this.ev(f.init, new Scope(null), { cls, self: inst }) : null;
+  }
+  runCtor(cls, inst, args) {
+    const parent = this.classes.get(cls.ext);
+    if (cls.ctor) {
+      this.invoke(cls, cls.ctor, inst, args);
+      return;
+    }
+    // コンストラクタなし: 親にそのまま渡す
+    if (parent) this.runCtor(parent, inst, args);
+    else this.baseInit(cls, inst, args);
+  }
+  baseInit(cls, inst, args) {
+    const b = this.host.bases?.[cls.ext];
+    if (b?.init) b.init(inst, args);
+  }
+  findMethod(cls, name) {
+    for (let c = cls; c; c = this.classes.get(c.ext)) {
+      const m = c.methods.get(name);
+      if (m) return { m, cls: c };
+    }
+    return null;
+  }
+  /** ホストから呼ぶ: インスタンスのメソッドを呼ぶ（無ければ基底クラスの既定動作） */
+  call(inst, name, args = []) {
+    this.steps = 0;
+    const f = this.findMethod(inst.__cls, name);
+    if (f) return this.invoke(f.cls, f.m, inst, args);
+    return this.baseMethod(inst.__cls, inst, name, args);
+  }
+  has(inst, name) {
+    return !!this.findMethod(inst.__cls, name);
+  }
+  baseMethod(cls, inst, name, args) {
+    const b = this.host.bases?.[this.rootBase(cls)];
+    const fn = b?.methods?.[name];
+    return fn ? fn.apply(inst, args) : null;
+  }
+  invoke(cls, m, self, args) {
+    if (++this.depth > 200) {
+      this.depth = 0;
+      throw new HScriptError("呼び出しが深すぎます（無限再帰?）");
+    }
+    try {
+      const sc = new Scope(null);
+      const fr = { cls, self };
+      m.params.forEach((p, i) => {
+        let v = args[i];
+        if (v === undefined) v = p.def ? this.ev(p.def, sc, fr) : null;
+        sc.v.set(p.name, v);
+      });
+      const r = this.execBody(m.body, sc, fr);
+      return r && r.sig === "ret" ? r.v : null;
+    } finally {
+      this.depth--;
+    }
+  }
+  execBody(body, sc, fr) {
+    return body.k === "return" ? new Ret(this.ev(body.e, sc, fr)) : this.exec(body, sc, fr);
+  }
+  makeFn(node, sc, fr) {
+    const self = this;
+    return function (...args) {
+      const s = new Scope(sc);
+      node.params.forEach((p, i) => {
+        let v = args[i];
+        if (v === undefined) v = p.def ? self.ev(p.def, s, fr) : null;
+        s.v.set(p.name, v);
+      });
+      const r = self.execBody(node.body, s, fr);
+      return r && r.sig === "ret" ? r.v : null;
+    };
+  }
+  tick(line) {
+    if (++this.steps > 4e6) {
+      this.steps = 0;
+      throw new HScriptError(`処理が終わりません（${line ?? "?"} 行目付近。無限ループ?）`);
+    }
+  }
+
+  // ---- 文
+  exec(n, sc, fr) {
+    switch (n.k) {
+      case "block": {
+        const s = new Scope(sc);
+        for (const st of n.body) {
+          const r = this.exec(st, s, fr);
+          if (r) return r;
+        }
+        return;
+      }
+      case "expr":
+        this.ev(n.e, sc, fr);
+        return;
+      case "var":
+        for (const d of n.decls) sc.v.set(d.name, d.init ? this.ev(d.init, sc, fr) : null);
+        return;
+      case "if":
+        if (this.ev(n.c, sc, fr)) return this.exec(n.a, sc, fr);
+        else if (n.b) return this.exec(n.b, sc, fr);
+        return;
+      case "while":
+        while (this.ev(n.c, sc, fr)) {
+          this.tick(n.line);
+          const r = this.exec(n.body, sc, fr);
+          if (r) {
+            if (r === BRK) break;
+            if (r === CONT) continue;
+            return r;
+          }
+        }
+        return;
+      case "dowhile":
+        do {
+          this.tick(n.line);
+          const r = this.exec(n.body, sc, fr);
+          if (r) {
+            if (r === BRK) break;
+            if (r === CONT) continue;
+            return r;
+          }
+        } while (this.ev(n.c, sc, fr));
+        return;
+      case "for": {
+        const it = this.ev(n.it, sc, fr);
+        for (const [k, v] of this.iterate(it, !!n.kn)) {
+          this.tick(n.line);
+          const s = new Scope(sc);
+          if (n.kn) s.v.set(n.kn, k);
+          s.v.set(n.vn, v);
+          const r = this.exec(n.body, s, fr);
+          if (r) {
+            if (r === BRK) break;
+            if (r === CONT) continue;
+            return r;
+          }
+        }
+        return;
+      }
+      case "return":
+        return new Ret(n.e ? this.ev(n.e, sc, fr) : null);
+      case "break":
+        return BRK;
+      case "continue":
+        return CONT;
+      case "throw":
+        throw new ThrowSignal(this.ev(n.e, sc, fr));
+      case "try":
+        try {
+          return this.exec(n.body, sc, fr);
+        } catch (e) {
+          if (!n.catches.length) throw e;
+          const val = e instanceof ThrowSignal ? e.value : e instanceof Error ? e.message : e;
+          const s = new Scope(sc);
+          s.v.set(n.catches[0].name, val);
+          return this.exec(n.catches[0].body, s, fr);
+        }
+    }
+    throw new HScriptError("内部エラー: 不明な文 " + n.k);
+  }
+  *iterate(it, withKey) {
+    if (it == null) throw new HScriptError("null を for で繰り返そうとしました");
+    if (it.__range) {
+      for (let i = it.a; i < it.b; i++) yield [i, i];
+      return;
+    }
+    if (Array.isArray(it)) {
+      for (let i = 0; i < it.length; i++) yield [i, it[i]];
+      return;
+    }
+    if (it instanceof HMap) {
+      if (withKey) for (const [k, v] of it.m) yield [k, v];
+      else for (const v of it.m.values()) yield [v, v];
+      return;
+    }
+    if (typeof it.iterator === "function") {
+      const r = it.iterator();
+      if (Array.isArray(r)) {
+        for (let i = 0; i < r.length; i++) yield [i, r[i]];
+        return;
+      }
+      if (r && typeof r.hasNext === "function") {
+        while (r.hasNext()) {
+          const v = r.next();
+          yield [v, v];
+        }
+        return;
+      }
+    }
+    if (typeof it[Symbol.iterator] === "function") {
+      let i = 0;
+      for (const v of it) yield [i++, v];
+      return;
+    }
+    throw new HScriptError("繰り返せない値です");
+  }
+
+  // ---- 式
+  lookup(name, sc, fr) {
+    const s = sc.find(name);
+    if (s) return { found: true, v: s.v.get(name), scope: s };
+    if (fr.self && name in fr.self) return { found: true, v: fr.self[name], inst: true };
+    if (fr.self) {
+      const f = this.findMethod(fr.self.__cls, name);
+      if (f) return { found: true, v: (...a) => this.invoke(f.cls, f.m, fr.self, a) };
+    }
+    for (let c = fr.cls; c; c = this.classes.get(c.ext)) {
+      if (c.staticVals?.has(name)) return { found: true, v: c.staticVals.get(name), cls: c };
+      const sm = c.statics.get(name);
+      if (sm) return { found: true, v: (...a) => this.invoke(c, sm, null, a) };
+    }
+    const g = this.host.globals;
+    if (name in g) return { found: true, v: g[name], global: true };
+    const sib = this.classes.get(name);
+    if (sib) return { found: true, v: { __classRef: sib }, global: true };
+    return { found: false };
+  }
+  stub(name) {
+    if (!this.stubs.has(name)) this.stubs.set(name, makeStub(name, (p, isSet) => this.host.onStub?.(p, isSet)));
+    return this.stubs.get(name);
+  }
+  getField(o, name, line, opt) {
+    if (isStub(o)) return o[name];
+    if (o == null) {
+      if (opt) return null;
+      throw new HScriptError(`null の「${name}」にアクセスしました（${line ?? "?"} 行目）。実ゲームでもエラーになります。`);
+    }
+    if (o.__classRef) {
+      const c = o.__classRef;
+      if (c.staticVals.has(name)) return c.staticVals.get(name);
+      const sm = c.statics.get(name);
+      if (sm) return (...a) => this.invoke(c, sm, null, a);
+      throw new HScriptError(`${c.name}.${name} は定義されていません`);
+    }
+    if (o.__cls) {
+      if (name in o) return o[name];
+      const f = this.findMethod(o.__cls, name);
+      if (f) return (...a) => this.invoke(f.cls, f.m, o, a);
+      const b = this.host.bases?.[this.rootBase(o.__cls)]?.methods?.[name];
+      if (b) return b.bind(o);
+      return this.hostField(o, name);
+    }
+    return this.hostField(o, name);
+  }
+  hostField(o, name) {
+    const v = o[name];
+    if (typeof v === "function" && !(v.__stub !== undefined)) return v.bind(o);
+    return v === undefined ? null : v;
+  }
+  callMethod(o, name, args, line, opt) {
+    if (o == null) {
+      if (opt) return null;
+      throw new HScriptError(`null の「${name}()」を呼びました（${line ?? "?"} 行目）。実ゲームでもエラーになります。`);
+    }
+    if (isStub(o)) return o[name](...args);
+    if (Array.isArray(o) && ARR_SHIM[name]) return ARR_SHIM[name](o, ...args);
+    if (o.__cls) {
+      const f = this.findMethod(o.__cls, name);
+      if (f) return this.invoke(f.cls, f.m, o, args);
+      const b = this.host.bases?.[this.rootBase(o.__cls)]?.methods?.[name];
+      if (b) return b.apply(o, args);
+      const fv = o[name];
+      if (typeof fv === "function") return fv(...args);
+      throw new HScriptError(`${o.__cls.name} に ${name}() がありません（${line ?? "?"} 行目）`);
+    }
+    if (o.__classRef) {
+      const c = o.__classRef;
+      const sm = c.statics.get(name);
+      if (sm) return this.invoke(c, sm, null, args);
+      throw new HScriptError(`${c.name}.${name}() は定義されていません`);
+    }
+    const fn = o[name];
+    if (typeof fn === "function") return fn.apply(o, args);
+    if (fn === undefined || fn === null) {
+      throw new HScriptError(`「${name}()」という関数がありません（${line ?? "?"} 行目）`);
+    }
+    throw new HScriptError(`「${name}」は関数ではありません（${line ?? "?"} 行目）`);
+  }
+  eq(a, b) {
+    if (a == null || b == null) return a == b;
+    return a === b;
+  }
+  ev(n, sc, fr) {
+    switch (n.k) {
+      case "num":
+        return n.v;
+      case "str":
+        return n.v;
+      case "lit":
+        return n.v;
+      case "paren":
+        return this.ev(n.e, sc, fr);
+      case "this":
+        return fr.self;
+      case "interp": {
+        let s = "";
+        for (const p of n.parts) s += typeof p === "string" ? p : this.str(this.ev(p, sc, fr));
+        return s;
+      }
+      case "id": {
+        const r = this.lookup(n.n, sc, fr);
+        if (r.found) return r.v;
+        if (n.n === "super") return { __super: true };
+        return this.stub(n.n);
+      }
+      case "field": {
+        if (n.o.k === "id" && n.o.n === "super") {
+          const base = this.classes.get(fr.cls.ext);
+          const nm = n.n;
+          return (...a) => {
+            if (base) {
+              const f = this.findMethod(base, nm);
+              if (f) return this.invoke(f.cls, f.m, fr.self, a);
+            }
+            return this.baseMethod(fr.cls, fr.self, nm, a);
+          };
+        }
+        return this.getField(this.ev(n.o, sc, fr), n.n, n.line, n.opt);
+      }
+      case "index": {
+        const o = this.ev(n.o, sc, fr),
+          i = this.ev(n.i, sc, fr);
+        if (o == null) throw new HScriptError(`null に [] でアクセスしました（${n.line} 行目）`);
+        if (o instanceof HMap) return o.get(i);
+        const v = o[i];
+        return v === undefined ? null : v;
+      }
+      case "call": {
+        const f = n.f;
+        if (f.k === "id" && f.n === "super") {
+          // super(...) — 親のコンストラクタ
+          const parent = this.classes.get(fr.cls.ext);
+          const args = n.args.map((a) => this.ev(a, sc, fr));
+          if (parent) this.runCtor(parent, fr.self, args);
+          else this.baseInit(fr.cls, fr.self, args);
+          return null;
+        }
+        if (f.k === "field") {
+          if (f.o.k === "id" && f.o.n === "super") {
+            const args = n.args.map((a) => this.ev(a, sc, fr));
+            return this.ev(f, sc, fr)(...args);
+          }
+          const o = this.ev(f.o, sc, fr);
+          const args = n.args.map((a) => this.ev(a, sc, fr));
+          return this.callMethod(o, f.n, args, n.line, f.opt);
+        }
+        const fn = this.ev(f, sc, fr);
+        const args = n.args.map((a) => this.ev(a, sc, fr));
+        if (typeof fn !== "function") {
+          if (fn == null) throw new HScriptError(`null を関数として呼びました（${n.line} 行目）`);
+          throw new HScriptError(`関数ではない値を呼びました（${n.line} 行目）`);
+        }
+        return fn(...args);
+      }
+      case "new": {
+        const args = n.args.map((a) => this.ev(a, sc, fr));
+        const cls = this.classes.get(n.name);
+        if (cls) return this.instantiate(cls, args);
+        const g = this.host.globals[n.name];
+        if (typeof g === "function") return new g(...args);
+        if (g && g.__new) return g.__new(...args);
+        this.host.onStub?.("new " + n.name);
+        return this.stub("new " + n.name);
+      }
+      case "un": {
+        const v = this.ev(n.e, sc, fr);
+        switch (n.op) {
+          case "!":
+            return !v;
+          case "-":
+            return -v;
+          case "+":
+            return +v;
+          case "~":
+            return ~v;
+        }
+        break;
+      }
+      case "logic": {
+        const a = this.ev(n.a, sc, fr);
+        if (n.op === "&&") return a ? this.ev(n.b, sc, fr) : a;
+        if (n.op === "||") return a ? a : this.ev(n.b, sc, fr);
+        return a != null ? a : this.ev(n.b, sc, fr);
+      }
+      case "cond":
+        return this.ev(n.c, sc, fr) ? this.ev(n.a, sc, fr) : n.b ? this.ev(n.b, sc, fr) : null;
+      case "range":
+        return { __range: true, a: this.ev(n.a, sc, fr), b: this.ev(n.b, sc, fr) };
+      case "bin":
+        return this.binop(n.op, this.ev(n.a, sc, fr), this.ev(n.b, sc, fr), n.line);
+      case "array":
+        return n.items.map((x) => this.ev(x, sc, fr));
+      case "map": {
+        const m = new HMap();
+        for (const [k, v] of n.items) m.set(this.ev(k, sc, fr), this.ev(v, sc, fr));
+        return m;
+      }
+      case "object": {
+        const o = {};
+        for (const [k, v] of n.props) o[k] = this.ev(v, sc, fr);
+        return o;
+      }
+      case "comp": {
+        const out = [];
+        for (const [k, v] of this.iterate(this.ev(n.it, sc, fr), !!n.kn)) {
+          const s = new Scope(sc);
+          if (n.kn) s.v.set(n.kn, k);
+          s.v.set(n.vn, v);
+          out.push(this.ev(n.e, s, fr));
+        }
+        return out;
+      }
+      case "func":
+        return this.makeFn(n, sc, fr);
+      case "switch": {
+        const v = this.ev(n.e, sc, fr);
+        for (const c of n.cases) {
+          let hit = c.pats === null;
+          if (!hit)
+            for (const p of c.pats) {
+              if (p.k === "id" && p.n === "_") {
+                hit = true;
+                break;
+              }
+              if (this.eq(v, this.ev(p, sc, fr))) {
+                hit = true;
+                break;
+              }
+            }
+          if (hit && c.guard && !this.ev(c.guard, sc, fr)) hit = false;
+          if (!hit) continue;
+          const s = new Scope(sc);
+          let last = null;
+          for (const st of c.body) {
+            if (st.k === "expr") last = this.ev(st.e, s, fr);
+            else {
+              const r = this.exec(st, s, fr);
+              if (r) {
+                this.pendingSig = r; // return / break を switch の外へ伝える
+                return null;
+              }
+            }
+          }
+          return last;
+        }
+        return null;
+      }
+      case "assign":
+        return this.assign(n, sc, fr);
+      case "incdec": {
+        const cur = this.ev(n.target, sc, fr);
+        const next = n.op === "++" ? cur + 1 : cur - 1;
+        this.store(n.target, next, sc, fr);
+        return n.prefix ? next : cur;
+      }
+    }
+    throw new HScriptError("内部エラー: 不明な式 " + n.k);
+  }
+  str(v) {
+    if (v == null) return "null";
+    if (typeof v === "number") return String(v);
+    if (typeof v === "object" && v.__cls) return v.__cls.name;
+    if (typeof v === "object" && !Array.isArray(v) && !(v instanceof HMap)) {
+      try {
+        return JSON.stringify(v);
+      } catch {}
+    }
+    return String(v);
+  }
+  binop(op, a, b, line) {
+    switch (op) {
+      case "+":
+        return a + b;
+      case "-":
+        return a - b;
+      case "*":
+        return a * b;
+      case "/":
+        return a / b;
+      case "%":
+        return a % b;
+      case "==":
+        return this.eq(a, b);
+      case "!=":
+        return !this.eq(a, b);
+      case "<":
+        return a < b;
+      case ">":
+        return a > b;
+      case "<=":
+        return a <= b;
+      case ">=":
+        return a >= b;
+      case "&":
+        return a & b;
+      case "|":
+        return a | b;
+      case "^":
+        return a ^ b;
+      case "<<":
+        return a << b;
+      case ">>":
+        return a >> b;
+      case ">>>":
+        return a >>> b;
+    }
+    throw new HScriptError(`未対応の演算子 ${op}（${line} 行目）`);
+  }
+  assign(n, sc, fr) {
+    let v;
+    if (n.op === "=") v = this.ev(n.value, sc, fr);
+    else if (n.op === "??=") {
+      const cur = this.ev(n.target, sc, fr);
+      if (cur != null) return cur;
+      v = this.ev(n.value, sc, fr);
+    } else v = this.binop(n.op.slice(0, -1), this.ev(n.target, sc, fr), this.ev(n.value, sc, fr), n.line);
+    this.store(n.target, v, sc, fr);
+    return v;
+  }
+  store(t, v, sc, fr) {
+    if (t.k === "id") {
+      const r = this.lookup(t.n, sc, fr);
+      if (r.found) {
+        if (r.scope) r.scope.v.set(t.n, v);
+        else if (r.inst) fr.self[t.n] = v;
+        else if (r.cls) r.cls.staticVals.set(t.n, v);
+        else this.host.globals[t.n] = v;
+      } else if (fr.self) fr.self[t.n] = v;
+      else sc.v.set(t.n, v);
+      return;
+    }
+    if (t.k === "field") {
+      const o = this.ev(t.o, sc, fr);
+      if (o == null) throw new HScriptError(`null の「${t.n}」に代入しました（${t.line} 行目）`);
+      if (isStub(o)) o[t.n] = v;
+      else if (o.__classRef) o.__classRef.staticVals.set(t.n, v);
+      else o[t.n] = v;
+      return;
+    }
+    if (t.k === "index") {
+      const o = this.ev(t.o, sc, fr),
+        i = this.ev(t.i, sc, fr);
+      if (o == null) throw new HScriptError(`null に [] で代入しました（${t.line} 行目）`);
+      if (o instanceof HMap) o.set(i, v);
+      else o[i] = v;
+    }
+  }
+}
+
+return { HScriptError, HMap, isStub, makeStub, HScript };
+})();
+
+/* ===== funkin-studio/js/runtime/glpost.js ===== */
+const __m45 = (() => {
+/* ============================================================
+   runtime/glpost.js — カメラの「フィルター（シェーダー）」を WebGL で掛ける後処理
+   ------------------------------------------------------------
+   ・2D キャンバスに描いたカメラの絵をテクスチャにして、フラグメントシェーダーで 1 枚の板に描き直す。
+   ・シェーダーを持つカメラだけがここを通る（普通のカメラは追加コスト 0）。WebGL が使えない環境では null を返して素通し。
+   ・シェーダーの形: { glsl?: フラグメントのソース, uniforms: {名前: 数値}, active(): 効果が掛かっているか }
+     glsl の中では varying vec2 uv; uniform sampler2D tex; が使える。出力は「アルファ乗算済み」の色。
+   ・組み込み: grayscale（Grayscale イベント用）。
+   ============================================================ */
+const VERT = "attribute vec2 p; varying vec2 uv; void main(){ uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }";
+const GLSL_GRAYSCALE = `precision mediump float; varying vec2 uv; uniform sampler2D tex; uniform float amount;
+void main(){ vec4 c = texture2D(tex, uv); float g = dot(c.rgb, vec3(0.299, 0.587, 0.114)); gl_FragColor = vec4(mix(c.rgb, vec3(g), amount), c.a); }`;
+
+class GLPost {
+  constructor() {
+    this.canvas = document.createElement("canvas");
+    this.gl = null;
+    this.progs = new Map();
+    this.failed = new Set();
+    try {
+      this.gl = this.canvas.getContext("webgl", { premultipliedAlpha: true, alpha: true, antialias: false, preserveDrawingBuffer: false });
+    } catch {}
+    const gl = this.gl;
+    if (!gl) return;
+    this.buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    this.tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    for (const [k, v] of [
+      [gl.TEXTURE_MIN_FILTER, gl.LINEAR],
+      [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
+      [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE],
+      [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE],
+    ])
+      gl.texParameteri(gl.TEXTURE_2D, k, v);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  }
+  get ok() {
+    return !!this.gl;
+  }
+  program(glsl) {
+    if (this.progs.has(glsl)) return this.progs.get(glsl);
+    const gl = this.gl;
+    const mk = (type, src) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw Error(gl.getShaderInfoLog(s) || "シェーダーをコンパイルできません");
+      return s;
+    };
+    let prog = null;
+    try {
+      prog = gl.createProgram();
+      gl.attachShader(prog, mk(gl.VERTEX_SHADER, VERT));
+      gl.attachShader(prog, mk(gl.FRAGMENT_SHADER, glsl));
+      gl.bindAttribLocation(prog, 0, "p");
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw Error(gl.getProgramInfoLog(prog) || "リンクできません");
+    } catch (e) {
+      prog = { error: e.message };
+    }
+    this.progs.set(glsl, prog);
+    return prog;
+  }
+  /** src(2D キャンバス)にシェーダーを掛けた結果の canvas を返す。失敗時は null（呼び出し側は素通し） */
+  apply(src, shader) {
+    const gl = this.gl;
+    if (!gl) return null;
+    const glsl = shader.glsl ?? GLSL_GRAYSCALE;
+    const prog = this.program(glsl);
+    if (prog.error) {
+      if (!this.failed.has(glsl)) {
+        this.failed.add(glsl);
+        shader.onError?.(prog.error);
+      }
+      return null;
+    }
+    if (this.canvas.width !== src.width || this.canvas.height !== src.height) {
+      this.canvas.width = src.width;
+      this.canvas.height = src.height;
+    }
+    gl.viewport(0, 0, src.width, src.height);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(prog);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+    gl.uniform1i(gl.getUniformLocation(prog, "tex"), 0);
+    for (const [k, v] of Object.entries(shader.uniforms ?? {})) {
+      const loc = gl.getUniformLocation(prog, k);
+      if (loc) gl.uniform1f(loc, Number(v) || 0);
+    }
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    return this.canvas;
+  }
+}
+
+return { GLSL_GRAYSCALE, GLPost };
+})();
+
+/* ===== funkin-studio/js/runtime/runtime.js ===== */
+const __m46 = (() => {
+/* ============================================================
+   runtime/runtime.js — V-Slice の演出スクリプト（SongEvent / Module）を動かす、軽量なゲーム環境
+   ------------------------------------------------------------
+   ・HScript（hscript.js）に「それっぽい FlxG / PlayState / FlxSprite / FlxTween ...」を渡して、
+     .hxc のイベントやモジュールを実際に実行する。画面に出るもの（スプライト・テキスト・フィルター）は
+     3 つのカメラ（camGame / camHUD / camCutscene）に描く。
+   ・本物の V-Slice ではないので、再現しているのは「演出に使われやすい API」だけ。
+     ない API は「スタブ」（何を呼んでも落ちない代役）になり、使われたものが warnings に集まる。
+   ・軽量化: ・描画は 1280×720 の仮想座標を縮尺する 2D キャンバス描画  ・シェーダーを持つカメラだけ WebGL を通す
+     ・画面外 / alpha 0 のものは描かない  ・Tween は 1 本のリストを 1 回なめるだけ
+   ============================================================ */
+const { HScript, HMap, makeStub } = __m44;
+const { GLPost, GLSL_GRAYSCALE } = __m45;
+
+const LAYER_MAX_W = 1280; // フィルターを掛けるカメラの絵の最大幅(px)
+const GAME_W = 1280,
+  GAME_H = 720;
+
+// ---------------------------------------------------------------- イージング（Flixel の FlxEase と同じ式）
+const A = 1,
+  P = 0.4,
+  S = (P / (2 * Math.PI)) * Math.asin(1 / A);
+const bounceOut = (t) => {
+  if (t < 1 / 2.75) return 7.5625 * t * t;
+  if (t < 2 / 2.75) return 7.5625 * (t -= 1.5 / 2.75) * t + 0.75;
+  if (t < 2.5 / 2.75) return 7.5625 * (t -= 2.25 / 2.75) * t + 0.9375;
+  return 7.5625 * (t -= 2.625 / 2.75) * t + 0.984375;
+};
+const smoothInOut = (t) => t * t * (t * -2 + 3);
+const smootherInOut = (t) => t * t * t * (t * (t * 6 - 15) + 10);
+const FlxEase = {
+  linear: (t) => t,
+  quadIn: (t) => t * t,
+  quadOut: (t) => -t * (t - 2),
+  quadInOut: (t) => (t <= 0.5 ? t * t * 2 : 1 - --t * t * 2),
+  cubeIn: (t) => t * t * t,
+  cubeOut: (t) => 1 + --t * t * t,
+  cubeInOut: (t) => (t <= 0.5 ? t * t * t * 4 : 1 + --t * t * t * 4),
+  quartIn: (t) => t * t * t * t,
+  quartOut: (t) => 1 - (t -= 1) * t * t * t,
+  quartInOut: (t) => (t <= 0.5 ? t * t * t * t * 8 : (1 - (t = t * 2 - 2) * t * t * t) / 2 + 0.5),
+  quintIn: (t) => t * t * t * t * t,
+  quintOut: (t) => (t = t - 1) * t * t * t * t + 1,
+  quintInOut: (t) => (t <= 0.5 ? t * t * t * t * t * 16 : ((t = t * 2 - 2) * t * t * t * t + 2) / 2),
+  sineIn: (t) => -Math.cos((Math.PI / 2) * t) + 1,
+  sineOut: (t) => Math.sin((Math.PI / 2) * t),
+  sineInOut: (t) => -Math.cos(Math.PI * t) / 2 + 0.5,
+  bounceIn: (t) => 1 - bounceOut(1 - t),
+  bounceOut,
+  bounceInOut: (t) => (t < 0.5 ? (1 - bounceOut(1 - t * 2)) / 2 : bounceOut(t * 2 - 1) / 2 + 0.5),
+  circIn: (t) => -(Math.sqrt(1 - t * t) - 1),
+  circOut: (t) => Math.sqrt(1 - (t - 1) * (t - 1)),
+  circInOut: (t) => (t <= 0.5 ? (Math.sqrt(1 - t * t * 4) - 1) / -2 : (Math.sqrt(1 - (t * 2 - 2) * (t * 2 - 2)) + 1) / 2),
+  expoIn: (t) => Math.pow(2, 10 * (t - 1)),
+  expoOut: (t) => -Math.pow(2, -10 * t) + 1,
+  expoInOut: (t) => (t < 0.5 ? Math.pow(2, 10 * (t * 2 - 1)) / 2 : (-Math.pow(2, -10 * (t * 2 - 1)) + 2) / 2),
+  backIn: (t) => t * t * (2.70158 * t - 1.70158),
+  backOut: (t) => 1 - --t * t * (-2.70158 * t - 1.70158),
+  backInOut: (t) => ((t *= 2) < 1 ? (t * t * (2.70158 * t - 1.70158)) / 2 : (1 - (t -= 2) * t * (-2.70158 * t - 1.70158)) / 2 + 0.5),
+  elasticIn: (t) => -(A * Math.pow(2, 10 * (t -= 1)) * Math.sin(((t - S) * (2 * Math.PI)) / P)),
+  elasticOut: (t) => A * Math.pow(2, -10 * t) * Math.sin(((t - S) * (2 * Math.PI)) / P) + 1,
+  elasticInOut: (t) => (t < 0.5 ? -0.5 * (A * Math.pow(2, 10 * (t = t * 2 - 1)) * Math.sin(((t - S) * (2 * Math.PI)) / (P * 1.5))) : A * Math.pow(2, -10 * (t = t * 2 - 1)) * Math.sin(((t - S) * (2 * Math.PI)) / (P * 1.5)) * 0.5 + 1),
+  smoothStepIn: (t) => 2 * smoothInOut(t / 2),
+  smoothStepOut: (t) => 2 * smoothInOut(t / 2 + 0.5) - 1,
+  smoothStepInOut: smoothInOut,
+  smootherStepIn: (t) => 2 * smootherInOut(t / 2),
+  smootherStepOut: (t) => 2 * smootherInOut(t / 2 + 0.5) - 1,
+  smootherStepInOut: smootherInOut,
+};
+
+// ---------------------------------------------------------------- 色（Flixel の FlxColor は Int の ARGB）
+const NAMED = { BLACK: 0xff000000, WHITE: 0xffffffff, GRAY: 0xff808080, GREEN: 0xff008000, LIME: 0xff00ff00, YELLOW: 0xffffff00, ORANGE: 0xffffa500, RED: 0xffff0000, PURPLE: 0xff800080, BLUE: 0xff0000ff, BROWN: 0xff8b4513, PINK: 0xffffc0cb, MAGENTA: 0xffff00ff, CYAN: 0xff00ffff, TRANSPARENT: 0x00000000 };
+const u32 = (n) => n >>> 0;
+const rgbOf = (c) => [(c >>> 16) & 255, (c >>> 8) & 255, c & 255];
+const FlxColor = {
+  ...NAMED,
+  fromString(s) {
+    if (s == null) return null;
+    s = String(s).trim();
+    const u = s.toUpperCase();
+    if (NAMED[u] !== undefined) return NAMED[u];
+    let m = s.match(/^(?:#|0x)([0-9a-fA-F]{6})$/);
+    if (m) return u32(0xff000000 | parseInt(m[1], 16));
+    m = s.match(/^(?:#|0x)([0-9a-fA-F]{8})$/);
+    if (m) return u32(parseInt(m[1], 16));
+    return null;
+  },
+  fromRGB: (r, g, b, a = 255) => u32((a << 24) | (r << 16) | (g << 8) | b),
+  interpolate(c1, c2, f = 0.5) {
+    const a = [c1 >>> 24, ...rgbOf(c1)],
+      b = [c2 >>> 24, ...rgbOf(c2)];
+    const m = a.map((v, i) => Math.round(v + (b[i] - v) * f));
+    return u32((m[0] << 24) | (m[1] << 16) | (m[2] << 8) | m[3]);
+  },
+};
+
+// ---------------------------------------------------------------- 表示物
+class Pt {
+  constructor(x = 0, y = 0) {
+    this.x = x;
+    this.y = y;
+  }
+  set(x, y = x) {
+    this.x = x;
+    this.y = y;
+    return this;
+  }
+}
+class FlxBasic {
+  constructor() {
+    this.exists = true;
+    this.alive = true;
+    this.visible = true;
+    this.active = true;
+    this.cameras = null;
+  }
+  destroy() {
+    this.exists = false;
+    this.alive = false;
+  }
+  kill() {
+    this.alive = false;
+    this.exists = false;
+  }
+}
+class FlxObject extends FlxBasic {
+  constructor(x = 0, y = 0) {
+    super();
+    this.x = x;
+    this.y = y;
+    this.alpha = 1;
+    this.angle = 0;
+    this.scrollFactor = new Pt(1, 1);
+    this.scale = new Pt(1, 1);
+    this.offset = new Pt(0, 0);
+    this.antialiasing = true;
+    this.width = 0;
+    this.height = 0;
+  }
+  screenCenter(axes = "xy") {
+    if (axes === "x" || axes === "xy") this.x = (GAME_W - this.width) / 2;
+    if (axes === "y" || axes === "xy") this.y = (GAME_H - this.height) / 2;
+    return this;
+  }
+}
+class FlxSprite extends FlxObject {
+  constructor(x = 0, y = 0) {
+    super(x, y);
+    this.color = 0xffffffff;
+    this.fw = 0;
+    this.fh = 0;
+    this.gfx = 0xffffffff; // makeGraphic の色
+    this.hb = false; // updateHitbox 済みか
+    this.flipX = false;
+    this.flipY = false;
+  }
+  makeGraphic(w, h, color = 0xffffffff) {
+    this.fw = w;
+    this.fh = h;
+    this.gfx = u32(color);
+    this.width = w * this.scale.x;
+    this.height = h * this.scale.y;
+    return this;
+  }
+  setGraphicSize(w = 0, h = 0) {
+    if (w > 0) this.scale.x = w / (this.fw || 1);
+    if (h > 0) this.scale.y = h / (this.fh || 1);
+    if (w > 0 && h <= 0) this.scale.y = this.scale.x;
+    if (h > 0 && w <= 0) this.scale.x = this.scale.y;
+    return this;
+  }
+  updateHitbox() {
+    this.width = this.fw * Math.abs(this.scale.x);
+    this.height = this.fh * Math.abs(this.scale.y);
+    this.hb = true;
+  }
+  loadGraphic() {} // 画像の読み込みは未対応（スタブ扱い）
+  draw(ctx) {
+    if (!this.fw || !this.fh) return;
+    const sx = Math.abs(this.scale.x),
+      sy = Math.abs(this.scale.y);
+    const w = this.fw * sx,
+      h = this.fh * sy;
+    // updateHitbox 前は、中心を基準に拡大される
+    const x = this.hb ? this.x : this.x + (this.fw - w) / 2,
+      y = this.hb ? this.y : this.y + (this.fh - h) / 2;
+    const [r1, g1, b1] = rgbOf(this.gfx),
+      [r2, g2, b2] = rgbOf(this.color);
+    const a = (this.gfx >>> 24) / 255;
+    ctx.globalAlpha = this.alpha * a;
+    ctx.fillStyle = `rgb(${((r1 * r2) / 255) | 0},${((g1 * g2) / 255) | 0},${((b1 * b2) / 255) | 0})`;
+    if (this.angle) {
+      ctx.save();
+      ctx.translate(x + w / 2, y + h / 2);
+      ctx.rotate((this.angle * Math.PI) / 180);
+      ctx.fillRect(-w / 2, -h / 2, w, h);
+      ctx.restore();
+    } else ctx.fillRect(x, y, w, h);
+  }
+}
+let measureCtx = null;
+class FlxText extends FlxObject {
+  constructor(x = 0, y = 0, fieldWidth = 0, text = "", size = 8) {
+    super(x, y);
+    this._text = text;
+    this.fieldWidth = fieldWidth;
+    this.size = size;
+    this.color = 0xffffffff;
+    this.font = null;
+    this.alignment = "left";
+    this.borderStyle = "none";
+    this.borderColor = 0xff000000;
+    this.borderSize = 1;
+    this.fontFamily = "system-ui, 'Hiragino Sans', 'Noto Sans JP', sans-serif";
+  }
+  get text() {
+    return this._text;
+  }
+  set text(v) {
+    this._text = String(v ?? "");
+  }
+  fontStr() {
+    return `bold ${this.size}px ${this.fontFamily}`;
+  }
+  get width() {
+    if (this.fieldWidth > 0) return this.fieldWidth;
+    if (!measureCtx) measureCtx = document.createElement("canvas").getContext("2d");
+    measureCtx.font = this.fontStr();
+    return Math.max(...String(this._text).split("\n").map((l) => measureCtx.measureText(l).width), 0) + 4;
+  }
+  set width(v) {}
+  get height() {
+    return this.size * 1.25 * String(this._text).split("\n").length + 4;
+  }
+  set height(v) {}
+  setFormat(font, size, color, align, borderStyle, borderColor) {
+    if (font) this.font = font;
+    if (size) this.size = size;
+    if (color != null) this.color = u32(color);
+    if (align) this.alignment = align;
+    if (borderStyle) this.borderStyle = borderStyle;
+    if (borderColor != null) this.borderColor = u32(borderColor);
+    return this;
+  }
+  draw(ctx) {
+    if (!this._text) return;
+    ctx.globalAlpha = this.alpha;
+    ctx.font = this.fontStr();
+    ctx.textBaseline = "top";
+    const w = this.width,
+      lines = String(this._text).split("\n");
+    ctx.textAlign = this.alignment === "center" ? "center" : this.alignment === "right" ? "right" : "left";
+    const ax = this.alignment === "center" ? this.x + w / 2 : this.alignment === "right" ? this.x + w : this.x;
+    const [r, g, b] = rgbOf(this.color);
+    lines.forEach((ln, i) => {
+      const y = this.y + 2 + i * this.size * 1.25;
+      if (this.borderStyle === "outline" || this.borderStyle === "outline_fast") {
+        ctx.lineJoin = "round";
+        const [br, bg, bb] = rgbOf(this.borderColor);
+        ctx.strokeStyle = `rgb(${br},${bg},${bb})`;
+        ctx.lineWidth = this.borderSize * 2;
+        ctx.strokeText(ln, ax, y);
+      } else if (this.borderStyle === "shadow") {
+        ctx.fillStyle = "rgba(0,0,0,.6)";
+        ctx.fillText(ln, ax + this.borderSize, y + this.borderSize);
+      }
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillText(ln, ax, y);
+    });
+  }
+}
+class FlxTypedGroup extends FlxBasic {
+  constructor() {
+    super();
+    this.members = [];
+  }
+  get length() {
+    return this.members.length;
+  }
+  add(o) {
+    if (o && !this.members.includes(o)) this.members.push(o);
+    return o;
+  }
+  insert(i, o) {
+    if (o && !this.members.includes(o)) this.members.splice(Math.max(0, Math.min(i, this.members.length)), 0, o);
+    return o;
+  }
+  remove(o) {
+    const i = this.members.indexOf(o);
+    if (i >= 0) this.members.splice(i, 1);
+    return o;
+  }
+  destroy() {
+    for (const m of this.members) m?.destroy?.();
+    this.members = [];
+    super.destroy();
+  }
+}
+
+class FlxCamera {
+  constructor(name) {
+    this.name = name;
+    this.filters = [];
+    this.alpha = 1;
+    this.zoom = 1;
+    this.width = GAME_W;
+    this.height = GAME_H;
+    this.layer = null; // フィルター用のオフスクリーン
+  }
+}
+class FlxCamFilter {
+  // ShaderFilter(shader)
+  constructor(shader) {
+    this.shader = shader;
+  }
+}
+/** Grayscale シェーダー（amount 0 = 元の色、1 = 白黒） */
+class Grayscale {
+  constructor(amount = 0) {
+    this.amount = amount;
+    this.glsl = GLSL_GRAYSCALE;
+  }
+  get uniforms() {
+    return { amount: this.amount };
+  }
+  setAmount(a) {
+    this.amount = a;
+  }
+  active() {
+    return this.amount > 0.0005;
+  }
+}
+
+// ---------------------------------------------------------------- Tween
+class Tween {
+  constructor(mgr, o) {
+    Object.assign(this, { mgr, active: true, finished: false, elapsed: 0, value: 0, delay: o.delay || 0 });
+    this.duration = Math.max(0.0001, o.duration);
+    this.ease = o.ease || FlxEase.linear;
+    this.onUpdate = o.onUpdate;
+    this.onComplete = o.onComplete;
+    this.setup = o.setup; // elapsed 比率 → 値を反映
+    this.loop = o.loop;
+  }
+  cancel() {
+    this.finished = true;
+    this.active = false;
+    this.mgr.remove(this);
+  }
+  destroy() {
+    this.cancel();
+  }
+  step(dt) {
+    if (this.delay > 0) {
+      this.delay -= dt;
+      if (this.delay > 0) return;
+      dt = -this.delay;
+      this.delay = 0;
+    }
+    this.elapsed += dt;
+    const t = Math.min(1, this.elapsed / this.duration);
+    this.setup(this.ease(t), this);
+    this.onUpdate?.(this);
+    if (t >= 1) {
+      if (this.loop) {
+        this.elapsed = 0;
+        return;
+      }
+      this.finished = true;
+      this.mgr.remove(this);
+      this.onComplete?.(this);
+    }
+  }
+}
+class TweenManager {
+  constructor() {
+    this.list = [];
+  }
+  remove(t) {
+    const i = this.list.indexOf(t);
+    if (i >= 0) this.list.splice(i, 1);
+  }
+  clear() {
+    this.list = [];
+  }
+  update(dt) {
+    for (const t of this.list.slice()) if (t.active && !t.finished) t.step(dt);
+  }
+}
+
+// ---------------------------------------------------------------- ランタイム本体
+const withStubs = (obj, path, stub) =>
+  new Proxy(obj, {
+    get(t, p) {
+      if (typeof p === "symbol" || p in t) return Reflect.get(t, p);
+      if (String(p).startsWith("__") || p === "then" || p === "toJSON") return undefined; // インタプリタの内部探索に反応しない
+      return stub(`${path}.${String(p)}`);
+    },
+    set(t, p, v) {
+      t[p] = v;
+      return true;
+    },
+  });
+
+class Runtime {
+  /**
+   * @param opts { noteStyles: NoteStyleSet, getOpts(): {down, ...}, onLog(msg) }
+   */
+  constructor(opts = {}) {
+    this.opts = opts;
+    this.gl = null; // 必要になったときだけ作る
+    this.scripts = new Map(); // ファイル名 → テキスト
+    this.reset();
+  }
+  /** 全部作り直す（プレイテストを始めるたびに呼ぶ。スクリプトの内部状態も新品になる） */
+  reset() {
+    this.warnings = new Set(); // 未対応 API
+    this.errors = []; // スクリプトの実行エラー
+    this.tweens = new TweenManager();
+    this.postUpdate = [];
+    this.pos = 0;
+    this.modules = new Map();
+    this.eventInst = new Map(); // kind → {inst, processOld}
+    this.cams = { camGame: new FlxCamera("camGame"), camHUD: new FlxCamera("camHUD"), camCutscene: new FlxCamera("camCutscene") };
+    this.ps = null;
+    this.hs = null;
+    this.logs = [];
+    this.loaded = [];
+    this.build();
+  }
+  warn(msg) {
+    if (!this.warnings.has(msg)) {
+      this.warnings.add(msg);
+    }
+  }
+  fail(where, e) {
+    const msg = `${where}: ${e instanceof Error ? e.message : String(e)}`;
+    if (!this.errors.includes(msg)) this.errors.push(msg);
+  }
+  stub(path) {
+    if (!this._stubs) this._stubs = new Map();
+    if (!this._stubs.has(path)) this._stubs.set(path, makeStub(path, (p, isSet) => this.warn(isSet ? `${p}（代入）` : `${p}()`)));
+    return this._stubs.get(path);
+  }
+
+  build() {
+    const rt = this;
+    const stub = (p) => rt.stub(p);
+    const ns = this.opts.noteStyles;
+    const arrows = () => Array.from({ length: 4 }, (_, i) => withStubs({ direction: i, x: 0, y: 0, scale: new Pt(1, 1), updateHitbox() {}, playStatic() {}, playPress() {}, playConfirm() {} }, "StrumlineNote", stub));
+    const strumline = (name) =>
+      withStubs({ noteStyle: null, notes: { members: [] }, holdNotes: { members: [] }, strumlineNotes: { members: arrows() }, strumlineScale: new Pt(1, 1) }, name, stub);
+    const ps = {
+      camGame: this.cams.camGame,
+      camHUD: this.cams.camHUD,
+      camCutscene: this.cams.camCutscene,
+      members: [],
+      isMinimalMode: false,
+      playerStrumline: strumline("PlayState.playerStrumline"),
+      opponentStrumline: strumline("PlayState.opponentStrumline"),
+      currentChart: { scrollSpeed: 1, characters: this.opts.characters ?? { player: "bf", girlfriend: "gf", opponent: "dad" } },
+      add(o) {
+        if (o && !this.members.includes(o)) this.members.push(o);
+        return o;
+      },
+      insert(i, o) {
+        if (o && !this.members.includes(o)) this.members.splice(Math.max(0, Math.min(i, this.members.length)), 0, o);
+        return o;
+      },
+      remove(o) {
+        const i = this.members.indexOf(o);
+        if (i >= 0) this.members.splice(i, 1);
+        return o;
+      },
+    };
+    this.ps = withStubs(ps, "PlayState", stub);
+    const psRef = this.ps;
+    const baseGroup = FlxTypedGroup;
+    const G = {
+      // ---- ゲームの基本
+      PlayState: { instance: psRef },
+      FlxG: withStubs(
+        {
+          width: GAME_W,
+          height: GAME_H,
+          elapsed: 1 / 60,
+          signals: { postUpdate: { add: (f) => rt.postUpdate.push(f), remove: (f) => (rt.postUpdate = rt.postUpdate.filter((x) => x !== f)) }, preUpdate: { add() {}, remove() {} } },
+          random: { int: (a = 0, b = 1) => a + Math.floor(Math.random() * (b - a + 1)), float: (a = 0, b = 1) => a + Math.random() * (b - a) },
+          camera: this.cams.camGame,
+          cameras: { list: Object.values(this.cams) },
+        },
+        "FlxG",
+        stub,
+      ),
+      Conductor: {
+        instance: withStubs(
+          {
+            get songPosition() {
+              return rt.pos;
+            },
+            bpm: 100,
+          },
+          "Conductor.instance",
+          stub,
+        ),
+      },
+      Preferences: withStubs(
+        {
+          flashingLights: true,
+          get downscroll() {
+            return !!rt.opts.getOpts?.().down;
+          },
+        },
+        "Preferences",
+        stub,
+      ),
+      Save: { instance: withStubs({ modOptions: { get: () => null, set() {} } }, "Save.instance", stub) },
+      ModuleHandler: { getModule: (id) => rt.modules.get(id) ?? null },
+      Paths: withStubs({ font: (f) => f }, "Paths", stub),
+      Assets: { exists: () => false },
+      // ---- 表示物
+      FlxSprite,
+      FlxText,
+      FlxTypedGroup: baseGroup,
+      FlxGroup: baseGroup,
+      FlxSpriteGroup: baseGroup,
+      FlxColor,
+      FlxEase,
+      FlxTextAlign: { LEFT: "left", CENTER: "center", RIGHT: "right", JUSTIFY: "left" },
+      FlxTextBorderStyle: { NONE: "none", SHADOW: "shadow", OUTLINE: "outline", OUTLINE_FAST: "outline_fast" },
+      FlxAxes: { X: "x", Y: "y", XY: "xy" },
+      FlxPoint: Pt,
+      ShaderFilter: FlxCamFilter,
+      Grayscale,
+      FlxTween: {
+        tween(obj, props, duration, o = {}) {
+          const from = {};
+          for (const k of Object.keys(props)) from[k] = obj[k];
+          const tw = new Tween(rt.tweens, {
+            duration,
+            ease: o.ease,
+            delay: o.startDelay,
+            onUpdate: o.onUpdate,
+            onComplete: o.onComplete,
+            loop: o.type === 2 || o.type === "looping",
+            setup: (e) => {
+              for (const k of Object.keys(props)) obj[k] = from[k] + (props[k] - from[k]) * e;
+            },
+          });
+          rt.tweens.list.push(tw);
+          return tw;
+        },
+        num(a, b, duration, o = {}, fn) {
+          const tw = new Tween(rt.tweens, {
+            duration,
+            ease: o.ease,
+            delay: o.startDelay,
+            onUpdate: (t) => {
+              o.onUpdate?.(t);
+              fn?.(t.value);
+            },
+            onComplete: o.onComplete,
+            setup: (e, t) => (t.value = a + (b - a) * e),
+          });
+          tw.value = a;
+          rt.tweens.list.push(tw);
+          return tw;
+        },
+      },
+      // ---- ノートスキン
+      NoteStyleRegistry: {
+        instance: {
+          fetchEntry: (id) => ns?.get(id) ?? null,
+          listEntryIds: () => ns?.ids() ?? [],
+        },
+      },
+      FunkinMemory: withStubs({ cacheNoteStyle() {} }, "FunkinMemory", stub),
+      // ---- スクリプトの土台
+      SongEventSchema: class {
+        constructor(fields) {
+          this.fields = fields;
+        }
+      },
+      SongEventFieldType: { STRING: "string", INTEGER: "integer", FLOAT: "float", BOOL: "bool", ENUM: "enum", FRAME: "frame" },
+      // ---- Haxe 標準
+      Std: {
+        int: (x) => Math.trunc(x),
+        string: (x) => (x == null ? "null" : String(x)),
+        parseInt: (s) => {
+          const n = parseInt(s);
+          return Number.isNaN(n) ? null : n;
+        },
+        parseFloat: (s) => parseFloat(s),
+        isOfType: (v, T) => (T === G.Int ? Number.isInteger(v) : T === G.Float ? typeof v === "number" : T === G.String ? typeof v === "string" : T === G.Bool ? typeof v === "boolean" : T === G.Array ? Array.isArray(v) : v != null),
+        random: (n) => Math.floor(Math.random() * n),
+      },
+      Int: { __t: "Int" },
+      Float: { __t: "Float" },
+      String: { __t: "String", fromCharCode: (c) => String.fromCharCode(c) },
+      Bool: { __t: "Bool" },
+      Array: { __t: "Array" },
+      Dynamic: { __t: "Dynamic" },
+      Math: Object.assign(Object.create(Math), { isNaN: Number.isNaN, isFinite: Number.isFinite, NaN: NaN, POSITIVE_INFINITY: Infinity, NEGATIVE_INFINITY: -Infinity }),
+      Reflect: {
+        field: (o, n) => (o == null ? null : o[n] === undefined ? null : o[n]),
+        setField: (o, n, v) => void (o[n] = v),
+        hasField: (o, n) => o != null && n in o,
+        fields: (o) => Object.keys(o),
+        callMethod: (o, f, a) => f.apply(o, a),
+      },
+      StringMap: HMap,
+      IntMap: HMap,
+      ObjectMap: HMap,
+      StringTools: { trim: (s) => s.trim(), startsWith: (s, p) => s.startsWith(p), endsWith: (s, p) => s.endsWith(p), replace: (s, a, b) => s.split(a).join(b) },
+      trace: (...a) => rt.log(a.join(" ")),
+    };
+    this.G = G;
+    // スクリプトの基底クラス
+    const noop = () => null;
+    const bases = {
+      SongEvent: {
+        init(inst, args) {
+          inst.__eventId = args[0];
+          inst.__opts = args[1] ?? {};
+          rt.eventInst.set(args[0], { inst, processOld: !!inst.__opts.processOldEvents });
+        },
+        methods: {
+          getTitle() {
+            return this.__eventId;
+          },
+          getEventSchema: noop,
+          handleEvent: noop,
+        },
+      },
+      Module: {
+        init(inst, args) {
+          inst.__moduleId = args[0];
+          rt.modules.set(args[0], inst);
+        },
+        methods: {
+          scriptCall(name, args = []) {
+            return rt.hs.has(this, name) ? rt.hs.call(this, name, args) : null;
+          },
+          scriptGet: (n) => null,
+        },
+      },
+    };
+    bases.ScriptedSongEvent = bases.SongEvent;
+    bases.ScriptedModule = bases.Module;
+    this.hs = new HScript({ globals: G, bases, onStub: (p, isSet) => this.warn(isSet ? `${p}（代入）` : `${p}()`) });
+  }
+  log(msg) {
+    this.logs.push(msg);
+    if (this.logs.length > 200) this.logs.shift();
+    this.opts.onLog?.(msg);
+  }
+
+  // ---------------------------------------------------------------- スクリプト
+  /** テキストを読み込み、中の SongEvent / Module を作る。 → {events:[kind], modules:[id]} */
+  loadScript(text, name) {
+    const before = { e: new Set(this.eventInst.keys()), m: new Set(this.modules.keys()) };
+    try {
+      const defs = this.hs.load(text, name);
+      for (const c of defs) {
+        const root = this.hs.rootBase(c);
+        if (root === "SongEvent" || root === "ScriptedSongEvent" || root === "Module" || root === "ScriptedModule") {
+          try {
+            this.hs.instantiate(c);
+          } catch (e) {
+            this.fail(`${name}: ${c.name} を作れません`, e);
+          }
+        }
+      }
+    } catch (e) {
+      this.fail(`${name}: 読み込めません`, e);
+    }
+    return { events: [...this.eventInst.keys()].filter((k) => !before.e.has(k)), modules: [...this.modules.keys()].filter((k) => !before.m.has(k)) };
+  }
+  hasEvent(kind) {
+    return this.eventInst.has(kind);
+  }
+  /** 曲の読み込み通知（Module が onSongLoaded で events を見る） */
+  songLoaded(events) {
+    this.events = events.map((e) => this.eventData(e));
+    this.broadcast("onSongLoaded", { events: this.events });
+  }
+  eventData(e) {
+    const v = e.v && typeof e.v === "object" ? e.v : {};
+    const g = (n) => (v[n] === undefined ? null : v[n]);
+    return {
+      time: e.t,
+      eventKind: e.e,
+      value: v,
+      getString: (n) => (g(n) == null ? null : String(g(n))),
+      getFloat: (n) => (g(n) == null ? null : Number(g(n))),
+      getInt: (n) => (g(n) == null ? null : Math.trunc(Number(g(n)))),
+      getBool: (n) => (g(n) == null ? null : g(n) === true || g(n) === "true"),
+      getArray: (n) => g(n),
+      getDynamic: (n) => g(n),
+    };
+  }
+  broadcast(hook, ev = {}) {
+    const all = [...this.eventInst.values()].map((x) => x.inst).concat([...this.modules.values()]);
+    for (const inst of all) {
+      if (!this.hs.has(inst, hook)) continue;
+      try {
+        this.hs.call(inst, hook, [ev]);
+      } catch (e) {
+        this.fail(`${inst.__cls.name}.${hook}`, e);
+      }
+    }
+  }
+  /** イベントを 1 つ実行する */
+  fire(e) {
+    const rec = this.eventInst.get(e.e);
+    if (!rec) return false;
+    try {
+      this.hs.call(rec.inst, "handleEvent", [this.eventData(e)]);
+    } catch (err) {
+      this.fail(`イベント「${e.e}」（${(e.t / 1000).toFixed(2)}s）`, err);
+    }
+    return true;
+  }
+  /** 途中から始めるとき: processOldEvents のイベントを、始める位置より前の分だけ順に実行する */
+  fireOld(events, startMs) {
+    for (const e of events) if (e.t < startMs && this.eventInst.get(e.e)?.processOld) this.fire(e);
+  }
+  /** 毎フレーム: dt = 経過秒、pos = 曲の位置(ms) */
+  update(dt, pos) {
+    this.pos = pos;
+    this.tweens.update(dt);
+    for (const f of this.postUpdate.slice()) {
+      try {
+        f();
+      } catch (e) {
+        this.fail("postUpdate", e);
+        this.postUpdate = this.postUpdate.filter((x) => x !== f);
+      }
+    }
+  }
+  pause() {
+    for (const t of this.tweens.list) t.__wasActive = t.active;
+    this.broadcast("onPause", {});
+  }
+  resume() {
+    this.broadcast("onResume", {});
+  }
+  /** 終了・やり直し時の後始末通知 */
+  songEnd() {
+    this.broadcast("onSongEnd", {});
+  }
+
+  // ---------------------------------------------------------------- 描画
+  hasContent() {
+    return this.ps.members.length > 0 || Object.values(this.cams).some((c) => c.filters.length);
+  }
+  *objectsOf(list, cam, inherited) {
+    for (const o of list) {
+      if (!o || !o.exists || !o.visible) continue;
+      const cams = o.cameras ?? inherited ?? [this.cams.camGame];
+      if (o.members) {
+        yield* this.objectsOf(o.members, cam, cams);
+        continue;
+      }
+      if (cams.includes(cam)) yield o;
+    }
+  }
+  /**
+   * カメラ 1 枚ぶんの描画。mainCtx は CSS ピクセル座標（dpr 倍率は設定済み）。
+   * @param draw { bg(ctx), hud(ctx) }  カメラごとの「基本の絵」。game に背景、hud にレーンとノーツ
+   */
+  render(mainCtx, W, H, dpr, draw) {
+    const k = Math.min(W / GAME_W, H / GAME_H),
+      ox = (W - GAME_W * k) / 2,
+      oy = (H - GAME_H * k) / 2;
+    for (const cam of [this.cams.camGame, this.cams.camHUD, this.cams.camCutscene]) {
+      const shaders = cam.filters.map((f) => f.shader).filter((s) => s && (s.active ? s.active() : true));
+      let ctx = mainCtx;
+      if (shaders.length) {
+        const L = this.layerFor(cam, W, H, dpr);
+        ctx = L.getContext("2d");
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, L.width, L.height);
+        const q = Math.min(1, LAYER_MAX_W / Math.max(1, W * dpr)); // 高解像度の画面ではフィルター用の絵を縮小（GPU への転送量を減らす）
+        ctx.setTransform(dpr * q, 0, 0, dpr * q, 0, 0);
+      }
+      draw.begin?.(cam.name, ctx);
+      // 基本の絵 → スクリプトの表示物
+      let drawn = false;
+      ctx.save();
+      for (const o of this.objectsOf(this.ps.members, cam, null)) {
+        if (!drawn) {
+          // カメラは 1280×720 の枠で切り取られる（本物と同じく、はみ出した分は見えない）
+          ctx.beginPath();
+          ctx.rect(ox, oy, GAME_W * k, GAME_H * k);
+          ctx.clip();
+          ctx.translate(ox, oy);
+          ctx.scale(k, k);
+          drawn = true;
+        }
+        if (o.alpha <= 0.002) continue;
+        o.draw?.(ctx);
+        ctx.globalAlpha = 1;
+      }
+      ctx.restore();
+      draw.end?.(cam.name, ctx);
+      if (shaders.length) {
+        let src = ctx.canvas;
+        for (const sh of shaders) {
+          if (!this.gl) this.gl = new GLPost();
+          if (!this.gl.ok) {
+            this.warn("WebGL が使えないため、シェーダー（フィルター）は無効です");
+            break;
+          }
+          sh.onError ??= (m) => this.fail("シェーダー", Error(m));
+          const out = this.gl.apply(src, sh);
+          if (out) src = out;
+        }
+        mainCtx.save();
+        mainCtx.setTransform(1, 0, 0, 1, 0, 0);
+        mainCtx.globalAlpha = cam.alpha;
+        mainCtx.drawImage(src, 0, 0, Math.round(W * dpr), Math.round(H * dpr));
+        mainCtx.restore();
+      }
+    }
+  }
+  layerFor(cam, W, H, dpr) {
+    const q = Math.min(1, LAYER_MAX_W / Math.max(1, W * dpr));
+    const w = Math.max(1, Math.round(W * dpr * q)),
+      h = Math.max(1, Math.round(H * dpr * q));
+    if (!cam.layer) cam.layer = document.createElement("canvas");
+    if (cam.layer.width !== w || cam.layer.height !== h) {
+      cam.layer.width = w;
+      cam.layer.height = h;
+    }
+    return cam.layer;
+  }
+}
+
+return { GAME_W, FlxEase, FlxColor, FlxSprite, FlxText, FlxTypedGroup, FlxCamera, FlxCamFilter, Grayscale, Runtime };
+})();
+
+/* ===== funkin-studio/js/states/chart/playtest.js ===== */
+const __m47 = (() => {
+/* ============================================================
+   chart/playtest.js — Chart のプレイテスト（音ズレ・譜面の難しさの確認用）
+   ------------------------------------------------------------
+   ・編集中の難易度のノーツを、実際に叩いて遊べる（キーは既定で D F J K = 左 下 上 右。変更可）。
+   ・判定は V-Slice の PBOT1（sick ≤45ms / good ≤90 / bad ≤135 / shit ≤160 / それ以上は miss）。スコア式も同じ。
+   ・ノーツの流れる速さは V-Slice と同じ（0.45 px/ms × scrollSpeed、720p 基準）。ScrollSpeed イベントも反映（イージングは直線で近似）。
+   ・入力時刻はキー押下の timeStamp から求めるので、描画フレームのズレに左右されない。
+   ・音ズレ調整: 「入力オフセット」。結果画面に平均ズレ（+ は遅い）とヒストグラムが出て、補正値の提案ボタンがある。
+   ・ホールドは押し続ける必要がある（終わる 160ms 前までに離すとドロップ）。相手側ノーツは自動で叩かれる。
+   ・スマホは画面タップ（プレイヤー側の4レーン）で叩ける。
+   ============================================================ */
+const { Runtime } = __m46;
+const { openModZip } = __m35;
+const PIXELS_PER_MS = 0.45;
+const WIN = { sick: 45, good: 90, bad: 135, shit: 160 };
+const NOTE_COLORS = ["#c24b99", "#00ffff", "#12fa05", "#f9393f"];
+const JUDGE_COLORS = { sick: "#7fe8ff", good: "#8dff8d", bad: "#ffd36b", shit: "#ff8f6b", miss: "#ff5577" };
+const LS_KEY = "funkinStudio.chart.playtest";
+const DEFAULTS = { startFrom: "playhead", speedMul: 1, down: false, showOpp: true, bot: false, hit: true, offset: 0, rate: 1, skin: "", scripts: true, keys: ["KeyD", "KeyF", "KeyJ", "KeyK"] };
+
+const scoreNote = (ms) => {
+  const a = Math.abs(ms);
+  if (a > 160) return -100;
+  if (a < 5) return 500;
+  return Math.floor(500 * (1 - 1 / (1 + Math.exp(-0.08 * (a - 54.99)))) + 9);
+};
+const judge = (ms) => {
+  const a = Math.abs(ms);
+  return a <= WIN.sick ? "sick" : a <= WIN.good ? "good" : a <= WIN.bad ? "bad" : a <= WIN.shit ? "shit" : "miss";
+};
+const keyLabel = (code) => code.replace(/^Key|^Digit/, "");
+const codeOf = (ch) => (/^[a-z]$/i.test(ch) ? "Key" + ch.toUpperCase() : /^\d$/.test(ch) ? "Digit" + ch : null);
+
+/**
+ * @param root 画面のルート（#chartWorkspace）
+ * @param d { audio, getNotes, getEvents, getTiming, getBaseSpeed, listen(target, type, fn), say,
+ *            noteStyles（ノートスキンの集まり）, getScripts()（読み込み済みの .hxc テキスト {名前: テキスト}）, getCharacters() }
+ */
+function createPlayTest(root, d) {
+  const $ = (id) => document.getElementById(id);
+  const wrap = $("chtPlayRoot"),
+    canvas = $("chtPlayCanvas"),
+    mainCtx = canvas.getContext("2d"),
+    card = $("chtPlayCard"),
+    hist = $("chtPlayHist");
+
+  let ctx = mainCtx; // 描き先（フィルターのあるカメラでは一時的にそのカメラのキャンバスに替わる）
+  let rt = null; // 演出スクリプトの実行環境（開始のたびに作り直す）
+  let evQueue = [],
+    evIdx = 0,
+    lastFrameAt = 0;
+  let opts = { ...DEFAULTS };
+  try {
+    opts = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(LS_KEY) || "{}") };
+    if (!Array.isArray(opts.keys) || opts.keys.length !== 4) opts.keys = DEFAULTS.keys.slice();
+  } catch {}
+  const save = () => {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(opts));
+    } catch {}
+  };
+
+  let state = "closed"; // closed / menu / playing / paused / results
+  let playhead = 0,
+    notes = [],
+    speedEvents = [],
+    st = null,
+    raf = 0;
+  const keyDown = [false, false, false, false],
+    flash = [0, 0, 0, 0],
+    oppFlash = [0, 0, 0, 0];
+  let popups = [],
+    errTicks = [],
+    prevRate = 1;
+
+  // ---------------- オプション欄 ----------------
+  const optEls = {
+    startFrom: $("chtPlayStartFrom"),
+    speedMul: $("chtPlaySpeed"),
+    down: $("chtPlayDown"),
+    showOpp: $("chtPlayOpp"),
+    bot: $("chtPlayBot"),
+    hit: $("chtPlayHit"),
+    offset: $("chtPlayOffset"),
+    rate: $("chtPlayRate"),
+    skin: $("chtPlaySkin"),
+    scripts: $("chtPlayScripts"),
+  };
+  const keyEls = [0, 1, 2, 3].map((i) => $("chtPlayKey" + i));
+  function fillSkins() {
+    const sel = optEls.skin;
+    sel.textContent = "";
+    sel.append(new Option("標準の矢印（スキンなし）", ""));
+    for (const id of d.noteStyles.ids()) sel.append(new Option(id, id));
+    if (![...sel.options].some((o) => o.value === opts.skin)) opts.skin = "";
+  }
+  function fillOpts() {
+    fillSkins();
+    for (const [k, el] of Object.entries(optEls)) {
+      if (el.type === "checkbox") el.checked = !!opts[k];
+      else el.value = opts[k];
+    }
+    keyEls.forEach((el, i) => (el.value = keyLabel(opts.keys[i])));
+  }
+  function readOpts() {
+    for (const [k, el] of Object.entries(optEls)) {
+      if (el.type === "checkbox") opts[k] = el.checked;
+      else if (el.type === "number" || k === "rate") opts[k] = Number(el.value) || (k === "offset" ? 0 : 1);
+      else opts[k] = el.value;
+    }
+    opts.speedMul = Math.max(0.1, opts.speedMul);
+    keyEls.forEach((el, i) => {
+      const c = codeOf(el.value.trim().slice(-1));
+      if (c) opts.keys[i] = c;
+      el.value = keyLabel(opts.keys[i]);
+    });
+    save();
+  }
+  for (const el of [...Object.values(optEls), ...keyEls]) el.addEventListener("change", readOpts);
+
+  // ---------------- 譜面の統計（メニューに表示） ----------------
+  function chartInfo() {
+    const list = d.getNotes().filter((n) => n.d < 4);
+    if (!list.length) return "この難易度にはプレイヤー側のノーツがありません。";
+    const first = list[0].t,
+      last = list[list.length - 1].t;
+    const sec = Math.max(1, (last - first) / 1000);
+    let peak = 0,
+      j = 0;
+    for (let i = 0; i < list.length; i++) {
+      while (list[i].t - list[j].t > 1000) j++;
+      peak = Math.max(peak, i - j + 1);
+    }
+    const holds = list.filter((n) => n.l > 0).length;
+    const chords = list.filter((n, i) => i > 0 && Math.abs(list[i - 1].t - n.t) < 2).length;
+    return `プレイヤー側 ${list.length} ノーツ（ホールド ${holds}・同時押し ${chords}）　平均 ${(list.length / sec).toFixed(1)} 個/秒　最大 ${peak} 個/秒　scrollSpeed ${d.getBaseSpeed()}`;
+  }
+
+  // ---------------- 開く・閉じる ----------------
+  function open(playheadMs) {
+    playhead = playheadMs;
+    wrap.hidden = false;
+    state = "menu";
+    prevRate = d.audio.rate;
+    fillOpts();
+    showCard("プレイテスト", { info: chartInfo(), opts: true, go: "開始", restart: false });
+    resize();
+    loop();
+  }
+  function close() {
+    if (state === "closed") return;
+    rt?.songEnd();
+    rt = null;
+    d.audio.pause();
+    d.audio.setRate(prevRate);
+    state = "closed";
+    wrap.hidden = true;
+    cancelAnimationFrame(raf);
+  }
+  function showCard(title, { info = "", opts: showOpts = false, go = "", restart = false, hist: showHist = false, apply = false } = {}) {
+    card.hidden = false;
+    $("chtPlayTitle").textContent = title;
+    $("chtPlayInfo").textContent = info;
+    $("chtPlayOpts").hidden = !showOpts;
+    hist.hidden = !showHist;
+    $("chtPlayGo").textContent = go || "開始";
+    $("chtPlayGo").hidden = !go;
+    $("chtPlayRestart").hidden = !restart;
+    $("chtPlayApply").hidden = !apply;
+  }
+
+  // ---------------- 開始 ----------------
+  function begin() {
+    readOpts();
+    const startMs = opts.startFrom === "playhead" ? playhead : 0;
+    const timing = d.getTiming();
+    notes = d
+      .getNotes()
+      .filter((n) => n.t >= startMs - 1)
+      .map((n) => ({ t: n.t, l: n.l || 0, lane: n.d % 4, player: n.d < 4, hit: false, missed: false, holding: false, done: false, dropped: false }));
+    speedEvents = d
+      .getEvents()
+      .filter((e) => e.e === "ScrollSpeed" && e.v)
+      .map((e) => ({ t: e.t, scroll: Number(e.v.scroll ?? 1), dur: Math.max(0, timing.stepToMs(timing.msToStep(e.t) + Number(e.v.duration ?? 4)) - e.t), abs: !!e.v.absolute, who: e.v.strumline ?? "both" }))
+      .sort((a, b) => a.t - b.t);
+    const players = notes.filter((n) => n.player);
+    st = {
+      startMs,
+      score: 0,
+      combo: 0,
+      maxCombo: 0,
+      counts: { sick: 0, good: 0, bad: 0, shit: 0, miss: 0 },
+      drops: 0,
+      errors: [],
+      total: players.length,
+      end: Math.max(...notes.map((n) => n.t + n.l), startMs) + 1500,
+      lastFrame: 0,
+    };
+    popups = [];
+    errTicks = [];
+    keyDown.fill(false);
+    startRuntime(startMs);
+    d.audio.pause();
+    d.audio.setRate(opts.rate);
+    d.audio.seek(startMs - 2000 * opts.rate); // 2秒のカウントイン（負の時間は音が遅れて始まる）
+    d.audio.play();
+    state = "playing";
+    card.hidden = true;
+  }
+  // ---------------- 演出スクリプト ----------------
+  function startRuntime(startMs) {
+    rt = null;
+    evQueue = [];
+    evIdx = 0;
+    const scripts = Object.entries(d.getScripts?.() ?? {});
+    const wantScripts = opts.scripts && scripts.length;
+    const style = opts.skin ? d.noteStyles.get(opts.skin) : null;
+    if (!wantScripts && !style) return; // 何も使わないなら実行環境は作らない（軽量）
+    rt = new Runtime({ noteStyles: d.noteStyles, getOpts: () => opts, characters: d.getCharacters?.() });
+    rt.ps.playerStrumline.noteStyle = style;
+    rt.ps.opponentStrumline.noteStyle = style;
+    if (!wantScripts) return;
+    for (const [name, text] of scripts) rt.loadScript(text, name);
+    const all = d
+      .getEvents()
+      .filter((e) => rt.hasEvent(e.e))
+      .sort((a, b) => a.t - b.t);
+    rt.songLoaded(all);
+    rt.fireOld(all, startMs);
+    evQueue = all.filter((e) => e.t >= startMs);
+    rt.broadcast("onSongStart", {});
+    lastFrameAt = performance.now();
+  }
+  const styleOf = (isPlayer) => (rt ? (isPlayer ? rt.ps.playerStrumline.noteStyle : rt.ps.opponentStrumline.noteStyle) : opts.skin ? d.noteStyles.get(opts.skin) : null);
+  function scriptReport() {
+    if (!rt) return "";
+    const lines = [];
+    if (rt.errors.length) lines.push("⚠ スクリプトのエラー:\n  " + rt.errors.join("\n  "));
+    if (rt.warnings.size) lines.push("ℹ 未対応のAPI（呼ばれたが再現していないもの）:\n  " + [...rt.warnings].slice(0, 12).join("\n  ") + (rt.warnings.size > 12 ? `\n  …ほか ${rt.warnings.size - 12} 件` : ""));
+    return lines.join("\n");
+  }
+  function pause() {
+    if (state !== "playing") return;
+    rt?.pause();
+    d.audio.pause();
+    state = "paused";
+    showCard("一時停止", { info: `スコア ${st.score}　コンボ ${st.combo}`, opts: true, go: "再開", restart: true });
+  }
+  function resume() {
+    readOpts();
+    d.audio.setRate(opts.rate);
+    rt?.resume();
+    lastFrameAt = performance.now();
+    d.audio.seek(d.audio.position() - 1000); // 1秒戻してから再開（判定はまだ来ていないノーツだけ）
+    d.audio.play();
+    state = "playing";
+    card.hidden = true;
+  }
+  // ---------------- ノートスキンの読み込み ----------------
+  $("chtPlaySkinLoad").onclick = () => $("chtPlaySkinFiles").click();
+  $("chtPlaySkinFiles").onchange = async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    const entries = [];
+    for (const f of files) {
+      if (/\.zip$/i.test(f.name)) {
+        try {
+          // zip は中身を全部は読まない: 名前の一覧から、スキンの JSON・PNG・XML だけ取り出す
+          for (const lf of await openModZip(f)) {
+            if (/\.(json|xml|png)$/i.test(lf.name) && /(^|\/)(images|data)\//i.test(lf.webkitRelativePath)) entries.push({ name: lf.webkitRelativePath, file: lf });
+          }
+        } catch (err) {
+          $("chtPlaySkinInfo").textContent = `${f.name}: ${err.message}`;
+        }
+      } else entries.push({ name: f.name, file: f });
+    }
+    const { added, warnings } = await d.noteStyles.addFiles(entries);
+    fillSkins();
+    if (added.length) {
+      optEls.skin.value = opts.skin = added[0];
+      save();
+    }
+    $("chtPlaySkinInfo").textContent = (added.length ? `読み込み: ${added.join(", ")}` : "ノートスキンの JSON が見つかりませんでした（notestyles の .json と、その画像 .png / .xml を一緒に選んでください）") + (warnings.length ? "\n" + warnings.join("\n") : "");
+  };
+  $("chtPlayGo").onclick = () => (state === "menu" || state === "results" ? begin() : state === "paused" ? resume() : 0);
+  $("chtPlayRestart").onclick = () => begin();
+  $("chtPlayExit").onclick = () => d.onExit?.();
+  $("chtPlayPause").onclick = () => pause();
+  $("chtPlayApply").onclick = () => {
+    if (!st) return;
+    const m = mean(st.errors);
+    opts.offset = Math.round((opts.offset + m) * 10) / 10;
+    save();
+    fillOpts();
+    d.say(`入力オフセットを ${opts.offset}ms にしました。もう一度遊んで、平均ズレが 0 に近づくか確かめてください。`);
+    $("chtPlayApply").hidden = true;
+  };
+
+  // ---------------- 速度（ScrollSpeed イベント込み） ----------------
+  function speedAt(t, side) {
+    const base = d.getBaseSpeed() * opts.speedMul;
+    let cur = base;
+    for (const ev of speedEvents) {
+      if (t < ev.t) break;
+      if (ev.who !== "both" && ev.who !== side) continue;
+      const target = ev.abs ? ev.scroll : base * ev.scroll;
+      if (ev.dur <= 0 || t >= ev.t + ev.dur) cur = target;
+      else {
+        cur += (target - cur) * ((t - ev.t) / ev.dur);
+        break;
+      }
+    }
+    return cur;
+  }
+
+  // ---------------- 入力 ----------------
+  const eff = (pos) => pos - opts.offset; // 入力オフセットを引いた「判定用の時刻」
+  function press(lane, ts) {
+    if (state !== "playing") return;
+    keyDown[lane] = true;
+    flash[lane] = 1;
+    const pos = d.audio.position() - (performance.now() - ts) * d.audio.rate; // キーが押された瞬間の曲の位置
+    const t = eff(pos);
+    let target = null;
+    for (const n of notes) {
+      if (!n.player || n.hit || n.missed || n.lane !== lane) continue;
+      const df = t - n.t;
+      if (df < -WIN.shit) break; // まだ遠い（以降はもっと遠い）
+      if (Math.abs(df) <= WIN.shit) {
+        target = n;
+        break;
+      }
+    }
+    if (target) registerHit(target, t - target.t);
+  }
+  function release(lane) {
+    keyDown[lane] = false;
+  }
+  function registerHit(n, diff) {
+    const j = judge(diff);
+    n.hit = true;
+    st.counts[j]++;
+    st.score += scoreNote(diff);
+    st.errors.push(diff);
+    if (j === "bad" || j === "shit") st.combo = 0;
+    else st.combo++;
+    st.maxCombo = Math.max(st.maxCombo, st.combo);
+    popups.push({ text: j.toUpperCase(), sub: `${diff >= 0 ? "+" : ""}${diff.toFixed(0)}ms`, color: JUDGE_COLORS[j], at: performance.now() });
+    errTicks.push({ diff, color: JUDGE_COLORS[j], at: performance.now() });
+    if (n.l > 0) n.holding = true;
+    else n.done = true;
+    if (opts.hit) d.audio.tick(false);
+  }
+  d.listen(window, "keydown", (e) => {
+    if (state === "closed") return;
+    if (e.code === "Escape") {
+      e.preventDefault();
+      if (state === "playing") pause();
+      else if (state === "paused") resume();
+      return;
+    }
+    if (e.repeat) return;
+    const lane = opts.keys.indexOf(e.code);
+    if (lane >= 0 && state === "playing") {
+      e.preventDefault();
+      press(lane, e.timeStamp);
+    } else if (state === "playing" && (e.code === "Space" || e.code.startsWith("Arrow"))) e.preventDefault();
+  });
+  d.listen(window, "keyup", (e) => {
+    if (state === "closed") return;
+    const lane = opts.keys.indexOf(e.code);
+    if (lane >= 0) release(lane);
+  });
+  // タッチ・マウス: プレイヤー側の4レーン
+  const pointers = new Map();
+  const laneAt = (x) => {
+    const g = geom();
+    return Math.max(0, Math.min(3, Math.floor((x - (g.playerX - 2 * g.laneW)) / g.laneW)));
+  };
+  canvas.addEventListener("pointerdown", (e) => {
+    if (state !== "playing") return;
+    const r = canvas.getBoundingClientRect(),
+      lane = laneAt(e.clientX - r.left);
+    pointers.set(e.pointerId, lane);
+    canvas.setPointerCapture?.(e.pointerId);
+    press(lane, e.timeStamp);
+  });
+  const up = (e) => {
+    if (pointers.has(e.pointerId)) (release(pointers.get(e.pointerId)), pointers.delete(e.pointerId));
+  };
+  canvas.addEventListener("pointerup", up);
+  canvas.addEventListener("pointercancel", up);
+
+  // ---------------- 更新 ----------------
+  function update(pos) {
+    const t = eff(pos);
+    for (const n of notes) {
+      if (n.done) continue;
+      if (!n.player) {
+        // 相手側は自動
+        if (!n.hit && pos >= n.t) {
+          n.hit = true;
+          oppFlash[n.lane] = 1;
+          if (n.l <= 0) n.done = true;
+          else n.holding = true;
+        }
+        if (n.holding && pos >= n.t + n.l) n.done = true;
+        continue;
+      }
+      if (opts.bot && !n.hit && !n.missed && t >= n.t) {
+        registerHit(n, 0);
+        flash[n.lane] = 1;
+      }
+      if (!n.hit && !n.missed && t - n.t > WIN.shit) {
+        n.missed = true;
+        st.counts.miss++;
+        st.combo = 0;
+        st.score += -100;
+        popups.push({ text: "MISS", sub: "", color: JUDGE_COLORS.miss, at: performance.now() });
+      }
+      if (n.holding) {
+        const held = opts.bot || keyDown[n.lane];
+        if (opts.bot) flash[n.lane] = 1;
+        if (t >= n.t + n.l) {
+          n.holding = false;
+          n.done = true;
+          st.score += 0;
+        } else if (!held) {
+          n.holding = false;
+          if (n.t + n.l - t <= WIN.shit) n.done = true; // 終わりかけで離した = 成功扱い
+          else {
+            n.dropped = true;
+            n.done = true;
+            st.drops++;
+            st.combo = 0;
+          }
+        }
+      }
+    }
+    // 終了判定
+    if (pos >= st.end && !notes.some((n) => n.player && !n.done && !n.missed)) finish();
+  }
+  function finish() {
+    d.audio.pause();
+    rt?.songEnd();
+    state = "results";
+    const c = st.counts,
+      n = st.total || 1;
+    const acc = ((c.sick + c.good * 0.75 + c.bad * 0.5 + c.shit * 0.25) / n) * 100;
+    const m = mean(st.errors),
+      sd = Math.sqrt(mean(st.errors.map((x) => (x - m) ** 2)));
+    const early = st.errors.filter((x) => x < 0).length;
+    const hint = !st.errors.length ? "" : Math.abs(m) < 5 ? "　→ 平均ズレは小さく、入力オフセットはこのままで良さそうです。" : `　→ 平均 ${m > 0 ? "遅め" : "早め"} (${m >= 0 ? "+" : ""}${m.toFixed(1)}ms)。「ズレを補正」で入力オフセットに反映できます。`;
+    showCard("結果", {
+      info:
+        `スコア ${st.score}　精度(目安) ${acc.toFixed(1)}%　最大コンボ ${st.maxCombo}\n` +
+        `SICK ${c.sick}　GOOD ${c.good}　BAD ${c.bad}　SHIT ${c.shit}　MISS ${c.miss}　ホールド落ち ${st.drops}\n` +
+        `ズレ 平均 ${m >= 0 ? "+" : ""}${m.toFixed(1)}ms　ばらつき(SD) ${sd.toFixed(1)}ms　早い ${early} / 遅い ${st.errors.length - early}` +
+        hint +
+        (scriptReport() ? "\n\n" + scriptReport() : ""),
+      go: "もう一度",
+      hist: true,
+      apply: st.errors.length > 0 && Math.abs(m) >= 5,
+    });
+    drawHist();
+  }
+  const mean = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
+  function drawHist() {
+    const g = hist.getContext("2d"),
+      W = hist.width,
+      H = hist.height;
+    g.clearRect(0, 0, W, H);
+    g.fillStyle = "#10141b";
+    g.fillRect(0, 0, W, H);
+    const bins = new Array(32).fill(0);
+    for (const e of st.errors) bins[Math.max(0, Math.min(31, Math.floor((e + 160) / 10)))]++;
+    const max = Math.max(1, ...bins);
+    bins.forEach((v, i) => {
+      const ms = i * 10 - 155;
+      g.fillStyle = JUDGE_COLORS[judge(ms)];
+      const h = (v / max) * (H - 18);
+      g.fillRect((i * W) / 32 + 1, H - 14 - h, W / 32 - 2, h);
+    });
+    g.fillStyle = "#fff";
+    g.fillRect(W / 2 - 1, 0, 2, H - 12);
+    g.fillStyle = "#aab";
+    g.font = "10px system-ui";
+    g.textAlign = "left";
+    g.fillText("早い −160ms", 2, H - 2);
+    g.textAlign = "center";
+    g.fillText("0", W / 2, H - 2);
+    g.textAlign = "right";
+    g.fillText("+160ms 遅い", W - 2, H - 2);
+    const m = mean(st.errors);
+    g.strokeStyle = "#ffb020";
+    g.beginPath();
+    g.moveTo(W / 2 + (m / 160) * (W / 2), 0);
+    g.lineTo(W / 2 + (m / 160) * (W / 2), H - 12);
+    g.stroke();
+  }
+
+  // ---------------- 描画 ----------------
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(canvas.clientWidth * dpr));
+    canvas.height = Math.max(1, Math.round(canvas.clientHeight * dpr));
+    mainCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  d.listen(window, "resize", () => state !== "closed" && resize());
+  function geom() {
+    const W = canvas.clientWidth,
+      H = canvas.clientHeight,
+      s = H / 720;
+    const lw = Math.min(112 * s, W / (opts.showOpp ? 9.5 : 5));
+    return { W, H, s, laneW: lw, playerX: opts.showOpp ? W * 0.7 : W * 0.5, oppX: W * 0.27, strumY: opts.down ? H - 130 * s : 110 * s };
+  }
+  function drawArrow(cx, cy, size, lane, color, alpha = 1, outline = true) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(cx, cy);
+    ctx.rotate([Math.PI, Math.PI / 2, -Math.PI / 2, 0][lane]);
+    const a = size * 0.42;
+    ctx.beginPath();
+    ctx.moveTo(a * 1.1, 0);
+    ctx.lineTo(-a * 0.2, -a);
+    ctx.lineTo(-a * 0.2, -a * 0.4);
+    ctx.lineTo(-a * 1.1, -a * 0.4);
+    ctx.lineTo(-a * 1.1, a * 0.4);
+    ctx.lineTo(-a * 0.2, a * 0.4);
+    ctx.lineTo(-a * 0.2, a);
+    ctx.closePath();
+    if (outline) {
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,.6)";
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    } else {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function drawSide(g, x0, notesOf, side, pos, isPlayer) {
+    const { laneW, strumY, s, H } = g;
+    const dir = opts.down ? -1 : 1;
+    const left = x0 - 2 * laneW;
+    const style = styleOf(isPlayer);
+    const sk = style && style.usable() ? style : null; // 絵が使えるスキンだけ
+    const k = laneW / 112; // スキンの絵は「1 レーン = 112px」基準
+    // レーン
+    for (let l = 0; l < 4; l++) {
+      const cx = left + (l + 0.5) * laneW;
+      const fl = (isPlayer ? flash : oppFlash)[l];
+      if (isPlayer && keyDown[l]) {
+        ctx.fillStyle = "rgba(255,255,255,.08)";
+        ctx.fillRect(cx - laneW / 2, 0, laneW, H);
+      }
+      const mode = fl > 0.05 ? "confirm" : isPlayer && keyDown[l] ? "press" : "static";
+      if (!(sk && sk.drawStrum(ctx, l, mode, 1 - fl, cx, strumY, k))) drawArrow(cx, strumY, laneW * 0.85, l, fl > 0.05 ? NOTE_COLORS[l] : "rgba(255,255,255,.45)", 1, fl > 0.05);
+      if (fl > 0) (isPlayer ? flash : oppFlash)[l] = Math.max(0, fl - 0.08);
+    }
+    const t = isPlayer ? eff(pos) : pos;
+    const sp = speedAt(t, side) * PIXELS_PER_MS * s;
+    for (const n of notesOf) {
+      if (n.done && !n.holding) continue;
+      const cx = left + (n.lane + 0.5) * laneW;
+      let y = strumY + dir * (n.t - t) * sp;
+      let yEnd = n.l > 0 ? strumY + dir * (n.t + n.l - t) * sp : y;
+      if (n.holding) y = strumY;
+      if (Math.max(y, yEnd) < -laneW || Math.min(y, yEnd) > H + laneW) continue;
+      const missed = n.missed;
+      const col = NOTE_COLORS[n.lane];
+      if (n.l > 0) {
+        const al = missed || n.dropped ? 0.25 : n.holding ? 0.95 : 0.7;
+        if (!(sk && sk.drawHold(ctx, n.lane, cx, y, yEnd, k, al))) {
+          const bw = laneW * 0.28;
+          ctx.globalAlpha = al;
+          ctx.fillStyle = col;
+          const a = Math.min(y, yEnd),
+            b = Math.max(y, yEnd);
+          ctx.fillRect(cx - bw / 2, a, bw, b - a);
+          ctx.globalAlpha = 1;
+        }
+      }
+      if (!n.holding && !(sk && sk.drawNote(ctx, n.lane, cx, y, k, missed ? 0.3 : 1))) drawArrow(cx, y, laneW * 0.85, n.lane, col, missed ? 0.3 : 1);
+    }
+  }
+  /** HUD（レーン・ノーツ・判定表示など）。ctx は呼び出し側が切り替えている */
+  function drawHud(g, pos) {
+    const { W, H, s } = g;
+    // 相手側 → プレイヤー側
+    const opp = notes.filter((n) => !n.player),
+      pl = notes.filter((n) => n.player);
+    if (opts.showOpp) drawSide(g, g.oppX, opp, "opponent", pos, false);
+    drawSide(g, g.playerX, pl, "player", pos, true);
+    // 判定の表示
+    const now = performance.now();
+    popups = popups.filter((p) => now - p.at < 700);
+    const last = popups[popups.length - 1];
+    if (last) {
+      const a = 1 - (now - last.at) / 700;
+      ctx.globalAlpha = Math.min(1, a * 2);
+      ctx.textAlign = "center";
+      ctx.fillStyle = last.color;
+      ctx.font = `bold ${44 * s}px system-ui, sans-serif`;
+      ctx.fillText(last.text, g.playerX, H / 2 - 20 * s);
+      ctx.font = `${20 * s}px system-ui, sans-serif`;
+      ctx.fillText(last.sub, g.playerX, H / 2 + 12 * s);
+      ctx.globalAlpha = 1;
+    }
+    if (st.combo >= 2) {
+      ctx.fillStyle = "#fff";
+      ctx.font = `bold ${54 * s}px system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.fillText(String(st.combo), g.playerX, H / 2 + 80 * s);
+    }
+  }
+  /** スコア・ズレのバー・カウントなど（演出より手前に出す。カメラの外） */
+  function drawOverlay(g, pos) {
+    const { W, H, s } = g;
+    const now = performance.now();
+    // ズレのバー（下）
+    const bw = Math.min(W * 0.5, 400),
+      by = H - 44;
+    ctx.fillStyle = "rgba(255,255,255,.15)";
+    ctx.fillRect(W / 2 - bw / 2, by, bw, 6);
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(W / 2 - 1, by - 8, 2, 22);
+    errTicks = errTicks.filter((e) => now - e.at < 2500);
+    for (const e of errTicks) {
+      ctx.globalAlpha = 1 - (now - e.at) / 2500;
+      ctx.fillStyle = e.color;
+      ctx.fillRect(W / 2 + (e.diff / 160) * (bw / 2) - 1.5, by - 6, 3, 18);
+    }
+    ctx.globalAlpha = 1;
+    // 上の情報
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#fff";
+    ctx.font = "14px system-ui, sans-serif";
+    const hits = st.counts.sick + st.counts.good + st.counts.bad + st.counts.shit;
+    ctx.fillText(`Score ${st.score}   Miss ${st.counts.miss}   ${hits ? "平均ズレ " + (mean(st.errors) >= 0 ? "+" : "") + mean(st.errors).toFixed(1) + "ms" : ""}`, 12, 24);
+    ctx.fillText(`${(Math.max(0, pos) / 1000).toFixed(1)}s / ${(st.end / 1000).toFixed(1)}s${opts.bot ? "   [BOT]" : ""}`, 12, 44);
+    if (rt && (rt.errors.length || rt.warnings.size)) {
+      ctx.fillStyle = rt.errors.length ? "#ff8f8f" : "#ffd36b";
+      ctx.fillText(`スクリプト: エラー ${rt.errors.length} / 未対応API ${rt.warnings.size}（結果画面で確認）`, 12, 64);
+    }
+    if (pos < st.startMs) {
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ffd36b";
+      ctx.font = `bold ${60 * s}px system-ui, sans-serif`;
+      ctx.fillText(String(Math.ceil((st.startMs - pos) / 1000 / d.audio.rate)), W / 2, H / 2);
+    }
+    }
+  function draw() {
+    const g = geom(),
+      { W, H } = g;
+    const live = !!st && state !== "menu";
+    const pos = live && (state === "playing" || state === "paused" || state === "results") ? d.audio.position() : 0;
+    const bg = (c) => {
+      c.fillStyle = "#0d1016";
+      c.fillRect(0, 0, W, H);
+    };
+    if (live && rt && rt.hasContent()) {
+      // スクリプトの表示物 / フィルターがあるときだけ、カメラごとに重ねて描く
+      rt.render(mainCtx, W, H, window.devicePixelRatio || 1, {
+        begin: (name, c) => {
+          ctx = c;
+          if (name === "camGame") bg(c);
+          else if (name === "camHUD") drawHud(g, pos);
+        },
+      });
+      ctx = mainCtx;
+      drawOverlay(g, pos);
+    } else {
+      ctx = mainCtx;
+      bg(ctx);
+      if (live) {
+        drawHud(g, pos);
+        drawOverlay(g, pos);
+      }
+      else if (state === "menu") {
+        // 見本のレーン
+        drawSide(g, g.playerX, [], "player", 0, true);
+        if (opts.showOpp) drawSide(g, g.oppX, [], "opponent", 0, false);
+      }
+    }
+  }
+  function loop() {
+    raf = requestAnimationFrame(loop);
+    if (state === "playing") {
+      const pos = d.audio.position();
+      update(pos);
+      if (rt) {
+        const now = performance.now();
+        const dt = Math.min(0.1, (now - lastFrameAt) / 1000) * d.audio.rate;
+        lastFrameAt = now;
+        while (evIdx < evQueue.length && evQueue[evIdx].t <= pos) rt.fire(evQueue[evIdx++]);
+        rt.update(dt, pos);
+      }
+    }
+    draw();
+  }
+
+  return { open, close, isOpen: () => state !== "closed", pause };
+}
+
+return { createPlayTest };
+})();
+
+/* ===== funkin-studio/js/runtime/noteStyle.js ===== */
+const __m48 = (() => {
+/* ============================================================
+   runtime/noteStyle.js — V-Slice のノートスキン（notestyles/*.json + PNG/XML）の読み込みと描画
+   ------------------------------------------------------------
+   ・JSON の書式は NoteStyleData.hx（note / holdNote / noteStrumline の assets）。fallback の連鎖もたどる。
+   ・読み込むファイル: スキンの JSON と、そこから参照される画像（PNG + Sparrow XML）。ファイル名で結びつける
+     （assetPath の最後の部分 = 画像のファイル名。"weeb:pixel-notes" のようなライブラリ接頭辞は無視）。
+   ・描画の大きさは「1 レーン = 112px の 720p」を基準にした倍率 k で縮尺する（プレイテストのレーン幅に合わせる）。
+   ・軽量化: 画像は ImageBitmap（デコード済み）で保持し、フレーム検索は prefix ごとにキャッシュする。
+   ============================================================ */
+const { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } = __m29;
+const { infoOfPath, normAsset, scorePath, assetNote, openModZip } = __m35;
+
+const DIRS = ["left", "down", "up", "right"];
+const baseName = (p) => String(p).replace(/^.*[:\\/]/, "").replace(/\.(png|xml|json)$/i, "");
+
+class NoteStyle {
+  constructor(set, id, data) {
+    this.set = set;
+    this.id = id;
+    this.data = data;
+    this.origin = set.origins?.get(id) ?? ""; // この JSON が属する mod（同じ mod の画像を優先する）
+    this._frames = new Map();
+  }
+  get fallback() {
+    return this.data.fallback ? this.set.get(this.data.fallback) : null;
+  }
+  getName() {
+    return this.data.name ?? this.id;
+  }
+  getAuthor() {
+    return this.data.author ?? "";
+  }
+  getFallbackID() {
+    return this.data.fallback ?? null;
+  }
+  /** assets.<key> を、無ければ fallback をたどって探す */
+  asset(key) {
+    return this.data.assets?.[key] ?? this.fallback?.asset(key) ?? null;
+  }
+  // ---- HScript から呼ばれる API（V-Slice の NoteStyle と同名）
+  getNoteScale() {
+    return this.data.assets?.note?.scale ?? this.fallback?.getNoteScale() ?? 1;
+  }
+  getNoteOffsets() {
+    return this.data.assets?.note?.offsets ?? this.fallback?.getNoteOffsets() ?? [0, 0];
+  }
+  getStrumlineScale() {
+    return this.data.assets?.noteStrumline?.scale ?? this.fallback?.getStrumlineScale() ?? 1;
+  }
+  getStrumlineOffsets() {
+    return this.data.assets?.noteStrumline?.offsets ?? this.fallback?.getStrumlineOffsets() ?? [0, 0];
+  }
+  fetchHoldNoteScale() {
+    return this.data.assets?.holdNote?.scale ?? this.fallback?.fetchHoldNoteScale() ?? 1;
+  }
+  getHoldNoteOffsets() {
+    return this.data.assets?.holdNote?.offsets ?? this.fallback?.getHoldNoteOffsets() ?? [0, 0];
+  }
+  isNoteSplashEnabled() {
+    return this.data.assets?.noteSplash?.data?.enabled ?? this.fallback?.isNoteSplashEnabled() ?? false;
+  }
+  isHoldNoteCoverEnabled() {
+    return this.data.assets?.holdNoteCover?.data?.enabled ?? this.fallback?.isHoldNoteCoverEnabled() ?? false;
+  }
+  isNoteAnimated() {
+    return this.data.assets?.note?.animated ?? this.fallback?.isNoteAnimated() ?? false;
+  }
+  // 描画側が作る strumline の矢印（StrumlineNote）に対する操作は、見た目を strumline.noteStyle から引くので何もしない
+  applyStrumlineFrames() {}
+  applyStrumlineAnimations() {}
+  buildNoteSprite() {}
+
+  // ---- 画像
+  /** 画像とフレーム一覧 { img, sprites|null }。見つからなければ null */
+  atlasOf(key) {
+    const def = this.data.assets?.[key];
+    if (def?.assetPath) {
+      const a = this.set.atlas(def.assetPath, this.origin);
+      if (a) return { ...a, def };
+    }
+    const fb = this.fallback?.atlasOf(key);
+    return fb ?? null;
+  }
+  /** key のアニメ定義（note.data.left など）の prefix → フレーム列 */
+  framesOf(key, prefix) {
+    const a = this.atlasOf(key);
+    if (!a || !a.sprites) return null;
+    const ck = key + "|" + prefix;
+    if (!this._frames.has(ck)) this._frames.set(ck, sparrowFrames(a.sprites, prefix));
+    return this._frames.get(ck);
+  }
+  noteData(dir) {
+    return this.data.assets?.note?.data?.[dir] ?? this.fallback?.noteData(dir) ?? null;
+  }
+  strumData(dir, anim) {
+    const k = dir + anim; // leftStatic / leftPress / leftConfirm / leftConfirmHold
+    const d = this.data.assets?.noteStrumline?.data;
+    if (d && Object.keys(d).some((x) => x.startsWith(dir))) return d[k] ?? null; // 方向のアニメが 1 つでもあれば、この style の物だけを使う
+    return this.fallback?.strumData(dir, anim) ?? null;
+  }
+  /** 絵が使えるか（使えない場合、呼び出し側は既定の矢印を描く） */
+  usable() {
+    return !!(this.atlasOf("note") && this.noteData("left"));
+  }
+
+  /** ノーツの頭を中心 (cx, cy) に描く。k = レーン幅 / 112。描けたら true */
+  drawNote(ctx, lane, cx, cy, k, alpha = 1) {
+    const a = this.atlasOf("note");
+    const nd = this.noteData(DIRS[lane]);
+    if (!a || !nd) return false;
+    const fr = this.framesOf("note", nd.prefix)?.[0];
+    if (!fr) return false;
+    const sc = this.getNoteScale() * k;
+    return this._blit(ctx, a, fr, cx, cy, sc, alpha, nd.flipX, nd.flipY, this.getNoteOffsets(), k);
+  }
+  /** ストラム（受け皿）。mode = static / press / confirm。t = アニメの経過 0..1 */
+  drawStrum(ctx, lane, mode, t, cx, cy, k, alpha = 1) {
+    const a = this.atlasOf("noteStrumline");
+    if (!a) return false;
+    let sd = this.strumData(DIRS[lane], { static: "Static", press: "Press", confirm: "Confirm" }[mode]) ?? this.strumData(DIRS[lane], "Static");
+    if (!sd) return false;
+    const frs = this.framesOf("noteStrumline", sd.prefix);
+    if (!frs?.length) return false;
+    const fr = frs[Math.min(frs.length - 1, Math.floor(Math.max(0, Math.min(0.999, t)) * frs.length))];
+    return this._blit(ctx, a, fr, cx, cy, this.getStrumlineScale() * k, alpha, sd.flipX, sd.flipY, this.getStrumlineOffsets(), k);
+  }
+  _blit(ctx, a, fr, cx, cy, sc, alpha, flipX, flipY, offs, k) {
+    const fw = fr.frameWidth || fr.width,
+      fh = fr.frameHeight || fr.height;
+    const left = cx - (fw * sc) / 2 + -(fr.frameX || 0) * sc;
+    const top = cy - (fh * sc) / 2 + (-(fr.frameY || 0) * sc);
+    ctx.save();
+    ctx.globalAlpha *= alpha;
+    if (a.def?.isPixel) ctx.imageSmoothingEnabled = false;
+    if (flipX || flipY) {
+      ctx.translate(cx, cy);
+      ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
+      ctx.translate(-cx, -cy);
+    }
+    paintSparrow(ctx, fr, a.img, left, top, fr.width * sc, fr.height * sc);
+    ctx.restore();
+    return true;
+  }
+  /**
+   * ホールドの胴体と終端。画像は 8 列（レーン 0-3 = 胴体、4-7 = 終端）の 1 枚絵。
+   * x = レーン中心、yHead = 頭側の y、yTail = 尻尾側の y（downscroll でも「頭 → 尻尾」の向き）。
+   */
+  drawHold(ctx, lane, cx, yHead, yTail, k, alpha = 1) {
+    const a = this.atlasOf("holdNote");
+    if (!a || a.sprites) return false; // Sparrow ではなく 1 枚絵の想定
+    const img = a.img;
+    const cw = img.width / 8,
+      ih = img.height;
+    const sc = this.fetchHoldNoteScale() * k;
+    const w = cw * sc;
+    const dir = yTail >= yHead ? 1 : -1;
+    const top = Math.min(yHead, yTail),
+      len = Math.abs(yTail - yHead);
+    if (len < 1) return true;
+    const capH = Math.min(len, ih * sc * (a.def?.isPixel ? 1 : 0.5));
+    ctx.save();
+    ctx.globalAlpha *= alpha;
+    if (a.def?.isPixel) ctx.imageSmoothingEnabled = false;
+    const x = cx - w / 2;
+    // 胴体: 下スクロールでも同じ絵を縦に並べる
+    const bodyLen = len - capH;
+    ctx.beginPath();
+    ctx.rect(x, dir > 0 ? top : top + capH, w, bodyLen);
+    ctx.clip();
+    const tile = ih * sc;
+    for (let y = dir > 0 ? top : top + capH; y < (dir > 0 ? top + bodyLen : top + len); y += tile) ctx.drawImage(img, cw * lane, 0, cw, ih, x, y, w, tile);
+    ctx.restore();
+    // 終端
+    ctx.save();
+    ctx.globalAlpha *= alpha;
+    if (dir < 0) {
+      ctx.translate(0, top + capH / 2);
+      ctx.scale(1, -1);
+      ctx.translate(0, -(top + capH / 2));
+    }
+    const ey = dir > 0 ? top + len - capH : top;
+    ctx.drawImage(img, cw * (lane + 4), 0, cw, ih * (capH / (ih * sc)), x, dir > 0 ? ey : top, w, capH);
+    ctx.restore();
+    return true;
+  }
+}
+
+/** 読み込んだスキンの集まり（レジストリ） */
+class NoteStyleSet {
+  constructor() {
+    this.styles = new Map();
+    this.images = new Map(); // ルート以降のパス（拡張子なし）→ { img, origin }  ※別の mod / フォルダの同名ファイルを取り違えないよう、パスで持つ
+    this.xmls = new Map(); // 同じ形で sprites
+    this.origins = new Map(); // スキン id → origin
+    this.raw = new Map(); // id → json（再構築用）
+    this.version = 0;
+  }
+  clear() {
+    this.styles.clear();
+    this.images.clear();
+    this.xmls.clear();
+    this.raw.clear();
+    this.origins.clear();
+    this.version++;
+  }
+  ids() {
+    return [...this.styles.keys()];
+  }
+  get(id) {
+    return this.styles.get(id) ?? null;
+  }
+  /** assetPath → { img, sprites }。置き場所の点数で選び、決められないときは注意を出す */
+  atlas(assetPath, origin = "") {
+    const best = pickByPath(this.images, assetPath, origin);
+    if (!best) return null;
+    // XML は、選んだ画像と同じパスのものを優先（別の mod の XML と組み合わさらないように）
+    const x = this.xmls.get(best.key) ?? pickByPath(this.xmls, assetPath, best.val.origin)?.val;
+    return { img: best.val.img, sprites: x?.sprites ?? x ?? null };
+  }
+  /**
+   * @param entries [{name, file?: File, text?, buffer?}]  JSON / PNG / XML が混ざっていてよい
+   * @returns {added: [id], warnings: []}
+   */
+  async addFiles(entries) {
+    const warnings = [],
+      added = [];
+    for (const e of entries) {
+      const full = e.name.replace(/\\/g, "/");
+      const n = full.replace(/^.*\//, "");
+      const pinfo = infoOfPath(full);
+      try {
+        if (/\.json$/i.test(n)) {
+          const txt = e.text ?? (await e.file.text());
+          const data = JSON.parse(txt);
+          if (data && data.assets && typeof data.assets === "object" && !Array.isArray(data)) {
+            const id = baseName(n);
+            this.raw.set(id, data);
+            this.origins.set(id, pinfo.origin);
+            added.push(id);
+          }
+        } else if (/\.(png|webp|jpe?g)$/i.test(n)) {
+          const f = e.file ?? new File([e.buffer], n, { type: "image/png" });
+          this.images.set(pinfo.noExt, { img: await loadImage(f), origin: pinfo.origin });
+        } else if (/\.xml$/i.test(n)) {
+          const txt = e.text ?? (await e.file.text());
+          this.xmls.set(pinfo.noExt, { sprites: parseSparrowXml(txt), origin: pinfo.origin });
+        }
+      } catch (err) {
+        warnings.push(`${n}: ${err.message}`);
+      }
+    }
+    for (const [id, data] of this.raw) this.styles.set(id, new NoteStyle(this, id, data));
+    // 画像が足りないスキンを知らせる
+    for (const id of added) {
+      const s = this.styles.get(id);
+      for (const key of ["note", "noteStrumline", "holdNote"]) {
+        const def = s.data.assets?.[key];
+        if (def?.assetPath && !this.atlas(def.assetPath)) warnings.push(`${id}: ${key} の画像「${baseName(def.assetPath)}.png」がありません（ある場合は同時に選んでください。無い部分は既定の矢印で描きます）`);
+      }
+    }
+    this.version++;
+    return { added, warnings };
+  }
+}
+
+/** map（キー = ルート以降のパス）から assetPath に合うものを選ぶ。{ key, val } */
+function pickByPath(map, assetPath, origin) {
+  let best = null,
+    ties = 0;
+  for (const [key, val] of map) {
+    const info = infoOfPath(key + ".x");
+    let sc = scorePath(info, assetPath, "images");
+    if (!sc) continue;
+    if (origin && val.origin === origin) sc += 25;
+    if (!best || sc > best.sc) {
+      best = { key, val, sc };
+      ties = 1;
+    } else if (sc === best.sc) ties++;
+  }
+  if (best && ties > 1) assetNote(`ノートスキンの画像「${assetPath}」に合うファイルが複数あります。${best.key} を使いました（違う場合は、使いたい mod の分だけ読み込み直してください）`);
+  return best;
+}
+
+return { NoteStyle, NoteStyleSet };
 })();
 
 /* ===== funkin-studio/js/states/chart/editor.js ===== */
-const __m42 = (() => {
+const __m49 = (() => {
 /* ============================================================
    chart/editor.js — Chart Editor（V-Slice の chart.json / metadata.json 編集）のロジック
    ------------------------------------------------------------
@@ -13256,9 +17531,12 @@ const __m42 = (() => {
    ============================================================ */
 const { isTextEntry } = __m27;
 const { HudPanels } = __m28;
-const { DEFAULT_VARIATION, SNAP_QUANTS, BASE_QUANT_INDEX, STRUMLINE_SIZE, STEPS_PER_BEAT, DIR_NAMES, EVENT_SCHEMAS, EVENT_KINDS, eventTitle, defaultEventValue, defaultMetadata, defaultChart, normalizeMetadata, normalizeChart, serializeMetadata, serializeChart, Timing, clone, round3 } = __m39;
-const { AudioEngine, PEAK_MS } = __m40;
-const { readZip, writeZip } = __m41;
+const { DEFAULT_VARIATION, SNAP_QUANTS, BASE_QUANT_INDEX, STRUMLINE_SIZE, STEPS_PER_BEAT, DIR_NAMES, EVENT_SCHEMAS, eventKinds, isCustomEvent, registerEventSchema, unregisterEventSchema, eventTitle, defaultEventValue, defaultMetadata, defaultChart, normalizeMetadata, normalizeChart, serializeMetadata, serializeChart, Timing, clone, round3 } = __m41;
+const { AudioEngine, PEAK_MS } = __m42;
+const { readZip, writeZip } = __m34;
+const { parseHxc } = __m43;
+const { createPlayTest } = __m47;
+const { NoteStyleSet } = __m48;
 
 const GRID = 40; // 1マスの基準ピクセル（V-Slice の GRID_SIZE）
 const COLS = STRUMLINE_SIZE * 2 + 1; // 相手4 + プレイヤー4 + イベント1
@@ -13514,6 +17792,9 @@ function mountChartEditor(state) {
       if (!got.metas.has(v) && !merge && Object.keys(variations).length) missing.push(`${v}: metadata`);
       if (!got.charts.has(v) && !merge) missing.push(`${v}: chart`);
     }
+    const unknownKinds = new Set();
+    for (const v of Object.values(variations)) for (const ev of v.chart.events) if (!EVENT_SCHEMAS[ev.e]) unknownKinds.add(ev.e);
+    if (unknownKinds.size) got.warn.push(`定義が未登録のイベント: ${[...unknownKinds].join(", ")}（ファイルタブの「イベントのスクリプト」で .hxc を読み込むと項目が出ます）`);
     say(`読み込みました（${parts.join("・")}）。${missing.length ? "\n見つからなかったので既定で補いました: " + missing.join(", ") : ""}${got.warn.length ? "\n" + got.warn.join("\n") : ""}`);
   }
   const slug = (s) => String(s || "song").trim().toLowerCase().replace(/[^\w\-]+/g, "-").replace(/^-+|-+$/g, "") || "song";
@@ -13546,7 +17827,7 @@ function mountChartEditor(state) {
     const L = layout(),
       { ch, W, H, left, playY } = L;
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = getComputedStyle(canvas).backgroundColor || "#1d222a";
+    ctx.fillStyle = "#161a21"; // 背景はテーマに左右されない暗色（明るいテーマでも目が疲れないように）
     ctx.fillRect(0, 0, W, H);
     const curStep = stepOf(posMs);
     const s0 = Math.floor(curStep - playY / ch) - 1,
@@ -14449,7 +18730,22 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
 
   // ---- 編集パネル（選択中の中身・イベント） ----
   const palette = $("chtPalette");
-  palette.replaceChildren(...EVENT_KINDS.map((k) => new Option(eventTitle(k), k)), new Option("カスタム…", "__custom"));
+  function refreshPalette() {
+    const keep = palette.value;
+    const builtin = eventKinds().filter((k) => !isCustomEvent(k)),
+      custom = eventKinds().filter(isCustomEvent);
+    const g1 = Object.assign(document.createElement("optgroup"), { label: "組み込み" });
+    g1.append(...builtin.map((k) => new Option(eventTitle(k), k)));
+    palette.replaceChildren(g1);
+    if (custom.length) {
+      const g2 = Object.assign(document.createElement("optgroup"), { label: "スクリプト" });
+      g2.append(...custom.map((k) => new Option(eventTitle(k) + (eventTitle(k) !== k ? ` (${k})` : ""), k)));
+      palette.append(g2);
+    }
+    palette.append(new Option("名前を入力…（未登録のイベント）", "__custom"));
+    if ([...palette.options].some((o) => o.value === keep)) palette.value = keep;
+  }
+  refreshPalette();
   const paletteKind = () => (palette.value === "__custom" ? $("chtCustomKind").value.trim() : palette.value);
   palette.onchange = () => ($("chtCustomRow").hidden = palette.value !== "__custom");
   $("chtAddEventHead").onclick = () => {
@@ -14566,8 +18862,8 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
   const eKind = $("chtEKind");
   function renderEventForm(ev) {
     const known = EVENT_SCHEMAS[ev.e];
-    eKind.replaceChildren(...EVENT_KINDS.map((k) => new Option(eventTitle(k), k)));
-    if (!known) eKind.append(new Option(ev.e + "（カスタム）", ev.e));
+    eKind.replaceChildren(...eventKinds().map((k) => new Option(eventTitle(k) + (isCustomEvent(k) ? " ※" : ""), k)));
+    if (!known) eKind.append(new Option(ev.e + "（未登録）", ev.e));
     eKind.value = ev.e;
     setVal($("chtETime"), ev.t);
     const form = $("chtEForm");
@@ -14585,7 +18881,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
           say("JSON が正しくありません: " + e.message);
         }
       };
-      form.append(Object.assign(document.createElement("p"), { className: "tiny", textContent: "組み込みでないイベントです。value を JSON で編集します。" }), ta);
+      form.append(Object.assign(document.createElement("p"), { className: "tiny", textContent: "このイベントの定義がまだ読み込まれていません。ファイルタブの「イベントのスクリプト」で .hxc を読み込むと、項目が出ます。いまは value を JSON で編集できます。" }), ta);
       return;
     }
     if (ev.v === null || typeof ev.v !== "object" || Array.isArray(ev.v)) ev.v = defaultEventValue(ev.e);
@@ -14653,10 +18949,87 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     commit();
     redraw();
   };
+  // ---- イベントのスクリプト（HScript）----
+  const SCRIPT_LS = "funkinStudio.chart.eventScripts";
+  let scripts = {}; // ファイル名 → { text, ids: [イベントID], warn: [] }
+  function registerScript(name, text) {
+    const r = parseHxc(text);
+    for (const e of r.events) registerEventSchema(e.id, e.title, e.fields);
+    const warnings = [...r.warnings, ...r.events.flatMap((e) => e.warnings.map((w) => `${e.id}: ${w}`))];
+    scripts[name] = { text, ids: r.events.map((e) => e.id), kinds: r.noteKinds.map((k) => k.id), warn: warnings };
+    return { count: r.events.length + r.noteKinds.length, warnings };
+  }
+  function saveScripts() {
+    try {
+      localStorage.setItem(SCRIPT_LS, JSON.stringify(Object.fromEntries(Object.entries(scripts).map(([k, v]) => [k, v.text]))));
+    } catch {}
+  }
+  try {
+    const saved = JSON.parse(localStorage.getItem(SCRIPT_LS) || "{}");
+    for (const [name, text] of Object.entries(saved)) registerScript(name, text);
+  } catch {}
+  function renderScripts() {
+    const box = $("chtScriptList");
+    box.replaceChildren();
+    for (const [name, sc] of Object.entries(scripts)) {
+      const row = document.createElement("div");
+      row.className = "chtRow";
+      const label = Object.assign(document.createElement("span"), {
+        className: "chtRowName",
+        style: "max-width:none;flex:1",
+        textContent: `${name} → ${[...sc.ids, ...sc.kinds.map((k) => k + "(ノーツ種類)")].join(", ") || "対象なし"}`,
+        title: sc.warn.join("\n") || name,
+      });
+      const del = Object.assign(document.createElement("button"), { type: "button", textContent: "✕", title: "外す" });
+      del.onclick = () => {
+        for (const id of sc.ids) unregisterEventSchema(id);
+        delete scripts[name];
+        saveScripts();
+        refreshAfterScripts();
+      };
+      row.append(label, del);
+      box.append(row);
+    }
+  }
+  function refreshAfterScripts() {
+    refreshPalette();
+    renderScripts();
+    refreshEdit();
+    redraw();
+  }
+  $("chtScripts").onchange = async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    const found = [],
+      warns = [];
+    for (const f of files) {
+      const texts = [];
+      if (/\.(zip|fnfc)$/i.test(f.name)) {
+        try {
+          for (const [en, data] of await readZip(await f.arrayBuffer())) if (/\.(hxc|hx)$/i.test(en)) texts.push([en.replace(/^.*[\\/]/, ""), new TextDecoder().decode(data)]);
+        } catch (err) {
+          warns.push(`${f.name}: ${err.message}`);
+        }
+      } else if (/\.(hxc|hx|txt)$/i.test(f.name)) texts.push([f.name, await f.text()]);
+      else warns.push(`${f.name}: .hxc / .hx のファイルを選んでください`);
+      for (const [name, text] of texts) {
+        if (!/extends\s+(SongEvent|ScriptedSongEvent|ScriptedNoteKind)\b/.test(text)) continue; // イベント / ノーツ種類以外のスクリプトは読み飛ばす
+        const r = registerScript(name, text);
+        if (r.count) found.push(`${name} → ${[...scripts[name].ids, ...scripts[name].kinds.map((k) => k + "(ノーツ種類)")].join(", ")}`);
+        warns.push(...r.warnings);
+      }
+    }
+    saveScripts();
+    refreshAfterScripts();
+    say(found.length ? `イベントを読み込みました:\n${found.join("\n")}${warns.length ? "\n\n注意:\n" + warns.join("\n") : ""}` : `SongEvent を継承したスクリプトが見つかりませんでした。${warns.length ? "\n" + warns.join("\n") : ""}`);
+  };
+  renderScripts();
+
   // 置くノーツの kind の候補（読み込んだチャートに出てくる種類）
   function refreshKinds() {
     const kinds = new Set();
     for (const v of Object.values(variations)) for (const list of Object.values(v.chart.notes)) for (const n of list) if (n.k) kinds.add(n.k);
+    for (const sc of Object.values(scripts)) for (const k of sc.kinds) kinds.add(k); // スクリプトで定義されたノーツ種類
     $("chtKinds").replaceChildren(...[...kinds].map((k) => Object.assign(document.createElement("option"), { value: k })));
   }
 
@@ -14828,7 +19201,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     if (e.code === "Space") spaceDown = false;
   });
   state.listen(window, "keydown", (e) => {
-    if (!state.active || isTextEntry(e.target) || e.metaKey) return;
+    if (!state.active || isTextEntry(e.target) || e.metaKey || playtest.isOpen()) return;
     const k = e.key.toLowerCase();
     if (e.code === "Space") {
       e.preventDefault();
@@ -14861,10 +19234,42 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     else if (k === "escape") ((sel = new Set()), refreshEdit(), redraw());
     else if (k === "m") (e.preventDefault(), mirrorSel(e.shiftKey));
     else if (k === "h") panels.toggleAll();
+    else if (k === "p") openPlayTest();
     else if (k === "1") setTool("place");
     else if (k === "2") setTool("select");
     else if (k === "3") setTool("pan");
   });
+
+  // ---- プレイテスト ----
+  const noteStyles = new NoteStyleSet(); // プレイテスト用のノートスキン（JSON + PNG/XML。画面を開いている間だけ保持）
+  const playtest = createPlayTest(state.root, {
+    audio,
+    noteStyles,
+    getScripts: () => Object.fromEntries(Object.entries(scripts).map(([k, v]) => [k, v.text])),
+    getCharacters: () => {
+      const c = meta()?.playData?.characters ?? {};
+      return { player: c.player ?? "bf", girlfriend: c.girlfriend ?? "gf", opponent: c.opponent ?? "dad" };
+    },
+    listen: (t, type, fn) => state.listen(t, type, fn),
+    say,
+    getNotes: () => notes(),
+    getEvents: () => events(),
+    getTiming: () => timing,
+    getBaseSpeed: () => chart().scrollSpeed[curDiff] ?? chart().scrollSpeed.default ?? 1,
+    onExit: () => closePlayTest(),
+  });
+  function openPlayTest() {
+    if (playtest.isOpen()) return;
+    audio.pause();
+    syncTransport();
+    playtest.open(posMs);
+  }
+  function closePlayTest() {
+    playtest.close();
+    $("chtRate").dispatchEvent(new Event("change")); // 再生速度を編集用の設定に戻す
+    redraw();
+  }
+  $("chtPlayBtn").onclick = openPlayTest;
 
   // 初期表示
   resetHistory();
@@ -14877,6 +19282,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
       redraw();
     },
     onHide() {
+      playtest.close();
       audio.pause(); // 別の画面へ移ったら止める
       syncTransport();
     },
@@ -14887,6 +19293,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
       get doc() { return { variations, curVar, curDiff, songId }; },
       get audio() { return audio; },
       setPos, timing: () => timing, ingest,
+      select(o) { sel = new Set([o]); refreshEdit(); redraw(); },
     },
   };
 }
@@ -14895,15 +19302,15 @@ return { mountChartEditor };
 })();
 
 /* ===== funkin-studio/js/states/ChartEditorState.js ===== */
-const __m43 = (() => {
+const __m50 = (() => {
 /* ============================================================
    states/ChartEditorState.js — Chart Editor（V-Slice の chart.json / metadata.json の編集）の画面
    ------------------------------------------------------------
    構造は Stage Editor と同じ（入れ物 + chart/editor.js のロジック + chart/template.js の HTML）。
    ============================================================ */
 const { EditorState } = __m18;
-const { template } = __m38;
-const { mountChartEditor } = __m42;
+const { template } = __m40;
+const { mountChartEditor } = __m49;
 
 class ChartEditorState extends EditorState {
   static id = "chart";
@@ -14932,7 +19339,7 @@ return { ChartEditorState };
 })();
 
 /* ===== funkin-studio/js/main.js ===== */
-const __m44 = (() => {
+const __m51 = (() => {
 /* ============================================================
    main.js — アプリの入口（Haxe の Main.hx / FlxGame の起動に相当）
    ------------------------------------------------------------
@@ -14968,8 +19375,8 @@ const { ContributorsState } = __m17;
 const { AnimateEditorState } = __m22;
 const { SparrowEditorState } = __m25;
 const { CharacterEditorState } = __m31;
-const { StageEditorState } = __m37;
-const { ChartEditorState } = __m43;
+const { StageEditorState } = __m39;
+const { ChartEditorState } = __m50;
 
 const app = new App(document.getElementById("app"));
 

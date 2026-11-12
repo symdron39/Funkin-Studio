@@ -110,3 +110,59 @@ export function writeZip(entries) {
   end.setUint32(16, offset, true);
   return new Blob([...parts, ...central, end], { type: "application/zip" });
 }
+
+/**
+ * ZIP を「中身を読まずに」開く。中央ディレクトリ（名前と位置の一覧）だけ読み、
+ * 各ファイルは read() を呼んだときにだけ取り出す。数百MBの mod パックでもメモリを食わない。
+ * @param file File | Blob
+ * @returns [{ name, size, read(): Promise<Uint8Array> }]
+ */
+export async function openZipLazy(file) {
+  const total = file.size;
+  const tailLen = Math.min(total, 65557);
+  const tail = new DataView(await file.slice(total - tailLen, total).arrayBuffer());
+  let eocd = -1;
+  for (let i = tailLen - 22; i >= 0; i--) {
+    if (tail.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("ZIP として読めません（終端が見つかりません）");
+  let count = tail.getUint16(eocd + 10, true);
+  const cdSize = tail.getUint32(eocd + 12, true),
+    cdOff = tail.getUint32(eocd + 16, true);
+  if (cdOff === 0xffffffff || cdSize === 0xffffffff || count === 0xffff) throw new Error("4GB を超える ZIP（ZIP64）は未対応です。mod を分けてください");
+  const cd = new DataView(await file.slice(cdOff, cdOff + cdSize).arrayBuffer());
+  const u8 = new Uint8Array(cd.buffer);
+  const dec = new TextDecoder();
+  const out = [];
+  let p = 0;
+  for (let n = 0; n < count && p + 46 <= cd.byteLength; n++) {
+    if (cd.getUint32(p, true) !== 0x02014b50) break;
+    const flags = cd.getUint16(p + 8, true),
+      method = cd.getUint16(p + 10, true),
+      csize = cd.getUint32(p + 20, true),
+      usize = cd.getUint32(p + 24, true),
+      nlen = cd.getUint16(p + 28, true),
+      xlen = cd.getUint16(p + 30, true),
+      clen = cd.getUint16(p + 32, true),
+      lho = cd.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nlen)).replace(/\\/g, "/");
+    p += 46 + nlen + xlen + clen;
+    if (name.endsWith("/") || (flags & 1)) continue; // フォルダ / 暗号化は対象外
+    out.push({
+      name,
+      size: usize,
+      async read() {
+        const head = new DataView(await file.slice(lho, lho + 30).arrayBuffer());
+        const start = lho + 30 + head.getUint16(26, true) + head.getUint16(28, true);
+        const raw = new Uint8Array(await file.slice(start, start + csize).arrayBuffer());
+        if (method === 0) return raw;
+        if (method === 8) return inflateRaw(raw);
+        throw new Error(`未対応の圧縮方式です (${name}: method ${method})`);
+      },
+    });
+  }
+  return out;
+}

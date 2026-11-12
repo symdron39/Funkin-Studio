@@ -196,6 +196,13 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 - 備考: Character Editor / Sparrow Editor / Animate Editor の画像は従来の `<img>` のまま（アトラスは基本1枚なので、上の問題は起きにくい）。
 
 
+## 実行ランタイム（js/runtime/）— プレイテストで .hxc の演出を動かす
+- **hscript.js**: HScript（Haxe のサブセット）の自前インタプリタ。class / extends / var / function / if / for / while / switch / try / 関数式 / アロー関数 / Map・配列・匿名オブジェクトリテラル / 文字列補間 / `??` `?.` に対応。未対応の構文は行番号つきで知らせる。知らない名前は「スタブ」（呼んでも落ちない代役）になり、使われたものが未対応APIとして集まる。無限ループは 400 万ステップで打ち切る。
+- **runtime.js**: 演出に使われやすい API だけを再現した軽量な環境。`PlayState.instance`（camGame / camHUD / camCutscene、add / insert / remove / members）、`FlxSprite`（makeGraphic の単色）、`FlxText`、`FlxTypedGroup`、`FlxTween`（tween / num）、`FlxEase`（Flixel と同じ式）、`FlxColor`、`FlxG.signals.postUpdate`、`Conductor.instance.songPosition`、`ModuleHandler.getModule`、`NoteStyleRegistry`、`Grayscale` + `ShaderFilter` など。`SongEvent` / `Module` の基底クラス（`processOldEvents`・`onSongLoaded` / `onSongRetry` / `onSongEnd` / `onPause` / `onResume`）も同じ動き。開始のたびに `new Runtime` で作り直す（スクリプトの状態も新品）。
+- **glpost.js**: シェーダー（フィルター）を持つカメラだけ、2D キャンバスの絵を WebGL のフラグメントシェーダーに通す（普通のカメラは追加コスト 0）。フィルター用の絵は最大幅 1280px に抑える。WebGL が無ければ素通し。
+- **noteStyle.js**: V-Slice の notestyle JSON（note / holdNote / noteStrumline、fallback の連鎖）+ PNG/XML を読み、ノーツ・ホールド・ストラムを描く。`Change Note Skin` のスクリプトは本物と同じコードのまま動き、`strumline.noteStyle` が書き換わると描画も切り替わる。
+- **未対応（スタブになる）**: ステージ上のキャラ（`currentStage.getBoyfriend()` など → Change Character / Force Play Animation / Sing Suffix は動作せず警告）、画像つきスプライト、フォント読み込み、`.frag` の読み込み。結果画面に「エラー」と「未対応API」の一覧が出る。
+
 ## Chart Editor（states/chart/）
 - **データ**（`chartData.js`）: V-Slice 0.8.x の `SongData.hx` に合わせた metadata / chart の既定値・整形・書き出し。`version` と `generatedBy` は書き出しのたびに上書き。知らない欄は消さずに残す。組み込みイベント7種（FocusCamera / ZoomCamera / ScrollSpeed / SetCameraBop / SetHealthIcon / PlayAnimation / SetTargetBopSpeed）は `EVENT_SCHEMAS`（0.8.6 の `getEventSchema` を写したもの）。フォームはこのスキーマから自動生成。スキーマに無いイベントは value を JSON で編集。
 - **時間**: ノーツ・イベントは ms で保存。グリッドの位置は `Timing`（`Conductor.hx` と同じ式: beatLength = 60000/bpm × 4/分母、1拍 = 4 step）で step に変換する。
@@ -203,4 +210,18 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 - **ファイル**: `.fnfc`（= ZIP。`manifest.json` + `<id>-chart[-var].json` + `<id>-metadata[-var].json` + `Inst[-id].ogg` + `Voices-<char>[-var].ogg`）を `zip.js` で読み書き（読みは DecompressionStream、書きは無圧縮）。JSON と音声は複数選択で一度に、または「追加」であとから足せる。
 - **音声**（`audio.js`）: Web Audio。トラックごとに音量・ミュート・波形（10ms ごとのピーク）。いまのバリエーションで使うトラックだけが鳴る。再生位置は AudioContext の時計から計算。
 - **履歴**: Stage Editor と同じ JSON スナップショット方式（variations 全体 + いまの難易度）。選択は Undo で解除。
-- **未対応**: ノーツ種類（kind）ごとの params スキーマ、スクリプトが定義するイベントのスキーマ（HScript 対応のときに読む予定）、beatTuplets（`bt`）の編集（値は残す）、ライブ入力。
+- **背景**: Chart Editor は作業領域を固定の暗い色（`#161a21`）で描く。テーマの `--studio-canvas`（明るい色）は使わない（目が疲れるため）。
+- **イベントのスクリプト**（`scriptEvents.js` の `parseHxc`）: `.hxc` の `SongEvent` / `ScriptedSongEvent` / `ScriptedNoteKind` を静的に読む（HScript は実行しない）。`super('ID')`・`getTitle`・`getEventSchema`（配列 / `new SongEventSchema([...])`、`SongEventFieldType.*`、`keys: ['表示' => '値']`）から、`registerEventSchema` で `EVENT_SCHEMAS` に追加し、フォームを自動生成。選択肢が関数で作られる enum は文字列欄にして警告。読み込んだ内容は localStorage（`funkinStudio.chart.eventScripts`）に残る。`.hxc/.hx/.txt/.zip/.fnfc` をまとめて読める。
+- **プレイテスト**（`playtest.js`）: 現在の難易度・バリエーションの譜面をそのまま遊ぶ。キーは D/F/J/K（設定で変更可）、スマホは画面タップ。V-Slice PBOT1 の判定（sick ≤45ms / good ≤90 / bad ≤135 / shit ≤160）とスコア式を使用。入力時刻は `event.timeStamp` から押した瞬間の曲位置を逆算し、入力オフセットを引いて判定。結果にズレのヒストグラムと平均ズレ → 「ズレを補正」でオフセットへ反映。BOT・開始位置・速度・再生速度・ヒット音も設定可。
+- **未対応**: ノーツ種類（kind）ごとの params スキーマ、スクリプトが定義するノーツ種類の params、beatTuplets（`bt`）の編集（値は残す）、ライブ入力。
+
+## ModPack / 仮想ファイルシステム (v3.13)
+
+`js/services/ModPack.js` が、フォルダ選択・zip・単体ファイルを同じ形で扱う。
+
+- 原因: 以前は basename / 末尾フォルダ名 / 最初に見つかったものでアセットを探していたため、別 mod の同名ファイル（`sky.png` など）を取り違えた。
+- 解決: `infoOf` でパスから「ルート(images/data 等)以降のパス・origin(mod フォルダ)」を求め、`scorePath` で点数付け。JSON と同じ origin を優先し、同点で候補が複数あれば `assetNote` で警告する。
+- basename だけの一致は、ディレクトリ情報のない単体ファイルにだけ許す。
+- zip は `openZipLazy` で一覧だけ読み、`LazyZipFile.blob()` で必要な時にだけ展開（スマホ向け）。
+- ノートスキン（runtime/noteStyle.js）も同じ規則（パス + origin）で画像/XML を選ぶ。
+- 次版: プレイテストへステージ・キャラ追加（同じ pool を使う）。

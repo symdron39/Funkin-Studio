@@ -102,16 +102,50 @@ export const EVENT_SCHEMAS = {
     ],
   },
 };
-export const EVENT_KINDS = Object.keys(EVENT_SCHEMAS);
+const BUILTIN = JSON.parse(JSON.stringify(EVENT_SCHEMAS));
+/** いま使えるイベントの種類（組み込み + 読み込んだスクリプト） */
+export const eventKinds = () => Object.keys(EVENT_SCHEMAS);
+export const isCustomEvent = (kind) => !!EVENT_SCHEMAS[kind]?.custom;
+/** HScript から読んだイベント定義を登録する（同じ ID の組み込みは上書き。外すと元に戻る） */
+export function registerEventSchema(id, title, fields) {
+  EVENT_SCHEMAS[id] = { title, fields, custom: true };
+}
+export function unregisterEventSchema(id) {
+  if (BUILTIN[id]) EVENT_SCHEMAS[id] = JSON.parse(JSON.stringify(BUILTIN[id]));
+  else delete EVENT_SCHEMAS[id];
+}
+
+export const getEventSchema = (kind) => EVENT_SCHEMAS[kind];
 
 export function eventTitle(kind) {
-  return EVENT_SCHEMAS[kind]?.title ?? kind;
+  return getEventSchema(kind)?.title ?? kind;
 }
 /** スキーマの既定値だけで作った value */
 export function defaultEventValue(kind) {
   const v = {};
-  for (const f of EVENT_SCHEMAS[kind]?.fields ?? []) v[f.name] = f.def;
+  for (const f of getEventSchema(kind)?.fields ?? []) v[f.name] = f.def;
   return v;
+}
+
+/** 譜面の難しさの目安（プレイヤー側ノーツ中心） */
+export function chartStats(notes) {
+  const player = notes.filter((n) => n.d < STRUMLINE_SIZE).sort((a, b) => a.t - b.t);
+  const opp = notes.length - player.length;
+  const holds = player.filter((n) => n.l > 0).length;
+  let peak = 0,
+    j = 0;
+  for (let i = 0; i < player.length; i++) {
+    while (player[i].t - player[j].t > 1000) j++;
+    peak = Math.max(peak, i - j + 1);
+  }
+  let chord = 0,
+    run = 0;
+  for (let i = 0; i < player.length; i++) {
+    run = i > 0 && Math.abs(player[i].t - player[i - 1].t) < 1 ? run + 1 : 1;
+    chord = Math.max(chord, run);
+  }
+  const span = player.length > 1 ? (player[player.length - 1].t - player[0].t) / 1000 : 0;
+  return { player: player.length, opponent: opp, holds, peakNps: peak, avgNps: span > 0 ? player.length / span : 0, maxChord: chord, spanSec: span };
 }
 
 // ------------------------------------------------------------

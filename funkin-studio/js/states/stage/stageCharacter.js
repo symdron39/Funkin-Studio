@@ -24,6 +24,7 @@
    ■ カメラ焦点: originalPosition + (幅/2, 高さ/2) + キャラの cameraOffsets + ステージ側の cameraOffsets
    ============================================================ */
 import { findSpriteAtlas, findAnimateAtlas } from "./atlas.js";
+import { originOf } from "../../services/ModPack.js";
 
 export const RENDER_TYPES = ["sparrow", "packer", "multisparrow", "animateatlas", "multianimateatlas"];
 
@@ -87,6 +88,7 @@ export class StageCharacter {
       this.reset();
       this.json = j;
       this.jsonName = f.name;
+      this.origin = originOf(f); // 同じ mod のアトラスを優先して探す
       this.need = { path, kind: atlasKindOf(j, ref?.assetPath ? ref : null), ref };
       return true;
     }
@@ -101,7 +103,7 @@ export class StageCharacter {
     if (!this.json) throw Error("character.json がまだ選択されていません");
     const { path, kind, ref } = this.need;
     const list = [...pool];
-    const atlas = kind === "animate" ? await findAnimateAtlas(list, path) : await findSpriteAtlas(list, path, kind);
+    const atlas = kind === "animate" ? await findAnimateAtlas(list, path) : await findSpriteAtlas(list, path, kind, { origin: this.origin });
     this.atlas = atlas;
     this.fileNames = [this.jsonName, atlas.label];
     this.view = this.build(ref, path, kind);

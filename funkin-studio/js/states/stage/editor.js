@@ -22,6 +22,7 @@ import { Viewport, isTextEntry } from "../../ui/Viewport.js";
 import { HudPanels } from "../../ui/HudPanels.js";
 import { defaultStage, normalizeStage, newProp, newRect, serializeStage, clone, round3, CHAR_IDS, CHAR_LABEL, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas } from "./stageData.js";
 import { loadImage, parseSparrowXml, parsePackerText } from "./sparrowAtlas.js";
+import { normAsset, infoOf, infoOfDir, setAssetNoteSink, openModZip, summarize } from "../../services/ModPack.js";
 import { SpriteAtlas, animateGroups, buildAnimateAtlas, isSpritemapPng, matchFile, relPath, findAnimateAtlas } from "./atlas.js";
 import { StageCharacter } from "./stageCharacter.js";
 
@@ -78,14 +79,20 @@ export function mountStageEditor(state) {
   //   linked : assetPath → 画像                         … 一覧の「選択」で手動指定したもの（こちらが優先）
   //   xml / linkedXml : 同じ仕組みの Sparrow XML 版（アニメ付き prop 用。{ sprites, name }）
   //   animate / linkedAnimate : AnimateAtlas（Animation.json + spritemap）の版。assetPath はフォルダなので、フォルダ名（最後の1つ）で結び付ける
-  const assets = { byBase: new Map(), linked: new Map(), xml: new Map(), linkedXml: new Map(), animate: new Map(), linkedAnimate: new Map() };
+  //
+  // 取り違え対策（v3.13）: 置き場所（フォルダ）が分かるファイルは「パス」で結び付ける。
+  //   byPath : "images/characters/bf"（ルート以降・拡張子なし・小文字）→ 画像 / xml / animate  … assetPath と完全に合うものだけ
+  //   byBase : ファイル名だけ。置き場所の情報が無いファイル（スマホで直接選んだ等）専用。
+  //            フォルダつきのファイルは byBase に入れない（別フォルダの同名ファイルを拾わないため）
+  const assets = { byBase: new Map(), linked: new Map(), xml: new Map(), linkedXml: new Map(), animate: new Map(), linkedAnimate: new Map(), byPath: new Map(), xmlByPath: new Map(), animateByPath: new Map() };
   const segOf = (path) => String(path).replace(/\\/g, "/").split("/").filter(Boolean).pop()?.toLowerCase() ?? "";
-  const animateFor = (path) => (!path || path.startsWith("#") ? null : (assets.linkedAnimate.get(path) ?? assets.animate.get(segOf(path)) ?? null));
+  const wantRoot = (path) => "images/" + normAsset(path);
+  const animateFor = (path) => (!path || path.startsWith("#") ? null : (assets.linkedAnimate.get(path) ?? assets.animateByPath.get(wantRoot(path)) ?? assets.animateByPath.get(normAsset(path)) ?? assets.animate.get(segOf(path)) ?? null));
   const xmlFor = (path) =>
-    !path || path.startsWith("#") ? null : (assets.linkedXml.get(path) ?? assets.xml.get(baseName(path).toLowerCase()) ?? null);
+    !path || path.startsWith("#") ? null : (assets.linkedXml.get(path) ?? assets.xmlByPath.get(wantRoot(path)) ?? assets.xmlByPath.get(normAsset(path)) ?? assets.xml.get(baseName(path).toLowerCase()) ?? null);
   const isXmlFile = (f) => /\.xml$/i.test(f.name);
   const assetFor = (path) =>
-    !path || path.startsWith("#") ? null : (assets.linked.get(path) ?? assets.byBase.get(baseName(path).toLowerCase()) ?? null);
+    !path || path.startsWith("#") ? null : (assets.linked.get(path) ?? assets.byPath.get(wantRoot(path)) ?? assets.byPath.get(normAsset(path)) ?? assets.byBase.get(baseName(path).toLowerCase()) ?? null);
 
   // ---- ファイルの山（pool）----
   // 選んだファイルは全部ここに集まる（中身はまだ読まない。ファイルの「手」を持つだけなので軽い）。
@@ -93,6 +100,9 @@ export function mountStageEditor(state) {
   // → mod のフォルダ全体を一度だけ選べば、json とアセットが別のフォルダにあっても、毎回ファイルを動かさずに済む。
   const pool = [];
   const poolKeys = new Set();
+  let stageOrigin; // いま開いているステージ JSON が属する mod（同じ mod のアセットを優先して探す）
+  setAssetNoteSink((m) => say("⚠ " + m)); // 同名ファイルがあって決められないときの注意
+  state.addDisposer(() => setAssetNoteSink(null));
   function addPool(files) {
     let n = 0;
     for (const f of files) {
@@ -117,7 +127,8 @@ export function mountStageEditor(state) {
       try {
         const atlas = await buildAnimateAtlas(g.files, g.dir);
         const key = g.dir ? segOf(g.dir) : "";
-        if (key) assets.animate.set(key, atlas);
+        if (g.dir) assets.animateByPath.set(infoOfDir(g.dir).noExt, atlas);
+        else if (key) assets.animate.set(key, atlas);
         else {
           // フォルダ名が分からない（スマホなど）: まだ画像の無い AnimateAtlas の prop が1つだけなら、それに結び付ける
           const open = [...new Set(doc.props.filter((p) => !isSolid(p) && animTypeOf(p) === "animateatlas" && isAnimated(p)).map((p) => p.assetPath))].filter((x) => !animateFor(x));
@@ -136,13 +147,15 @@ export function mountStageEditor(state) {
         if (isXmlFile(f) || /\.txt$/i.test(f.name)) {
           const packer = /\.txt$/i.test(f.name);
           const x = { sprites: packer ? parsePackerText(await f.text()) : parseSparrowXml(await f.text()), name: f.name, kind: packer ? "packer" : "sparrow" };
-          assets.xml.set(baseName(f.name).toLowerCase(), x);
+          if (infoOf(f).flat) assets.xml.set(baseName(f.name).toLowerCase(), x);
+          else assets.xmlByPath.set(infoOf(f).noExt, x);
           out.xmls.push({ file: f, xml: x });
           continue;
         }
         if (/\.json$/i.test(f.name)) continue; // stage.json や character.json はここでは使わない
         const entry = { image: await loadImage(f), name: f.name, tints: new Map() };
-        assets.byBase.set(baseName(f.name).toLowerCase(), entry);
+        if (infoOf(f).flat) assets.byBase.set(baseName(f.name).toLowerCase(), entry);
+        else assets.byPath.set(infoOf(f).noExt, entry);
         out.push({ file: f, entry });
       } catch (e) {
         say(`読み込めませんでした: ${f.name}（${e.message}）`);
@@ -368,21 +381,21 @@ export function mountStageEditor(state) {
       try {
         if (type === "animateatlas") {
           if (!animateFor(path)) {
-            const a = await findAnimateAtlas(pool, path, { strict: true });
+            const a = await findAnimateAtlas(pool, path, { strict: true, origin: stageOrigin });
             assets.linkedAnimate.set(path, a);
             n++;
           }
           continue;
         }
         if (!assetFor(path)) {
-          const f = matchFile(pool, path, /\.(png|webp|jpe?g)$/i);
+          const f = matchFile(pool, path, /\.(png|webp|jpe?g)$/i, { origin: stageOrigin });
           if (f) {
             const [r] = await registerImages([f]);
             if (r) n++;
           }
         }
         if ((type === "sparrow" || type === "packer") && !xmlFor(path)) {
-          const f = matchFile(pool, path, type === "packer" ? /\.txt$/i : /\.xml$/i);
+          const f = matchFile(pool, path, type === "packer" ? /\.txt$/i : /\.xml$/i, { origin: stageOrigin });
           if (f) {
             const r = await registerImages([f]);
             if (r.xmls.length) n++;
@@ -420,8 +433,56 @@ export function mountStageEditor(state) {
   async function afterPoolChanged() {
     const a = await linkFromPool();
     const b = await resolveWaitingChars();
+    renderPack();
     return { props: a, chars: b };
   }
+  // ---- mod パック（zip / フォルダ）の中身の一覧: ステージとキャラをそこから選んで開く ----
+  let packStages = [],
+    packChars = [];
+  function renderPack() {
+    $("stgPack").hidden = !pool.length;
+    if (!pool.length) return;
+    const sm = summarize(pool);
+    packStages = sm.stages;
+    packChars = sm.characters;
+    $("stgPackInfo").textContent = `登録済み ${pool.length} ファイル（images ${sm.images} / data ${sm.data} / scripts ${sm.scripts}）。ステージ ${sm.stages.length} 件・キャラ ${sm.characters.length} 体${sm.origins.length > 1 ? `。mod が ${sm.origins.length} 個混ざっています（${sm.origins.slice(0, 3).join(", ")}${sm.origins.length > 3 ? "…" : ""}）` : ""}`;
+    const fill = (sel, list) => {
+      sel.textContent = "";
+      list.forEach((x, i) => sel.append(new Option(x.id + (x.origin ? `（${x.origin}）` : ""), String(i))));
+    };
+    fill($("stgPackStage"), packStages);
+    fill($("stgPackChar"), packChars);
+  }
+  $("stgPackOpen").onclick = async () => {
+    const it = packStages[Number($("stgPackStage").value)];
+    if (!it || !state.app.unsaved.confirmReplace()) return;
+    try {
+      const next = normalizeStage(JSON.parse((await it.file.text()).replace(/^\uFEFF/, "")));
+      stageOrigin = it.origin;
+      loadDoc(next, `「${next.name}」を読み込みました（prop ${next.props.length} 個）。画像は mod パックから探します…`);
+      const n = await linkFromPool();
+      say(`「${next.name}」を読み込み、prop の画像 ${n} 件を mod パックから結び付けました。`);
+    } catch (err) {
+      say("読み込みエラー: " + err.message);
+    }
+  };
+  $("stgPackLoadChar").onclick = async () => {
+    const it = packChars[Number($("stgPackChar").value)];
+    const ch = selChar();
+    if (!it) return;
+    if (!ch) return say("先に、キャラのスロット（bf / dad / gf）を選択してください。");
+    try {
+      if (!(await ch.setJsonFrom([it.file]))) throw Error("character.json（animations 配列を持つ JSON）ではありません");
+      try {
+        await ch.resolve(pool);
+      } catch (err) {
+        ch.error = err.message;
+      }
+      charDone(ch, `${ch.view?.name ?? ch.json.name ?? "キャラ"} の character.json を読みました`);
+    } catch (err) {
+      say("読み込みエラー: " + err.message);
+    }
+  };
 
   // ============================================================
   // 3. 履歴（Undo / Redo）
@@ -1210,9 +1271,26 @@ export function mountStageEditor(state) {
     if (!files.length) return;
     const n = addPool(files);
     say(`${n} 個のファイルを登録しました（読み込みは必要になったときだけ）。`);
+    stageOrigin = undefined;
     const r = await afterPoolChanged();
     if (r.chars || r.props) say(`${n} 個のファイルを登録し、キャラ ${r.chars} 体・prop の画像 ${r.props} 件を結び付けました。`);
     renderAssets();
+  };
+  // mod パックを zip で（スマホ可）。zip の中身は読まず、名前の一覧だけを pool に入れる
+  $("stgPoolZip").onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    say("zip を開いています…");
+    try {
+      const files = await openModZip(f);
+      const n = addPool(files);
+      const r = await afterPoolChanged();
+      say(`${f.name}: ${n} 個のファイルを登録しました（読み込みは必要になったときだけ）。${r.chars || r.props ? `キャラ ${r.chars} 体・prop の画像 ${r.props} 件を結び付けました。` : ""}下の「mod パック」からステージやキャラを開けます。`);
+      renderAssets();
+    } catch (err) {
+      say(`zip を開けません: ${err.message}`);
+    }
   };
   $("stgCharClear").onclick = () => {
     if (sel?.kind !== "char") return;

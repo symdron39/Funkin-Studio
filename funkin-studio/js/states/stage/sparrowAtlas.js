@@ -14,6 +14,7 @@
  * 既存コードが使う naturalWidth / naturalHeight も付けておく。
  */
 export async function loadImage(file) {
+  if (file.lazy) file = await file.blob(); // zip の中のファイル: ここで初めて取り出す
   let bmp;
   try {
     bmp = await createImageBitmap(file); // PNG / WebP / JPEG をデコード（メインスレッドを塞がない）

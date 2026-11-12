@@ -1,6 +1,11 @@
 /* Chart Editor 専用スタイル。土台（全画面・Hud パネル）は hud.css */
+/* 背景はテーマの「キャンバス色」（明るい色）を使わず、目に優しい暗色に固定する */
+#chartWorkspace,
+#chartWorkspace .hudWorkspace {
+  background: #161a21 !important;
+}
 #chartWorkspace #chtCanvas {
-  background: var(--studio-canvas, #1d222a) !important;
+  background: #161a21 !important;
   background-image: none !important;
   cursor: crosshair;
   touch-action: none;
@@ -115,4 +120,72 @@
   min-width: 11em;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+/* ---- プレイテスト ---- */
+.chtPlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  background: #0d1016;
+  color: #e8ecf4;
+}
+.chtPlay[hidden] {
+  display: none;
+}
+#chtPlayCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+.chtPlayPauseBtn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+}
+.chtPlayCard {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(560px, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  padding: 14px 16px;
+  border: 1px solid var(--line, #3a4660);
+  border-radius: 12px;
+  background: rgba(24, 29, 40, 0.96);
+  z-index: 3;
+}
+.chtPlayCard[hidden] {
+  display: none;
+}
+.chtPlayCard h2 {
+  margin: 0 0 6px;
+}
+.chtPlayCard label {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+}
+.chtPlayCard .row > label {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.chtPlayCard input[type="number"],
+.chtPlayCard input[type="text"],
+.chtPlayCard select {
+  width: 100%;
+}
+#chtPlayInfo {
+  white-space: pre-wrap;
+  margin-bottom: 6px;
+}
+#chtPlayHist {
+  width: 100%;
+  margin: 8px 0;
+  border-radius: 6px;
 }

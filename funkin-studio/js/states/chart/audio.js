@@ -69,6 +69,18 @@ export class AudioEngine {
     if (!this.playing) return this._startPos;
     return this._startPos + (this.ctx.currentTime - this._startCtx) * 1000 * this.rate;
   }
+  /**
+   * performance.now() 基準の時刻 perfMs に「耳に届いている」曲の位置(ms)。入力の時刻と突き合わせるのに使う。
+   * getOutputTimestamp は出力の遅延まで含めた時計。使えない環境では currentTime で代用する。
+   */
+  positionAt(perfMs) {
+    if (!this.playing) return this._startPos;
+    const ts = this.ctx.getOutputTimestamp?.();
+    let ct;
+    if (ts && ts.performanceTime > 0 && ts.contextTime > 0) ct = ts.contextTime + (perfMs - ts.performanceTime) / 1000;
+    else ct = this.ctx.currentTime + (perfMs - performance.now()) / 1000;
+    return this._startPos + (ct - this._startCtx) * 1000 * this.rate;
+  }
   seek(ms) {
     const was = this.playing;
     if (was) this.pause();

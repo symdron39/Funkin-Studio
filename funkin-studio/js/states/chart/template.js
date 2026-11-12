@@ -21,6 +21,8 @@ export const template = `
           <button type="button" data-hud-toggle="edit" data-ja="✏ 編集" data-en="✏ Edit">✏ 編集</button>
           <button type="button" data-hud-toggle="audio" data-ja="🔊 音声" data-en="🔊 Audio">🔊 音声</button>
           <span class="hudSep"></span>
+          <button id="chtPlayBtn" type="button" title="この難易度をプレイテスト (P)">🎮 プレイテスト</button>
+          <span class="hudSep"></span>
           <button id="chtToolPlace" type="button" aria-pressed="true" title="配置: クリックでノーツ/イベントを置く・ドラッグで長さ・選択物をドラッグで移動 (1)">✏ 配置</button>
           <button id="chtToolSelect" type="button" aria-pressed="false" title="選択: ドラッグで範囲選択 (2)">▭ 選択</button>
           <button id="chtToolPan" type="button" aria-pressed="false" title="スクロール: ドラッグで時間送り（スマホ向け） (3)">✋ 移動</button>
@@ -51,6 +53,12 @@ export const template = `
               <label class="chtFileBtn">Inst を選ぶ<input id="chtInst" type="file" hidden /></label>
               <label class="chtFileBtn">Voices を追加<input id="chtVoices" type="file" multiple hidden /></label>
             </div>
+            <h3>イベントのスクリプト（HScript）</h3>
+            <label>.hxc / .hx を読み込む（複数可・modの zip も可）
+              <input id="chtScripts" type="file" multiple />
+            </label>
+            <div id="chtScriptList" class="chtTable"></div>
+            <p class="tiny">SongEvent を継承したクラスから、イベントの ID・名前・項目を読み取って、イベントの種類に追加します（スクリプトは実行しません）。読み込んだものはこのブラウザに記憶されます。</p>
             <h3>個別に保存（いまのバリエーション）</h3>
             <div class="row">
               <button id="chtSaveChart" type="button">chart.json</button>
@@ -216,6 +224,58 @@ export const template = `
         </div>
 
         <div id="chtToast" class="hudToast" hidden></div>
+      </div>
+
+      <div id="chtPlayRoot" class="chtPlay" hidden>
+        <canvas id="chtPlayCanvas"></canvas>
+        <button id="chtPlayPause" class="chtPlayPauseBtn" type="button" title="一時停止 (Esc)">⏸</button>
+        <div id="chtPlayCard" class="chtPlayCard">
+          <h2 id="chtPlayTitle">プレイテスト</h2>
+          <div id="chtPlayInfo" class="tiny"></div>
+          <div id="chtPlayOpts">
+            <div class="row">
+              <label>開始位置
+                <select id="chtPlayStartFrom"><option value="playhead">再生位置から</option><option value="head">先頭から</option></select>
+              </label>
+              <label>速度倍率<input id="chtPlaySpeed" type="number" step="0.1" min="0.1" /></label>
+            </div>
+            <div class="row">
+              <label>入力オフセット (ms)<input id="chtPlayOffset" type="number" step="1" /></label>
+              <label>再生速度
+                <select id="chtPlayRate"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option></select>
+              </label>
+            </div>
+            <div class="row">
+              <label><input id="chtPlayDown" type="checkbox" /> ダウンスクロール</label>
+              <label><input id="chtPlayOpp" type="checkbox" /> 相手ノーツを表示</label>
+              <label><input id="chtPlayBot" type="checkbox" /> ボット</label>
+              <label><input id="chtPlayHit" type="checkbox" /> ヒット音</label>
+            </div>
+            <div class="row">
+              <label>ノートスキン <select id="chtPlaySkin"></select></label>
+              <button id="chtPlaySkinLoad" type="button">スキンを読み込む…</button>
+              <input id="chtPlaySkinFiles" type="file" multiple accept=".json,.png,.xml,.zip" hidden />
+            </div>
+            <div id="chtPlaySkinInfo" class="tiny"></div>
+            <div class="row">
+              <label><input id="chtPlayScripts" type="checkbox" /> イベントスクリプトを実行（読み込み済みの .hxc）</label>
+            </div>
+            <div class="row">
+              <label>キー 左<input id="chtPlayKey0" type="text" maxlength="2" /></label>
+              <label>下<input id="chtPlayKey1" type="text" maxlength="2" /></label>
+              <label>上<input id="chtPlayKey2" type="text" maxlength="2" /></label>
+              <label>右<input id="chtPlayKey3" type="text" maxlength="2" /></label>
+            </div>
+          </div>
+          <canvas id="chtPlayHist" width="360" height="90" hidden></canvas>
+          <div class="row">
+            <button id="chtPlayGo" class="primary" type="button">開始</button>
+            <button id="chtPlayRestart" type="button" hidden>最初から</button>
+            <button id="chtPlayApply" type="button" hidden>ズレを補正</button>
+            <button id="chtPlayExit" type="button">エディタへ戻る</button>
+          </div>
+          <p class="tiny">Esc: 一時停止 / 再開。スマホは画面をタップ（右側のレーンが自分）。ズレの + は「遅い」です。</p>
+        </div>
       </div>
     </section>
 `;

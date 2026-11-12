@@ -20,6 +20,7 @@
    ※ AnimateAtlas の描画ロジックは Character Editor（states/character/editor.js）と同じ。あちらは触らない方針のため重複している。
    ============================================================ */
 import { loadImage, parseSparrowXml, parsePackerText, sparrowSequenceOf, paintSparrow } from "./sparrowAtlas.js";
+import { rankFiles, topTies, assetNote, infoOf, infoOfDir, scorePath, originOf } from "../../services/ModPack.js";
 
 // ============================================================
 // 1. Sparrow / Packer（切り出す形式）
@@ -457,11 +458,14 @@ const pathNoExt = (f) => {
  *   ② 無ければ、拡張子を除いた名前が assetPath の最後の1つと一致する（ファイルを直接選んだとき）
  * extRe: 対象の拡張子（例 /\.png$/i）
  */
-export function matchFile(pool, assetPath, extRe) {
-  const want = norm(assetPath);
-  if (!want) return null;
-  const cand = pool.filter((f) => extRe.test(f.name));
-  return cand.find((f) => pathNoExt(f) === want || pathNoExt(f).endsWith("/" + want)) || cand.find((f) => stem(f.name) === lastSeg(want)) || null;
+export function matchFile(pool, assetPath, extRe, opts = {}) {
+  const ranked = rankFiles(pool, assetPath, extRe, opts);
+  if (!ranked.length) return null;
+  const ties = topTies(ranked);
+  if (ties.length > 1) {
+    assetNote(`「${assetPath}」に合うファイルが複数あります（${ties.slice(0, 3).map((t) => relPath(t.f)).join(" / ")}）。どれか決められないため ${relPath(ranked[0].f)} を使いました。違う場合は、アセット一覧の「選択」で指定してください。`);
+  }
+  return ranked[0].f;
 }
 
 /**
@@ -469,11 +473,20 @@ export function matchFile(pool, assetPath, extRe) {
  *   1. フォルダ名が assetPath と合う組  2. 候補が1組だけならそれ（strict のときは 1 だけ）
  * 見つからなければ Error（何をどう選べばよいか書く）
  */
-export async function findAnimateAtlas(files, assetPath, { strict = false } = {}) {
+export async function findAnimateAtlas(files, assetPath, { strict = false, origin } = {}) {
   const groups = animateGroups(files);
   if (!groups.length) throw Error(`AnimateAtlas「${assetPath}」の Animation.json が見つかりません（spritemap1.json / spritemap1.png も一緒に）`);
-  const want = norm(assetPath);
-  const hit = groups.find((g) => norm(g.dir) === want || (g.dir && (norm(g.dir).endsWith("/" + want) || want.endsWith("/" + norm(g.dir)) || lastSeg(g.dir) === lastSeg(want))));
+  // フォルダの置き場所を点数で比べる（同名フォルダが複数あっても、assetPath の階層まで合うものを選ぶ）
+  const scored = groups
+    .map((g) => {
+      const info = g.dir ? infoOfDir(g.dir) : null;
+      const base = info ? scorePath(info, assetPath, "images") : 0;
+      return { g, score: base && origin !== undefined && info.origin === origin ? base + 25 : base };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score);
+  if (scored.length > 1 && scored[0].score === scored[1].score) assetNote(`AnimateAtlas「${assetPath}」に合うフォルダが複数あります（${scored.slice(0, 3).map((x) => x.g.dir).join(" / ")}）。${scored[0].g.dir} を使いました。違う場合は、フォルダを直接選んでください。`);
+  const hit = scored[0]?.g;
   const pick = hit || (!strict && groups.length === 1 ? groups[0] : null);
   if (!pick) throw Error(`AnimateAtlas が ${groups.length} セットあり、「${assetPath}」がどれか分かりません。フォルダごと選ぶか、1セットずつ選んでください`);
   return buildAnimateAtlas(pick.files, assetPath);
@@ -483,10 +496,13 @@ export async function findAnimateAtlas(files, assetPath, { strict = false } = {}
  * assetPath に対応する Sparrow / Packer アトラスを、ファイルの山から探して作る。
  * PNG と (XML | TXT) を matchFile で探す。合うものが無くて PNG と定義が1つずつなら、それを使う。
  */
-export async function findSpriteAtlas(files, assetPath, kind) {
+export async function findSpriteAtlas(files, assetPath, kind, opts = {}) {
   const list = [...files];
-  const png = matchFile(list, assetPath, /\.(png|webp|jpe?g)$/i) || soleOf(list, /\.(png|webp|jpe?g)$/i, kind);
-  const def = matchFile(list, assetPath, kind === "packer" ? /\.txt$/i : /\.xml$/i) || soleOf(list, kind === "packer" ? /\.txt$/i : /\.xml$/i, kind);
+  const png = matchFile(list, assetPath, /\.(png|webp|jpe?g)$/i, opts) || soleOf(list, /\.(png|webp|jpe?g)$/i, kind);
+  const defRe = kind === "packer" ? /\.txt$/i : /\.xml$/i;
+  // 定義(XML/TXT)は、選んだ PNG と同じフォルダ・同じ名前のものを最優先（別の mod の XML と組み合わさらないように）
+  const sibling = png && list.find((f) => defRe.test(f.name) && relDir(f) === relDir(png) && stem(f.name) === stem(png.name));
+  const def = sibling || matchFile(list, assetPath, defRe, { ...opts, origin: png ? originOf(png) : opts.origin }) || soleOf(list, defRe, kind);
   const ext = kind === "packer" ? "TXT" : "XML";
   const key = lastSeg(assetPath);
   if (!png) throw Error(`「${assetPath}」の画像（${key}.png）が見つかりません`);

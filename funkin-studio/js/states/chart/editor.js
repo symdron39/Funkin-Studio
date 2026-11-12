@@ -16,11 +16,14 @@
 import { isTextEntry } from "../../ui/Viewport.js";
 import { HudPanels } from "../../ui/HudPanels.js";
 import {
-  DEFAULT_VARIATION, SNAP_QUANTS, BASE_QUANT_INDEX, STRUMLINE_SIZE, STEPS_PER_BEAT, DIR_NAMES, EVENT_SCHEMAS, EVENT_KINDS, eventTitle, defaultEventValue,
+  DEFAULT_VARIATION, SNAP_QUANTS, BASE_QUANT_INDEX, STRUMLINE_SIZE, STEPS_PER_BEAT, DIR_NAMES, EVENT_SCHEMAS, eventKinds, isCustomEvent, registerEventSchema, unregisterEventSchema, eventTitle, defaultEventValue,
   defaultMetadata, defaultChart, normalizeMetadata, normalizeChart, serializeMetadata, serializeChart, Timing, clone, round3,
 } from "./chartData.js";
 import { AudioEngine, PEAK_MS } from "./audio.js";
 import { readZip, writeZip } from "./zip.js";
+import { parseHxc } from "./scriptEvents.js";
+import { createPlayTest } from "./playtest.js";
+import { NoteStyleSet } from "../../runtime/noteStyle.js";
 
 const GRID = 40; // 1マスの基準ピクセル（V-Slice の GRID_SIZE）
 const COLS = STRUMLINE_SIZE * 2 + 1; // 相手4 + プレイヤー4 + イベント1
@@ -276,6 +279,9 @@ export function mountChartEditor(state) {
       if (!got.metas.has(v) && !merge && Object.keys(variations).length) missing.push(`${v}: metadata`);
       if (!got.charts.has(v) && !merge) missing.push(`${v}: chart`);
     }
+    const unknownKinds = new Set();
+    for (const v of Object.values(variations)) for (const ev of v.chart.events) if (!EVENT_SCHEMAS[ev.e]) unknownKinds.add(ev.e);
+    if (unknownKinds.size) got.warn.push(`定義が未登録のイベント: ${[...unknownKinds].join(", ")}（ファイルタブの「イベントのスクリプト」で .hxc を読み込むと項目が出ます）`);
     say(`読み込みました（${parts.join("・")}）。${missing.length ? "\n見つからなかったので既定で補いました: " + missing.join(", ") : ""}${got.warn.length ? "\n" + got.warn.join("\n") : ""}`);
   }
   const slug = (s) => String(s || "song").trim().toLowerCase().replace(/[^\w\-]+/g, "-").replace(/^-+|-+$/g, "") || "song";
@@ -308,7 +314,7 @@ export function mountChartEditor(state) {
     const L = layout(),
       { ch, W, H, left, playY } = L;
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = getComputedStyle(canvas).backgroundColor || "#1d222a";
+    ctx.fillStyle = "#161a21"; // 背景はテーマに左右されない暗色（明るいテーマでも目が疲れないように）
     ctx.fillRect(0, 0, W, H);
     const curStep = stepOf(posMs);
     const s0 = Math.floor(curStep - playY / ch) - 1,
@@ -1211,7 +1217,22 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
 
   // ---- 編集パネル（選択中の中身・イベント） ----
   const palette = $("chtPalette");
-  palette.replaceChildren(...EVENT_KINDS.map((k) => new Option(eventTitle(k), k)), new Option("カスタム…", "__custom"));
+  function refreshPalette() {
+    const keep = palette.value;
+    const builtin = eventKinds().filter((k) => !isCustomEvent(k)),
+      custom = eventKinds().filter(isCustomEvent);
+    const g1 = Object.assign(document.createElement("optgroup"), { label: "組み込み" });
+    g1.append(...builtin.map((k) => new Option(eventTitle(k), k)));
+    palette.replaceChildren(g1);
+    if (custom.length) {
+      const g2 = Object.assign(document.createElement("optgroup"), { label: "スクリプト" });
+      g2.append(...custom.map((k) => new Option(eventTitle(k) + (eventTitle(k) !== k ? ` (${k})` : ""), k)));
+      palette.append(g2);
+    }
+    palette.append(new Option("名前を入力…（未登録のイベント）", "__custom"));
+    if ([...palette.options].some((o) => o.value === keep)) palette.value = keep;
+  }
+  refreshPalette();
   const paletteKind = () => (palette.value === "__custom" ? $("chtCustomKind").value.trim() : palette.value);
   palette.onchange = () => ($("chtCustomRow").hidden = palette.value !== "__custom");
   $("chtAddEventHead").onclick = () => {
@@ -1328,8 +1349,8 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
   const eKind = $("chtEKind");
   function renderEventForm(ev) {
     const known = EVENT_SCHEMAS[ev.e];
-    eKind.replaceChildren(...EVENT_KINDS.map((k) => new Option(eventTitle(k), k)));
-    if (!known) eKind.append(new Option(ev.e + "（カスタム）", ev.e));
+    eKind.replaceChildren(...eventKinds().map((k) => new Option(eventTitle(k) + (isCustomEvent(k) ? " ※" : ""), k)));
+    if (!known) eKind.append(new Option(ev.e + "（未登録）", ev.e));
     eKind.value = ev.e;
     setVal($("chtETime"), ev.t);
     const form = $("chtEForm");
@@ -1347,7 +1368,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
           say("JSON が正しくありません: " + e.message);
         }
       };
-      form.append(Object.assign(document.createElement("p"), { className: "tiny", textContent: "組み込みでないイベントです。value を JSON で編集します。" }), ta);
+      form.append(Object.assign(document.createElement("p"), { className: "tiny", textContent: "このイベントの定義がまだ読み込まれていません。ファイルタブの「イベントのスクリプト」で .hxc を読み込むと、項目が出ます。いまは value を JSON で編集できます。" }), ta);
       return;
     }
     if (ev.v === null || typeof ev.v !== "object" || Array.isArray(ev.v)) ev.v = defaultEventValue(ev.e);
@@ -1415,10 +1436,87 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     commit();
     redraw();
   };
+  // ---- イベントのスクリプト（HScript）----
+  const SCRIPT_LS = "funkinStudio.chart.eventScripts";
+  let scripts = {}; // ファイル名 → { text, ids: [イベントID], warn: [] }
+  function registerScript(name, text) {
+    const r = parseHxc(text);
+    for (const e of r.events) registerEventSchema(e.id, e.title, e.fields);
+    const warnings = [...r.warnings, ...r.events.flatMap((e) => e.warnings.map((w) => `${e.id}: ${w}`))];
+    scripts[name] = { text, ids: r.events.map((e) => e.id), kinds: r.noteKinds.map((k) => k.id), warn: warnings };
+    return { count: r.events.length + r.noteKinds.length, warnings };
+  }
+  function saveScripts() {
+    try {
+      localStorage.setItem(SCRIPT_LS, JSON.stringify(Object.fromEntries(Object.entries(scripts).map(([k, v]) => [k, v.text]))));
+    } catch {}
+  }
+  try {
+    const saved = JSON.parse(localStorage.getItem(SCRIPT_LS) || "{}");
+    for (const [name, text] of Object.entries(saved)) registerScript(name, text);
+  } catch {}
+  function renderScripts() {
+    const box = $("chtScriptList");
+    box.replaceChildren();
+    for (const [name, sc] of Object.entries(scripts)) {
+      const row = document.createElement("div");
+      row.className = "chtRow";
+      const label = Object.assign(document.createElement("span"), {
+        className: "chtRowName",
+        style: "max-width:none;flex:1",
+        textContent: `${name} → ${[...sc.ids, ...sc.kinds.map((k) => k + "(ノーツ種類)")].join(", ") || "対象なし"}`,
+        title: sc.warn.join("\n") || name,
+      });
+      const del = Object.assign(document.createElement("button"), { type: "button", textContent: "✕", title: "外す" });
+      del.onclick = () => {
+        for (const id of sc.ids) unregisterEventSchema(id);
+        delete scripts[name];
+        saveScripts();
+        refreshAfterScripts();
+      };
+      row.append(label, del);
+      box.append(row);
+    }
+  }
+  function refreshAfterScripts() {
+    refreshPalette();
+    renderScripts();
+    refreshEdit();
+    redraw();
+  }
+  $("chtScripts").onchange = async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    const found = [],
+      warns = [];
+    for (const f of files) {
+      const texts = [];
+      if (/\.(zip|fnfc)$/i.test(f.name)) {
+        try {
+          for (const [en, data] of await readZip(await f.arrayBuffer())) if (/\.(hxc|hx)$/i.test(en)) texts.push([en.replace(/^.*[\\/]/, ""), new TextDecoder().decode(data)]);
+        } catch (err) {
+          warns.push(`${f.name}: ${err.message}`);
+        }
+      } else if (/\.(hxc|hx|txt)$/i.test(f.name)) texts.push([f.name, await f.text()]);
+      else warns.push(`${f.name}: .hxc / .hx のファイルを選んでください`);
+      for (const [name, text] of texts) {
+        if (!/extends\s+(SongEvent|ScriptedSongEvent|ScriptedNoteKind)\b/.test(text)) continue; // イベント / ノーツ種類以外のスクリプトは読み飛ばす
+        const r = registerScript(name, text);
+        if (r.count) found.push(`${name} → ${[...scripts[name].ids, ...scripts[name].kinds.map((k) => k + "(ノーツ種類)")].join(", ")}`);
+        warns.push(...r.warnings);
+      }
+    }
+    saveScripts();
+    refreshAfterScripts();
+    say(found.length ? `イベントを読み込みました:\n${found.join("\n")}${warns.length ? "\n\n注意:\n" + warns.join("\n") : ""}` : `SongEvent を継承したスクリプトが見つかりませんでした。${warns.length ? "\n" + warns.join("\n") : ""}`);
+  };
+  renderScripts();
+
   // 置くノーツの kind の候補（読み込んだチャートに出てくる種類）
   function refreshKinds() {
     const kinds = new Set();
     for (const v of Object.values(variations)) for (const list of Object.values(v.chart.notes)) for (const n of list) if (n.k) kinds.add(n.k);
+    for (const sc of Object.values(scripts)) for (const k of sc.kinds) kinds.add(k); // スクリプトで定義されたノーツ種類
     $("chtKinds").replaceChildren(...[...kinds].map((k) => Object.assign(document.createElement("option"), { value: k })));
   }
 
@@ -1590,7 +1688,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     if (e.code === "Space") spaceDown = false;
   });
   state.listen(window, "keydown", (e) => {
-    if (!state.active || isTextEntry(e.target) || e.metaKey) return;
+    if (!state.active || isTextEntry(e.target) || e.metaKey || playtest.isOpen()) return;
     const k = e.key.toLowerCase();
     if (e.code === "Space") {
       e.preventDefault();
@@ -1623,10 +1721,42 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     else if (k === "escape") ((sel = new Set()), refreshEdit(), redraw());
     else if (k === "m") (e.preventDefault(), mirrorSel(e.shiftKey));
     else if (k === "h") panels.toggleAll();
+    else if (k === "p") openPlayTest();
     else if (k === "1") setTool("place");
     else if (k === "2") setTool("select");
     else if (k === "3") setTool("pan");
   });
+
+  // ---- プレイテスト ----
+  const noteStyles = new NoteStyleSet(); // プレイテスト用のノートスキン（JSON + PNG/XML。画面を開いている間だけ保持）
+  const playtest = createPlayTest(state.root, {
+    audio,
+    noteStyles,
+    getScripts: () => Object.fromEntries(Object.entries(scripts).map(([k, v]) => [k, v.text])),
+    getCharacters: () => {
+      const c = meta()?.playData?.characters ?? {};
+      return { player: c.player ?? "bf", girlfriend: c.girlfriend ?? "gf", opponent: c.opponent ?? "dad" };
+    },
+    listen: (t, type, fn) => state.listen(t, type, fn),
+    say,
+    getNotes: () => notes(),
+    getEvents: () => events(),
+    getTiming: () => timing,
+    getBaseSpeed: () => chart().scrollSpeed[curDiff] ?? chart().scrollSpeed.default ?? 1,
+    onExit: () => closePlayTest(),
+  });
+  function openPlayTest() {
+    if (playtest.isOpen()) return;
+    audio.pause();
+    syncTransport();
+    playtest.open(posMs);
+  }
+  function closePlayTest() {
+    playtest.close();
+    $("chtRate").dispatchEvent(new Event("change")); // 再生速度を編集用の設定に戻す
+    redraw();
+  }
+  $("chtPlayBtn").onclick = openPlayTest;
 
   // 初期表示
   resetHistory();
@@ -1639,6 +1769,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
       redraw();
     },
     onHide() {
+      playtest.close();
       audio.pause(); // 別の画面へ移ったら止める
       syncTransport();
     },
@@ -1649,6 +1780,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
       get doc() { return { variations, curVar, curDiff, songId }; },
       get audio() { return audio; },
       setPos, timing: () => timing, ingest,
+      select(o) { sel = new Set([o]); refreshEdit(); redraw(); },
     },
   };
 }
