@@ -182,3 +182,34 @@ export function summarize(pool) {
     origins: [...new Set(pool.map(originOf))].filter(Boolean),
   };
 }
+
+// ---------------------------------------------------------------- 種類別の解決（image / sound / music / song / icon / character / stage …）
+/** 種類ごとの「ルートのフォルダ」と拡張子。assetPath はその直下からの相対（V-Slice と同じ指定）で渡す */
+const AUDIO = /\.(ogg|mp3|wav|flac)$/i;
+const KINDS = {
+  image: { dir: "images", ext: /\.png$/i },
+  xml: { dir: "images", ext: /\.(xml|txt)$/i },
+  icon: { dir: "images", ext: /\.png$/i }, // 例: "icons/icon-bf" / "freeplay/icons/bfpixel"
+  sound: { dir: "sounds", ext: AUDIO },
+  music: { dir: "music", ext: AUDIO },
+  song: { dir: "songs", ext: AUDIO }, // 例: "bopeebo/Inst" / "bopeebo/Voices-bf"
+  character: { dir: "data/characters", ext: /\.json$/i },
+  stage: { dir: "data/stages", ext: /\.json$/i },
+  notestyle: { dir: "data/notestyles", ext: /\.json$/i },
+  script: { dir: "scripts", ext: /\.hx[cs]?$/i },
+};
+/**
+ * pool から、V-Slice と同じ指定（assetPath）でファイルを 1 つ選ぶ。
+ * shared/ や preload/ の中でも、mod ルート直下でも同じように見つかる。
+ * @returns {{file, ambiguous: Array}|null} ambiguous = 同点で決められなかった候補（あれば注意を出す）
+ */
+export function resolveAsset(pool, kind, assetPath, opts = {}) {
+  const k = KINDS[kind];
+  if (!k) throw new Error(`未対応の種類: ${kind}`);
+  const dirPrefix = k.dir;
+  const ranked = rankFiles(pool, assetPath, k.ext, { dirPrefix, origin: opts.origin });
+  if (!ranked.length) return null;
+  const ties = topTies(ranked);
+  if (ties.length > 1 && !opts.quiet) assetNote(`${kind}「${assetPath}」に合うファイルが複数あります: ${ties.map((t) => t.info.origin + "/" + t.info.noExt).join(" , ")}（先頭を使います）`);
+  return { file: ranked[0].f, ambiguous: ties.length > 1 ? ties.map((t) => t.f) : [] };
+}

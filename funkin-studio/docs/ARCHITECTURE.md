@@ -226,3 +226,4 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 - ノートスキン（runtime/noteStyle.js）も同じ規則（パス + origin）で画像/XML を選ぶ。
 - 次版: プレイテストへステージ・キャラ追加（同じ pool を使う）。
 - v3.13.1: `assets/shared/images/…` や `preload/images/…` の shared / preload は「ラッパー」として飛ばし、images/ をルートにする（origin は shared の手前まで）。assetPath 末尾の `/*` はフォルダ指定として無視。
+- v3.13.2: `resolveAsset(pool, kind, assetPath, {origin})` を追加。kind = image/xml/icon/sound/music/song/character/stage/notestyle/script。V-Slice と同じ指定（images/・sounds/・music/・songs/・data/characters/ …以降）で、shared/ や mod 直下のどちらにあっても、同じ mod を優先して 1 つ選ぶ。次版（プレイテストのステージ/キャラ/音）はこれを使う。
