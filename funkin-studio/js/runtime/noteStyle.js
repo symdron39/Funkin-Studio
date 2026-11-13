@@ -8,6 +8,7 @@
    ・軽量化: 画像は ImageBitmap（デコード済み）で保持し、フレーム検索は prefix ごとにキャッシュする。
    ============================================================ */
 import { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } from "../states/stage/sparrowAtlas.js";
+import { FUNKIN_JSON, FUNKIN_PNG, FUNKIN_XML } from "./builtinFunkin.js";
 import { infoOfPath, normAsset, scorePath, assetNote, openModZip } from "../services/ModPack.js";
 
 const DIRS = ["left", "down", "up", "right"];
@@ -162,6 +163,10 @@ export class NoteStyle {
     const cw = img.width / 8,
       ih = img.height;
     const sc = this.fetchHoldNoteScale() * k;
+    const off = this.getHoldNoteOffsets(); // グループ全体のずらし（ゲーム上の px）
+    cx += off[0] * k;
+    yHead += off[1] * k;
+    yTail += off[1] * k;
     const w = cw * sc;
     const dir = yTail >= yHead ? 1 : -1;
     const top = Math.min(yHead, yTail),
@@ -216,6 +221,24 @@ export class NoteStyleSet {
   ids() {
     return [...this.styles.keys()];
   }
+  /**
+   * 内蔵の標準 noteStyle（"funkin"）を登録する。すでにあれば（mod の funkin.json など）何もしない。
+   * 画像のキーは images/<名前>、origin は "builtin:funkin"（funkin のスタイル自身が使う）
+   */
+  async loadBuiltin(id) {
+    if (id !== "funkin" || this.raw.has(id)) return false;
+    const data = JSON.parse(JSON.stringify(FUNKIN_JSON));
+    this.raw.set(id, data);
+    this.origins.set(id, "builtin:funkin");
+    for (const [name, b64] of Object.entries(FUNKIN_PNG)) {
+      const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      this.images.set("images/" + baseName(name), { img: await loadImage(new Blob([bin], { type: "image/png" })), origin: "builtin:funkin" });
+    }
+    for (const [name, txt] of Object.entries(FUNKIN_XML)) this.xmls.set("images/" + baseName(name), { sprites: parseSparrowXml(txt), origin: "builtin:funkin" });
+    this.styles.set(id, new NoteStyle(this, id, data));
+    this.version++;
+    return true;
+  }
   get(id) {
     return this.styles.get(id) ?? null;
   }
@@ -259,6 +282,8 @@ export class NoteStyleSet {
         warnings.push(`${n}: ${err.message}`);
       }
     }
+    // fallback に "funkin" があるのに、読み込んだ mod に funkin.json が無いときは、内蔵の標準スタイルを使う
+    for (const data of [...this.raw.values()]) if (data.fallback && !this.raw.has(data.fallback)) await this.loadBuiltin(data.fallback);
     for (const [id, data] of this.raw) this.styles.set(id, new NoteStyle(this, id, data));
     // 画像が足りないスキンを知らせる
     for (const id of added) {

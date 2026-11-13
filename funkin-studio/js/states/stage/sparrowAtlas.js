@@ -85,6 +85,7 @@ export async function loadImage(file) {
 
 /** XML 文字列 → スプライト一覧 [{name, x, y, width, height, frameX, frameY, frameWidth, frameHeight, rotated}] */
 export function parseSparrowXml(text) {
+  text = String(text).replace(/^\uFEFF/, ""); // BOM 付きの XML（Windows のエディタ由来）でも読めるように
   const xml = new DOMParser().parseFromString(text, "application/xml");
   if (xml.querySelector("parsererror")) throw Error("XML が不正です");
   return [...xml.querySelectorAll("SubTexture")].map((el) => {

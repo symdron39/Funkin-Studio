@@ -11,12 +11,13 @@
    ============================================================ */
 import { Runtime } from "../../runtime/runtime.js";
 import { openModZip } from "../../services/ModPack.js";
+import { StageScene } from "../../runtime/stageScene.js";
 const PIXELS_PER_MS = 0.45;
 const WIN = { sick: 45, good: 90, bad: 135, shit: 160 };
 const NOTE_COLORS = ["#c24b99", "#00ffff", "#12fa05", "#f9393f"];
 const JUDGE_COLORS = { sick: "#7fe8ff", good: "#8dff8d", bad: "#ffd36b", shit: "#ff8f6b", miss: "#ff5577" };
 const LS_KEY = "funkinStudio.chart.playtest";
-const DEFAULTS = { startFrom: "playhead", speedMul: 1, down: false, showOpp: true, bot: false, hit: true, offset: 0, rate: 1, skin: "", scripts: true, keys: ["KeyD", "KeyF", "KeyJ", "KeyK"] };
+const DEFAULTS = { startFrom: "playhead", speedMul: 1, down: false, showOpp: true, bot: false, hit: true, offset: 0, rate: 1, skin: "", scripts: true, scene: true, keys: ["KeyD", "KeyF", "KeyJ", "KeyK"] };
 
 const scoreNote = (ms) => {
   const a = Math.abs(ms);
@@ -45,6 +46,8 @@ export function createPlayTest(root, d) {
     hist = $("chtPlayHist");
 
   let ctx = mainCtx; // 描き先（フィルターのあるカメラでは一時的にそのカメラのキャンバスに替わる）
+  let scene = null; // ステージとキャラクター（開始のたびに読み込む）
+  let loadToken = 0;
   let rt = null; // 演出スクリプトの実行環境（開始のたびに作り直す）
   let evQueue = [],
     evIdx = 0,
@@ -85,6 +88,7 @@ export function createPlayTest(root, d) {
     rate: $("chtPlayRate"),
     skin: $("chtPlaySkin"),
     scripts: $("chtPlayScripts"),
+    scene: $("chtPlayScene"),
   };
   const keyEls = [0, 1, 2, 3].map((i) => $("chtPlayKey" + i));
   function fillSkins() {
@@ -149,6 +153,7 @@ export function createPlayTest(root, d) {
   }
   function close() {
     if (state === "closed") return;
+    loadToken++;
     rt?.songEnd();
     rt = null;
     d.audio.pause();
@@ -170,7 +175,7 @@ export function createPlayTest(root, d) {
   }
 
   // ---------------- 開始 ----------------
-  function begin() {
+  async function begin() {
     readOpts();
     const startMs = opts.startFrom === "playhead" ? playhead : 0;
     const timing = d.getTiming();
@@ -199,6 +204,15 @@ export function createPlayTest(root, d) {
     popups = [];
     errTicks = [];
     keyDown.fill(false);
+    scene = null;
+    if (opts.scene) {
+      const tok = ++loadToken;
+      state = "loading";
+      showCard("読み込み中…", { info: "ステージとキャラクターを読み込んでいます" });
+      scene = await loadScene();
+      if (tok !== loadToken || state !== "loading") return; // 読み込み中に閉じた / 別の開始が走った
+      scene.start(startMs);
+    }
     startRuntime(startMs);
     d.audio.pause();
     d.audio.setRate(opts.rate);
@@ -206,6 +220,24 @@ export function createPlayTest(root, d) {
     d.audio.play();
     state = "playing";
     card.hidden = true;
+  }
+  // ---------------- ステージとキャラクター ----------------
+  async function loadScene() {
+    const ws = d.getWorkspace?.();
+    const sc = new StageScene({
+      files: () => ws?.files ?? [],
+      resolve: (kind, id, o) => ws?.resolve(kind, id, o) ?? null,
+      origin: ws?.defaultOrigin?.(),
+      timing: () => d.getTiming(),
+      events: () => d.getEvents(),
+    });
+    try {
+      await sc.load({ stage: d.getStage?.() ?? "", characters: d.getCharacters?.() });
+    } catch (e) {
+      sc.warn("ステージの読み込みで失敗しました: " + e.message);
+    }
+    if (!ws || !ws.files.length) sc.warn("mod が読み込まれていません（ホーム画面で mod の zip / フォルダを読み込むと、実際のステージとキャラが出ます）");
+    return sc;
   }
   // ---------------- 演出スクリプト ----------------
   function startRuntime(startMs) {
@@ -217,6 +249,7 @@ export function createPlayTest(root, d) {
     const style = opts.skin ? d.noteStyles.get(opts.skin) : null;
     if (!wantScripts && !style) return; // 何も使わないなら実行環境は作らない（軽量）
     rt = new Runtime({ noteStyles: d.noteStyles, getOpts: () => opts, characters: d.getCharacters?.() });
+    if (scene) rt.attachScene(scene);
     rt.ps.playerStrumline.noteStyle = style;
     rt.ps.opponentStrumline.noteStyle = style;
     if (!wantScripts) return;
@@ -233,10 +266,11 @@ export function createPlayTest(root, d) {
   }
   const styleOf = (isPlayer) => (rt ? (isPlayer ? rt.ps.playerStrumline.noteStyle : rt.ps.opponentStrumline.noteStyle) : opts.skin ? d.noteStyles.get(opts.skin) : null);
   function scriptReport() {
-    if (!rt) return "";
+    if (!rt && !scene) return "";
     const lines = [];
-    if (rt.errors.length) lines.push("⚠ スクリプトのエラー:\n  " + rt.errors.join("\n  "));
-    if (rt.warnings.size) lines.push("ℹ 未対応のAPI（呼ばれたが再現していないもの）:\n  " + [...rt.warnings].slice(0, 12).join("\n  ") + (rt.warnings.size > 12 ? `\n  …ほか ${rt.warnings.size - 12} 件` : ""));
+    if (scene?.warnings.length) lines.push("ℹ ステージ・キャラクター:\n  " + scene.warnings.join("\n  "));
+    if (rt?.errors.length) lines.push("⚠ スクリプトのエラー:\n  " + rt.errors.join("\n  "));
+    if (rt?.warnings.size) lines.push("ℹ 未対応のAPI（呼ばれたが再現していないもの）:\n  " + [...rt.warnings].slice(0, 12).join("\n  ") + (rt.warnings.size > 12 ? `\n  …ほか ${rt.warnings.size - 12} 件` : ""));
     return lines.join("\n");
   }
   function pause() {
@@ -347,6 +381,7 @@ export function createPlayTest(root, d) {
     st.maxCombo = Math.max(st.maxCombo, st.combo);
     popups.push({ text: j.toUpperCase(), sub: `${diff >= 0 ? "+" : ""}${diff.toFixed(0)}ms`, color: JUDGE_COLORS[j], at: performance.now() });
     errTicks.push({ diff, color: JUDGE_COLORS[j], at: performance.now() });
+    scene?.sing("player", n.lane);
     if (n.l > 0) n.holding = true;
     else n.done = true;
     if (opts.hit) d.audio.tick(false);
@@ -401,9 +436,11 @@ export function createPlayTest(root, d) {
         if (!n.hit && pos >= n.t) {
           n.hit = true;
           oppFlash[n.lane] = 1;
+          scene?.sing("opponent", n.lane);
           if (n.l <= 0) n.done = true;
           else n.holding = true;
         }
+        if (n.holding) scene?.keepSinging("opponent");
         if (n.holding && pos >= n.t + n.l) n.done = true;
         continue;
       }
@@ -417,9 +454,11 @@ export function createPlayTest(root, d) {
         st.combo = 0;
         st.score += -100;
         popups.push({ text: "MISS", sub: "", color: JUDGE_COLORS.miss, at: performance.now() });
+        scene?.sing("player", n.lane, true);
       }
       if (n.holding) {
         const held = opts.bot || keyDown[n.lane];
+        if (held) scene?.keepSinging("player");
         if (opts.bot) flash[n.lane] = 1;
         if (t >= n.t + n.l) {
           n.holding = false;
@@ -667,7 +706,7 @@ export function createPlayTest(root, d) {
       rt.render(mainCtx, W, H, window.devicePixelRatio || 1, {
         begin: (name, c) => {
           ctx = c;
-          if (name === "camGame") bg(c);
+          if (name === "camGame") (bg(c), scene?.draw(c, W, H));
           else if (name === "camHUD") drawHud(g, pos);
         },
       });
@@ -676,6 +715,7 @@ export function createPlayTest(root, d) {
     } else {
       ctx = mainCtx;
       bg(ctx);
+      if (scene && state !== "menu") scene.draw(ctx, W, H);
       if (live) {
         drawHud(g, pos);
         drawOverlay(g, pos);
@@ -692,11 +732,19 @@ export function createPlayTest(root, d) {
     if (state === "playing") {
       const pos = d.audio.position();
       update(pos);
+      {
+        const now = performance.now();
+        if (scene && !rt) {
+          scene.update(Math.min(100, now - lastFrameAt) * d.audio.rate, pos);
+          lastFrameAt = now;
+        }
+      }
       if (rt) {
         const now = performance.now();
         const dt = Math.min(0.1, (now - lastFrameAt) / 1000) * d.audio.rate;
         lastFrameAt = now;
         while (evIdx < evQueue.length && evQueue[evIdx].t <= pos) rt.fire(evQueue[evIdx++]);
+        scene?.update(dt * 1000, pos);
         rt.update(dt, pos);
       }
     }

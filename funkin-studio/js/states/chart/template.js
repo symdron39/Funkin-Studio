@@ -258,6 +258,9 @@ export const template = `
             </div>
             <div id="chtPlaySkinInfo" class="tiny"></div>
             <div class="row">
+              <label><input id="chtPlayScene" type="checkbox" /> ステージとキャラクターを表示（読み込んだ mod から）</label>
+            </div>
+            <div class="row">
               <label><input id="chtPlayScripts" type="checkbox" /> イベントスクリプトを実行（読み込み済みの .hxc）</label>
             </div>
             <div class="row">

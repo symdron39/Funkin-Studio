@@ -676,6 +676,24 @@ export class Runtime {
     }
     return { events: [...this.eventInst.keys()].filter((k) => !before.e.has(k)), modules: [...this.modules.keys()].filter((k) => !before.m.has(k)) };
   }
+  /** ステージとキャラ（StageScene）を PlayState の代役につなぐ: getBoyfriend / getDad / getGirlfriend / currentStage など */
+  attachScene(scene) {
+    this.scene = scene;
+    const ps = this.ps,
+      stub = (p) => this.stub(p);
+    const wrap = new Map();
+    const w = (key, make, path) => (wrap.has(key) ? wrap.get(key) : (wrap.set(key, withStubs(make(), path, stub)), wrap.get(key)));
+    ps.currentStage = w("stage", () => scene.stageApi(), "PlayState.currentStage");
+    ps.currentStageId = scene.stageId;
+    const who = { getBoyfriend: "player", getDad: "opponent", getGirlfriend: "girlfriend" };
+    for (const [fn, role] of Object.entries(who)) ps[fn] = () => w(role, () => scene.apiOf(role), "Character");
+    ps.currentStage.getBoyfriend = ps.getBoyfriend;
+    ps.currentStage.getDad = ps.getDad;
+    ps.currentStage.getGirlfriend = ps.getGirlfriend;
+    Object.defineProperty(ps, "currentCameraZoom", { get: () => scene.zoom, set: (v) => (scene.zoom = Number(v)), configurable: true });
+    Object.defineProperty(ps, "defaultCameraZoom", { get: () => scene.zoomBase, set: (v) => (scene.zoomBase = Number(v)), configurable: true });
+    ps.cameraFollowPoint = { get x() { return scene.focusTarget.x; }, set x(v) { scene.focusTarget.x = Number(v); }, get y() { return scene.focusTarget.y; }, set y(v) { scene.focusTarget.y = Number(v); }, setPosition(x, y) { scene.focusTarget = { x: Number(x), y: Number(y) }; } };
+  }
   hasEvent(kind) {
     return this.eventInst.has(kind);
   }

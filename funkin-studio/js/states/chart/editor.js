@@ -1735,6 +1735,8 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     audio,
     noteStyles,
     getScripts: () => Object.fromEntries(Object.entries(scripts).map(([k, v]) => [k, v.text])),
+    getStage: () => meta()?.playData?.stage ?? "",
+    getWorkspace: () => state.app.workspace,
     getCharacters: () => {
       const c = meta()?.playData?.characters ?? {};
       return { player: c.player ?? "bf", girlfriend: c.girlfriend ?? "gf", opponent: c.opponent ?? "dad" };

@@ -15,6 +15,7 @@ export const template = `
           <button type="button" data-hud-toggle="files" data-ja="📁 ファイル" data-en="📁 Files">📁 ファイル</button>
           <button type="button" data-hud-toggle="group" data-ja="🎯 グループ" data-en="🎯 Group">🎯 グループ</button>
           <button type="button" data-hud-toggle="entry" data-ja="🎞 アニメ" data-en="🎞 Anim">🎞 アニメ</button>
+          <button type="button" data-hud-toggle="scroll" data-ja="🎯 判定・スクロール" data-en="🎯 Hit / Scroll">🎯 判定・スクロール</button>
           <span class="hudSep"></span>
           <button id="nteZoomOut" type="button" title="ズームアウト">−</button>
           <input id="nteZoom" type="number" min=".05" max="16" step=".05" value="1" title="ズーム（ホイールでも可）" />
@@ -76,6 +77,32 @@ export const template = `
             <div class="row"><label class="hudCheck"><input id="nteIsPixel" type="checkbox" /> isPixel（ドット絵・補間なし）</label></div>
             <div class="row"><label class="hudCheck" title="オフにすると、グループ全体の offsets を動かします"><input id="nteDragEntry" type="checkbox" /> ドラッグで「選択中のアニメ個別」の offsets を動かす</label></div>
             <div id="nteGroupInfo" class="tiny"></div>
+          </aside>
+          <aside class="hudPanel" data-hud-panel="scroll">
+            <h2>判定・スクロール</h2>
+            <label>表示
+              <select id="nteView">
+                <option value="board">ボード（絵とオフセットを並べて見る）</option>
+                <option value="scroll">スクロールテスト（ノーツが流れて、判定位置で消える）</option>
+              </select>
+            </label>
+            <div class="row">
+              <label>スクロール速度（chart の scrollSpeed）<input id="nteSpeed" type="number" step="0.1" min="0.1" max="12" value="2" /></label>
+              <label>BPM<input id="nteBpm" type="number" step="1" min="30" max="300" value="120" /></label>
+            </div>
+            <input id="nteSpeedRange" type="range" min="0.5" max="8" step="0.1" value="2" />
+            <div class="row"><label class="hudCheck"><input id="nteDown" type="checkbox" /> ダウンスクロール（上から下へ流れる）</label></div>
+            <div class="row"><label class="hudCheck"><input id="nteWindows" type="checkbox" checked /> 判定の幅を表示</label></div>
+            <div class="row">
+              <label>Sick ±ms<input id="nteWSick" type="number" step="1" min="1" value="45" /></label>
+              <label>Good ±ms<input id="nteWGood" type="number" step="1" min="1" value="90" /></label>
+            </div>
+            <div class="row">
+              <label>Bad ±ms<input id="nteWBad" type="number" step="1" min="1" value="135" /></label>
+              <label>Shit ±ms<input id="nteWShit" type="number" step="1" min="1" value="160" /></label>
+            </div>
+            <p class="tiny">ノーツは「受け皿の中心」に重なった瞬間（= 判定の時刻）に消え、受け皿が Confirm になります。ノーツの絵と受け皿の絵が、その瞬間にぴったり重なるように、offsets を合わせてください（スクロールテストの表示でも、絵をドラッグして動かせます）。1ms あたり 0.45px × 速度で流れます（V-Slice の PIXELS_PER_MS）。判定の幅の初期値は V-Slice 0.8 の目安です。</p>
+            <div id="nteAlign" class="tiny"></div>
           </aside>
           <aside class="hudPanel" data-hud-panel="entry">
             <h2>アニメ</h2>

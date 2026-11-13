@@ -55,6 +55,15 @@ export function mountNoteEditor(state) {
   let missing = [];
   let hits = [];
   let t0 = performance.now();
+  // ---- 判定・スクロールテスト ----
+  let view = "board"; // "board" | "scroll"
+  const sc = { speed: 2, bpm: 120, down: false, windows: true, win: [["Sick", 45, "#4cd964"], ["Good", 90, "#5ac8fa"], ["Bad", 135, "#ffcc00"], ["Shit", 160, "#ff6b6b"]] };
+  const PX_PER_MS = 0.45; // V-Slice の Constants.PIXELS_PER_MS
+  let clockBase = 0,
+    clockStart = performance.now(),
+    clockPlaying = true;
+  /** 曲の時刻（ms）。一時停止中は止まる */
+  const songMs = () => (clockPlaying ? clockBase + (performance.now() - clockStart) : clockBase);
 
   // ---------- 通知 ----------
   let toastTimer = null;
@@ -88,7 +97,7 @@ export function mountNoteEditor(state) {
     $("ntePanTool").setAttribute("aria-pressed", String(vp.panMode));
     vp._updateCursor?.();
   };
-  const fit = () => vp.fit(-420, -130, 420, ROW.cover + 130);
+  const fit = () => (view === "scroll" ? vp.fit(-660, -380, 660, 380) : vp.fit(-420, -130, 420, ROW.cover + 130));
   $("nteFit").onclick = fit;
 
   // ---------- 履歴 ----------
@@ -183,6 +192,11 @@ export function mountNoteEditor(state) {
       if (!set.raw.has(id)) {
         const f = findStyleFile(id);
         if (!f) {
+          // 読み込んだ mod に無ければ、内蔵の標準 noteStyle（funkin）を使う
+          if (await set.loadBuiltin(id)) {
+            cur = set.raw.get(id);
+            continue;
+          }
           missing.push(`fallback「${id}」の JSON`);
           break;
         }
@@ -201,6 +215,7 @@ export function mountNoteEditor(state) {
     // 2. 各スタイルが使う画像
     for (const [id, data] of set.raw) {
       const origin = set.origins.get(id) ?? "";
+      if (origin.startsWith("builtin:")) continue; // 内蔵スタイルの画像は、すでに入っている
       const paths = new Set();
       for (const [k, def] of Object.entries(data.assets ?? {})) {
         if (!["note", "noteStrumline", "holdNote", "noteSplash"].includes(k)) continue;
@@ -369,6 +384,7 @@ export function mountNoteEditor(state) {
     ctx.clearRect(0, 0, w, h);
     vp.drawGrid(ctx);
     hits = [];
+    if (view === "scroll") return drawScroll();
     const st = style();
     const o = vp.origin(),
       z = vp.zoom;
@@ -412,7 +428,7 @@ export function mountNoteEditor(state) {
         hOff = gOff("holdNote");
       for (let l = 0; l < 4; l++) {
         ctx.save();
-        ctx.translate(laneX(l) + hOff[0], hOff[1]);
+        ctx.translate(laneX(l), 0); // ホールドの offsets は drawHold が足す
         const ok = st.drawHold(ctx, l, 0, ROW.note + 20, ROW.note + HOLD_LEN, 1, 1);
         ctx.restore();
         if (ok) {
@@ -472,6 +488,154 @@ export function mountNoteEditor(state) {
     ctx.restore();
     $("nteReadout").textContent = `${doc.name ?? docId}　${selGroup}${selEntry ? " / " + selEntry : ""}`;
   }
+  // ---- スクロールテストの描画 ----
+  /** 時刻 T（ms）の前後に流れるノーツ。8 分音符ごとに 1 つ、たまにホールド */
+  const PATTERN = [0, 2, 1, 3, 2, 0, 3, 1];
+  function notesBetween(a, b, step) {
+    const out = [];
+    for (let i = Math.max(0, Math.floor(a / step)); i * step <= b; i++) {
+      out.push({ i, t: i * step, lane: PATTERN[i % 8], len: i % 10 === 3 ? step * 2 : 0 });
+    }
+    return out;
+  }
+  function drawScroll() {
+    const st = style(),
+      z = vp.zoom,
+      o = vp.origin();
+    const T = songMs(),
+      step = 60000 / sc.bpm / 2,
+      k = PX_PER_MS * sc.speed; // 1ms あたりに進む px
+    const sy = sc.down ? 282 : -282; // 受け皿の中心（V-Slice の strumline y から、アイコン 1 つ分を足した位置）
+    const dir = sc.down ? -1 : 1; // 上スクロールは下から上へ（y が減る）…ノーツの y = sy + dir * (t - T) * k
+    ctx.save();
+    ctx.translate(o.x, o.y);
+    ctx.scale(z, z);
+    ctx.fillStyle = "rgba(0,0,0,.35)";
+    ctx.fillRect(-640, -360, 1280, 720);
+    ctx.strokeStyle = "rgba(150,170,200,.5)";
+    ctx.lineWidth = 1.5 / z;
+    ctx.strokeRect(-640, -360, 1280, 720);
+    ctx.beginPath();
+    ctx.rect(-640, -360, 1280, 720);
+    ctx.clip();
+    // 判定の幅（大きい順に重ねる）
+    if (sc.windows) {
+      const x0 = laneX(0) - 62,
+        x1 = laneX(3) + 62;
+      ctx.font = `${12 / z}px system-ui`;
+      for (const [name, ms, col] of [...sc.win].reverse()) {
+        const d = ms * k;
+        ctx.fillStyle = col + "22";
+        ctx.fillRect(x0, sy - d, x1 - x0, d * 2);
+        ctx.strokeStyle = col + "99";
+        ctx.lineWidth = 1 / z;
+        ctx.strokeRect(x0, sy - d, x1 - x0, d * 2);
+        ctx.fillStyle = col;
+        ctx.textAlign = "left";
+        ctx.fillText(`${name} ±${ms}ms（±${Math.round(d)}px）`, x1 + 8, sy - d + 12 / z);
+      }
+    }
+    // 判定線（受け皿の中心）
+    ctx.strokeStyle = "rgba(255,255,255,.7)";
+    ctx.setLineDash([6 / z, 4 / z]);
+    ctx.lineWidth = 1 / z;
+    ctx.beginPath();
+    ctx.moveTo(-640, sy);
+    ctx.lineTo(640, sy);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (!st) {
+      ctx.restore();
+      return;
+    }
+    const gOff = (g) => st.asset(g)?.offsets ?? [0, 0];
+    const sa = st.atlasOf("noteStrumline"),
+      sOff = gOff("noteStrumline"),
+      sSc = st.getStrumlineScale();
+    const na = st.atlasOf("note"),
+      nOff = gOff("note"),
+      nSc = st.getNoteScale(),
+      hOff = gOff("holdNote");
+    const horizon = 740 / k; // 画面の端までに相当する時間
+    const list = notesBetween(T - 700, T + horizon + 100, step);
+    // ホールド（胴体は頭より先に描く）
+    for (const n of list) {
+      if (!n.len || T > n.t + n.len) continue;
+      const headY = sy + dir * Math.max(0, n.t - T) * k,
+        tailY = sy + dir * (n.t + n.len - T) * k;
+      ctx.save();
+      ctx.translate(laneX(n.lane), 0); // ホールドの offsets は drawHold が足す
+      const ok = st.drawHold(ctx, n.lane, 0, headY, tailY, 1, 1);
+      ctx.restore();
+      if (ok) {
+        const hw = (st.atlasOf("holdNote")?.img.width / 8) * st.fetchHoldNoteScale();
+        hits.push({ x0: laneX(n.lane) + hOff[0] - hw / 2, y0: Math.min(headY, tailY), x1: laneX(n.lane) + hOff[0] + hw / 2, y1: Math.max(headY, tailY), group: "holdNote", key: "", lane: n.lane });
+      }
+    }
+    // 受け皿: 直近に打ったノーツ・押さえているホールドで Confirm にする
+    for (let l = 0; l < 4; l++) {
+      let mode = "Static",
+        age = 0;
+      for (const n of list) {
+        if (n.lane !== l || n.t > T) continue;
+        if (n.len && T <= n.t + n.len) {
+          mode = "ConfirmHold";
+          age = (T - n.t) / 1000;
+        } else if (T - (n.t + n.len) < 180 && mode === "Static") {
+          mode = "Confirm";
+          age = (T - (n.t + n.len)) / 1000;
+        }
+      }
+      const sd = st.strumData(DIRS[l], mode) ?? st.strumData(DIRS[l], "Confirm");
+      const tag = { group: "noteStrumline", key: DIRS[l] + mode, lane: l };
+      const fr = sa && sd ? frameAt(st.framesOf("noteStrumline", sd.prefix), mode === "Static" ? 0 : age, mode === "ConfirmHold") : null;
+      if (!fr) missBox(laneX(l), sy, DIRS[l] + mode, tag);
+      else {
+        const eo = sd.offsets ?? [0, 0];
+        blit(sa, fr, laneX(l) + sOff[0] + eo[0], sy + sOff[1] + eo[1], sSc, sa.def?.isPixel, tag);
+      }
+    }
+    // ノーツの頭（打つ前のものだけ。判定の時刻で消える）
+    for (const n of list) {
+      if (n.t < T) continue;
+      const y = sy + dir * (n.t - T) * k;
+      const nd = st.noteData(DIRS[n.lane]),
+        tag = { group: "note", key: DIRS[n.lane], lane: n.lane };
+      const fr = na && nd ? st.framesOf("note", nd.prefix)?.[0] : null;
+      if (!fr) continue;
+      const eo = nd.offsets ?? [0, 0];
+      blit(na, fr, laneX(n.lane) + nOff[0] + eo[0], y + nOff[1] + eo[1], nSc, na.def?.isPixel, tag);
+    }
+    // スプラッシュ・ホールドカバー
+    const sp = st.asset("noteSplash"),
+      hc = st.asset("holdNoteCover");
+    for (const n of list) {
+      const hitT = n.t;
+      if (sp && sp.data?.enabled !== false && !n.len && T >= hitT && T - hitT < 600) {
+        const l = sp.data?.[DIRS[n.lane] + "Splashes"] ?? [];
+        const e = l[n.i % Math.max(1, l.length)];
+        const spa = st.atlasOf("noteSplash");
+        const fr = spa && e ? frameAt(st.framesOf("noteSplash", e.prefix), (T - hitT) / 1000, false) : null;
+        const frames = e ? st.framesOf("noteSplash", e.prefix) : [];
+        if (fr && (T - hitT) / 1000 * FPS < frames.length) {
+          ctx.save();
+          ctx.globalAlpha = sp.alpha ?? 1;
+          blit(spa, fr, laneX(n.lane) + (sp.offsets?.[0] ?? 0) + (e.offsets?.[0] ?? 0), sy + (sp.offsets?.[1] ?? 0) + (e.offsets?.[1] ?? 0), sp.scale ?? 1, spa.def?.isPixel, { group: "noteSplash", key: `${DIRS[n.lane]}#0`, lane: n.lane });
+          ctx.restore();
+        }
+      }
+      if (hc && hc.data?.enabled !== false && n.len && T >= hitT && T <= hitT + n.len + 300) {
+        const lane = hc.data?.[DIRS[n.lane]];
+        const part = T < hitT + 150 ? "start" : T <= hitT + n.len ? "hold" : "end";
+        const pt = (part === "start" ? T - hitT : part === "hold" ? T - hitT - 150 : T - hitT - n.len) / 1000;
+        const a = lane?.assetPath ? set.atlas(lane.assetPath, set.origins.get(docId) ?? "") : null;
+        const fr = a?.sprites && lane?.[part] ? frameAt(framesByPrefix(a.sprites, lane[part].prefix), pt, part === "hold") : null;
+        if (fr) blit({ img: a.img }, fr, laneX(n.lane) + (hc.offsets?.[0] ?? 0) + (lane[part].offsets?.[0] ?? 0), sy + (hc.offsets?.[1] ?? 0) + (lane[part].offsets?.[1] ?? 0), hc.scale ?? 1, false, { group: "holdNoteCover", key: `${DIRS[n.lane]}.${part}`, lane: n.lane });
+      }
+    }
+    ctx.restore();
+    $("nteReadout").textContent = `${doc.name ?? docId}　速度 ${sc.speed}（${(k * 1000).toFixed(0)}px/秒）　${sc.down ? "ダウン" : "アップ"}スクロール　${selGroup}${selEntry ? " / " + selEntry : ""}`;
+  }
   let drawQueued = false;
   function requestDraw() {
     if (drawQueued) return;
@@ -497,6 +661,11 @@ export function mountNoteEditor(state) {
   const tick = (now) => {
     raf = requestAnimationFrame(tick);
     if (!state.active || !$("ntePlay").checked) return;
+    // 再生中は 24fps（スクロールテストはなめらかさが見たいので、画面更新ごと）
+    if (view === "scroll") {
+      draw();
+      return;
+    }
     if (now - lastTick >= 1000 / FPS - 2) {
       lastTick = now;
       draw();
@@ -506,6 +675,13 @@ export function mountNoteEditor(state) {
   state.addDisposer(() => cancelAnimationFrame(raf));
   $("ntePlay").onchange = () => {
     t0 = performance.now();
+    if ($("ntePlay").checked) {
+      clockStart = performance.now();
+      clockPlaying = true;
+    } else {
+      clockBase = songMs();
+      clockPlaying = false;
+    }
     draw();
   };
   $("nteGuide").onchange = () => draw();
@@ -541,6 +717,7 @@ export function mountNoteEditor(state) {
     target.offsets = [q(drag.orig[0] + dx), q(drag.orig[1] + dy)];
     drag.moved = true;
     syncOffsetFields();
+    syncAlign?.();
     requestDraw();
   });
   const endDrag = (e) => {
@@ -610,6 +787,7 @@ export function mountNoteEditor(state) {
     $("nteFrameInfo").textContent = frameInfo();
     syncOffsetFields();
     renderSpecial();
+    syncAlign?.();
   }
   function renderSpecial() {
     const box = $("nteSpecial");
@@ -708,6 +886,41 @@ export function mountNoteEditor(state) {
   onChange("nteEntryOffX", entryOff);
   onChange("nteEntryOffY", entryOff);
 
+  // ---- 判定・スクロールパネル ----
+  const readScroll = () => {
+    sc.speed = Math.min(12, Math.max(0.1, num($("nteSpeed").value, 2)));
+    sc.bpm = Math.min(300, Math.max(30, num($("nteBpm").value, 120)));
+    sc.down = $("nteDown").checked;
+    sc.windows = $("nteWindows").checked;
+    sc.win = [["Sick", "nteWSick", "#4cd964"], ["Good", "nteWGood", "#5ac8fa"], ["Bad", "nteWBad", "#ffcc00"], ["Shit", "nteWShit", "#ff6b6b"]].map(([n, id, c]) => [n, Math.max(1, num($(id).value, 1)), c]);
+    $("nteSpeedRange").value = sc.speed;
+    requestDraw();
+  };
+  for (const id of ["nteSpeed", "nteBpm", "nteDown", "nteWindows", "nteWSick", "nteWGood", "nteWBad", "nteWShit"]) $(id).oninput = $(id).onchange = readScroll;
+  $("nteSpeedRange").oninput = () => {
+    $("nteSpeed").value = $("nteSpeedRange").value;
+    readScroll();
+  };
+  $("nteView").onchange = () => {
+    view = $("nteView").value;
+    fit();
+    draw();
+  };
+  /** ノーツと受け皿の絵のずれ（offsets の差）。判定の瞬間の見た目の重なりの目安 */
+  function alignInfo() {
+    const st = style();
+    if (!st) return "";
+    const sg = st.asset("noteStrumline")?.offsets ?? [0, 0],
+      ng = st.asset("note")?.offsets ?? [0, 0];
+    const rows = DIRS.map((d) => {
+      const se = st.strumData(d, "Confirm")?.offsets ?? [0, 0],
+        ne = st.noteData(d)?.offsets ?? [0, 0];
+      return `${d}: ノーツ − 受け皿 = (${ng[0] + ne[0] - sg[0] - se[0]}, ${ng[1] + ne[1] - sg[1] - se[1]}) px`;
+    });
+    return "判定の瞬間の、ノーツと受け皿（Confirm）の位置のずれ（0,0 なら中心が揃う）\n" + rows.join("\n");
+  }
+  $("nteAlign").style.whiteSpace = "pre-line";
+  const syncAlign = () => ($("nteAlign").textContent = alignInfo());
   rebuild();
   syncPanels();
   loadedOnce = true;

@@ -240,3 +240,13 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 - `framesByPrefix`: 短い prefix（"purple"）が "purple hold piece0000" まで前方一致する問題を避け、「prefix の直後が数字だけ」のフレームを優先する。
 - offsets はゲーム上のピクセル。プレイテストの描画にも offsets を反映（以前は無視していた）。
 - 書き出し: 元の mod のファイルは、編集した mod のフォルダの分だけ zip に含める。出力先のフォルダ名は元の mod と同じ大文字小文字に戻す。
+- v3.16: Note Editor に「判定・スクロール」。表示を「スクロールテスト」にすると、8 分音符のノーツ（たまにホールド）が `y = 受け皿の y ± (t − T) × 0.45 × 速度` で流れ、判定の時刻（受け皿の中心）で消えて Confirm / スプラッシュ / ホールドカバーが出る。アップ/ダウンスクロール・速度・BPM・判定幅（Sick/Good/Bad/Shit。初期値 45/90/135/160ms）を変えられる。ノーツと受け皿の offsets の差も表示。
+- v3.17: 標準 noteStyle「funkin」を内蔵（`runtime/builtinFunkin.js`。自動生成の JSON + PNG(base64) + XML）。`NoteStyleSet.loadBuiltin("funkin")`。fallback に funkin があるのに mod に funkin.json が無いときに使う（mod 側にあればそちらを優先）。書き出す mod の zip には含めない。ホールドの offsets は `drawHold` が足す（プレイテストにも反映）。`parseSparrowXml` は BOM 付き XML も読める。
+
+## v3.18 プレイテストのステージ・キャラクター（runtime/stageScene.js）
+- `StageScene`: Workspace（読み込んだ mod）からステージ JSON / character JSON / アトラスを探して描画。props（単色・画像・Sparrow/Packer/AnimateAtlas）と BF/DAD/GF を zIndex 順に、1280×720 枠・カメラ（scroll/zoom/視差）で描く。
+- 拍で idle/danceLeft/danceRight、ノートで singX / singXmiss、FocusCamera / ZoomCamera、4拍ごとの軽いズーム。
+- mod に無いもの（ベースゲームのステージ・キャラ・画像）は点線の仮枠 + 警告（結果画面に表示）。入れ物は必ず存在するのでスクリプトが落ちない。
+- `Runtime.attachScene(scene)`: `ps.getBoyfriend/getDad/getGirlfriend`, `ps.currentStage`, `currentCameraZoom`, `cameraFollowPoint` を代役として公開。
+- 未確認の近似: カメラ追従 lerp 0.04、4拍ズーム 0.015、sing→idle の戻り時刻、反転キャラのオフセット符号。
+- オプション「ステージとキャラクターを表示」（chtPlayScene）。
