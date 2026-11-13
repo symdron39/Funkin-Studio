@@ -61,9 +61,9 @@ export const template = `
             <p class="tiny">SongEvent を継承したクラスから、イベントの ID・名前・項目を読み取って、イベントの種類に追加します（スクリプトは実行しません）。読み込んだものはこのブラウザに記憶されます。</p>
             <h3>個別に保存（いまのバリエーション）</h3>
             <div class="row">
-              <button id="chtSaveChart" type="button">chart.json</button>
+              <button id="chtSaveChart" type="button">chart → mod zip</button>
               <button id="chtSaveMeta" type="button">metadata.json</button>
-              <button id="chtSaveAllJson" type="button" title="全バリエーションの JSON を .zip に（音声なし）">全JSON zip</button>
+              <button id="chtSaveAllJson" type="button" title="全バリエーションの JSON と音声を、mod の zip にまとめて書き出す">mod zip（全部）</button>
             </div>
             <div class="row"><label><input id="chtCompact" type="checkbox" /> 1行の軽量JSONで保存</label></div>
             <label>songId（ファイル名に使う）<input id="chtSongId" type="text" placeholder="例: bopeebo" /></label>

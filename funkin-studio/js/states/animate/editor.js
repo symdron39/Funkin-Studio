@@ -1,3 +1,4 @@
+import { queueExport } from "../../services/ModExport.js";
 /* ============================================================
    states/animate/editor.js — Animate Editor（AnimateAtlas）本体のロジック
    ------------------------------------------------------------
@@ -1698,13 +1699,15 @@ export function mountAnimateEditor(state) {
   // 15. 書き出し（ダウンロード）
   // ============================================================
   // downloadBlob(blob, name): Blob を指定のファイル名でダウンロードさせる
+  // mod の zip ごと書き出す（services/ModExport.js）。置き場所は読み込んだ Animation.json と同じフォルダ。
+  // ファイル名は「-edited」などを外して元の名前に戻す（zip を元の mod に重ねるだけで置き換わるように）
   function downloadBlob(blob, name) {
-    const u = URL.createObjectURL(blob),
-      a = document.createElement("a");
-    a.href = u;
-    a.download = name;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(u), 1500);
+    const src = $("animfile")?.files?.[0] ?? $("mapfile")?.files?.[0] ?? $("png")?.files?.[0];
+    const dir = (src?.__path ? src.__path.split("/").slice(0, -1).join("/") : "images/animate-atlas") || "images";
+    let fixed = name.replace(/-legacy/, "").replace(/-edited|-restored/, "");
+    if (/^spritemap\.json$/i.test(fixed)) fixed = ($("mapfile")?.files?.[0]?.name) || "spritemap1.json";
+    if (/^spritemap1?\.png$/i.test(fixed) && $("png")?.files?.[0]?.name) fixed = $("png").files[0].name;
+    queueExport(state.app, { path: `${dir}/${fixed}`, data: blob }, { origin: src?.__origin, say: status });
   }
   // Animation JSON を Animation-edited.json として書き出す（書き出す直前に、最後のキーの延長補正をかける）
   $("export").onclick = () => {

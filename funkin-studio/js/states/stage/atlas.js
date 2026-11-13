@@ -216,7 +216,8 @@ class AnimateFrame {
     for (const { sp, m } of this.list) {
       const M = mul(base, m);
       ctx.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
-      ctx.drawImage(sp.image, sp.x, sp.y, sp.w, sp.h, 0, 0, sp.w, sp.h);
+      const k = sp.image.k || 1;
+      ctx.drawImage(sp.image, sp.x * k, sp.y * k, sp.w * k, sp.h * k, 0, 0, sp.w, sp.h);
     }
     ctx.setTransform(t);
   }

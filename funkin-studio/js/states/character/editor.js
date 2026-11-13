@@ -31,6 +31,7 @@
    目次: 1.状態変数 2.アトラスの登録 3.基本ヘルパーと Undo/Redo 4.再生するフレーム列の決め方
          5.描画 6.読み込みとアニメの追加・改名・削除 7.再生操作 8.オフセットの編集と書き出し 9.ビューと Hud の操作
    ============================================================ */
+import { exportMod } from "../../services/ModExport.js";
 import { Viewport, isTextEntry } from "../../ui/Viewport.js";
 import { HudPanels } from "../../ui/HudPanels.js";
 import { parsePackerText } from "../stage/sparrowAtlas.js";
@@ -255,7 +256,74 @@ export function mountCharacterEditor(state) {
     $("offCharName").value = doc.name ?? "";
     $("offGeneratedBy").value = GENERATED_BY;
     $("offFlipX").checked = !!doc.flipX;
+    syncProps();
   }
+  // ---- キャラクター設定（V-Slice の CharacterData の項目）----
+  // 既定値（V-Slice 側の既定）。既定のままで、JSON に元から無い項目は書き出さない
+  const DEF = { scale: 1, singTime: 8, danceEvery: 1, isPixel: false, startingAnimation: "idle", cameraOffsets: [0, 0], hi: { scale: 1, isPixel: false, flipX: false, offsets: [0, 0] }, death: { cameraOffsets: [0, 0], cameraZoom: 1, preTransitionDelay: 0 } };
+  const num = (id, fb) => {
+    const v = $(id).value;
+    return v === "" || !Number.isFinite(Number(v)) ? fb : Number(v);
+  };
+  function syncProps() {
+    if (!doc) return;
+    const hi = doc.healthIcon ?? {},
+      de = doc.death ?? {};
+    $("offScale").value = doc.scale ?? DEF.scale;
+    $("offSingTime").value = doc.singTime ?? DEF.singTime;
+    $("offDanceEvery").value = doc.danceEvery ?? DEF.danceEvery;
+    $("offIsPixel").checked = !!doc.isPixel;
+    const names = (doc.animations ?? []).map((a) => a.name);
+    const sa = doc.startingAnimation ?? DEF.startingAnimation;
+    $("offStartAnim").textContent = "";
+    for (const n of new Set([...names, sa])) $("offStartAnim").append(new Option(n, n));
+    $("offStartAnim").value = sa;
+    $("offCamX").value = doc.cameraOffsets?.[0] ?? 0;
+    $("offCamY").value = doc.cameraOffsets?.[1] ?? 0;
+    $("offHIId").value = hi.id ?? "";
+    $("offHIScale").value = hi.scale ?? DEF.hi.scale;
+    $("offHIPixel").checked = !!hi.isPixel;
+    $("offHIFlip").checked = !!hi.flipX;
+    $("offHIOffX").value = hi.offsets?.[0] ?? 0;
+    $("offHIOffY").value = hi.offsets?.[1] ?? 0;
+    $("offDeathCamX").value = de.cameraOffsets?.[0] ?? 0;
+    $("offDeathCamY").value = de.cameraOffsets?.[1] ?? 0;
+    $("offDeathZoom").value = de.cameraZoom ?? DEF.death.cameraZoom;
+    $("offDeathDelay").value = de.preTransitionDelay ?? DEF.death.preTransitionDelay;
+  }
+  /** obj[key] = val。ただし既定値と同じで、もともと無かった項目なら書かない（JSON を汚さない） */
+  function setOpt(obj, key, val, def) {
+    const same = JSON.stringify(val) === JSON.stringify(def);
+    if (same && !(key in obj)) return;
+    obj[key] = val;
+  }
+  $("offPropsApply").onclick = () => {
+    if (!doc) return say("character.json を読み込んでください");
+    snapshot();
+    const sc = num("offScale", 1);
+    if (!(sc > 0)) return say("scale は 0 より大きい値にしてください");
+    doc.scale = sc;
+    setOpt(doc, "singTime", num("offSingTime", DEF.singTime), DEF.singTime);
+    setOpt(doc, "danceEvery", num("offDanceEvery", DEF.danceEvery), DEF.danceEvery);
+    setOpt(doc, "isPixel", $("offIsPixel").checked, DEF.isPixel);
+    setOpt(doc, "startingAnimation", $("offStartAnim").value || "idle", DEF.startingAnimation);
+    setOpt(doc, "cameraOffsets", [num("offCamX", 0), num("offCamY", 0)], DEF.cameraOffsets);
+    const hid = $("offHIId").value.trim();
+    const hi = doc.healthIcon ?? {};
+    if (hid) hi.id = hid;
+    setOpt(hi, "scale", num("offHIScale", 1), DEF.hi.scale);
+    setOpt(hi, "isPixel", $("offHIPixel").checked, DEF.hi.isPixel);
+    setOpt(hi, "flipX", $("offHIFlip").checked, DEF.hi.flipX);
+    setOpt(hi, "offsets", [num("offHIOffX", 0), num("offHIOffY", 0)], DEF.hi.offsets);
+    if (Object.keys(hi).length) doc.healthIcon = hi;
+    const de = doc.death ?? {};
+    setOpt(de, "cameraOffsets", [num("offDeathCamX", 0), num("offDeathCamY", 0)], DEF.death.cameraOffsets);
+    setOpt(de, "cameraZoom", num("offDeathZoom", 1), DEF.death.cameraZoom);
+    setOpt(de, "preTransitionDelay", num("offDeathDelay", 0), DEF.death.preTransitionDelay);
+    if (Object.keys(de).length) doc.death = de;
+    draw();
+    say("キャラクター設定を適用しました。JSON保存で書き出せます。");
+  };
   // 変更の直前に呼ぶ: doc を丸ごと複製して履歴に積む（最大60件。Redo 履歴は破棄）
   function snapshot() {
     if (!doc) return;
@@ -752,10 +820,36 @@ export function mountCharacterEditor(state) {
   // ============================================================
   // detectCharacter(): character.json を読み込む。animations 配列を確認 → 状態を全リセット → 必要な assetPath を一覧表示
   //                    （アトラスの PNG などは、このあと各欄から別途登録する）
+  // ホームで読み込んだ mod（workspace）に、assetPath のアトラスがあれば自動で登録する
+  let charOrigin = "",
+    loadedName = "";
+  async function autoRegisterFromWorkspace(paths) {
+    const ws = state.app.workspace;
+    if (!ws?.size) return 0;
+    let n = 0;
+    for (const path of paths) {
+      try {
+        const set = ws.atlasFor(path, charOrigin);
+        if (!set) continue;
+        const data = await parseAssetFiles(await ws.toFile(set.png), await ws.toFile(set.def), set.anim ? await ws.toFile(set.anim) : undefined);
+        atlasRegistry.set(path, data);
+        n++;
+      } catch (e) {
+        say(`自動登録できませんでした: ${path}（${e.message}）`);
+      }
+    }
+    if (n) {
+      updateRegistryUI();
+      refresh();
+    }
+    return n;
+  }
   async function detectCharacter() {
     try {
       const f = $("offCharacter").files[0];
       if (!f) throw Error("character.json を選択してください");
+      charOrigin = f.__origin ?? "";
+      loadedName = f.name;
       const parsed = JSON.parse(await f.text());
       if (!Array.isArray(parsed.animations)) throw Error("animations 配列が見つかりません");
       stopOffPlayback();
@@ -776,8 +870,10 @@ export function mountCharacterEditor(state) {
       refresh();
       resize();
       const paths = requiredPaths(doc);
+      const auto = await autoRegisterFromWorkspace(paths);
       say(
-        `JSON解析完了: ${parsed.animations.length} アニメーション、${paths.length} 種類のassetPath。各欄から対応するファイルを登録してください。`,
+        `JSON解析完了: ${parsed.animations.length} アニメーション、${paths.length} 種類のassetPath。` +
+          (auto ? `読み込み済みの mod から ${auto} 件のアトラスを自動登録しました。` : "各欄から対応するファイルを登録してください。"),
       );
     } catch (e) {
       say("JSON解析エラー: " + e.message);
@@ -1028,13 +1124,9 @@ export function mountCharacterEditor(state) {
     }
     const before = new TextEncoder().encode(JSON.stringify(doc, null, 2)).length;
     const after = new TextEncoder().encode(json).length;
-    const b = new Blob([json], { type: "application/json;charset=utf-8" }),
-      u = URL.createObjectURL(b),
-      a = document.createElement("a");
-    a.href = u;
-    a.download = "character-offset-edited.json";
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(u), 1500);
+    // mod の zip ごと書き出す。キャラ JSON は data/characters/<id>.json（読み込んだ名前があればそれ、なければ name から）
+    const cid = (loadedName || doc.name || "character").toString().replace(/\.json$/i, "").trim().replace(/[^\w\-.]+/g, "_").replace(/^_+|_+$/g, "") || "character";
+    exportMod(state.app, [{ path: `data/characters/${cid}.json`, data: json }], { origin: charOrigin || undefined, say }).catch((e) => say("書き出しエラー: " + e.message));
     say(
       "character.json を保存しました。" +
         (compact

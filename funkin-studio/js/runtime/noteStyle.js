@@ -11,6 +11,15 @@ import { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } from "../stat
 import { infoOfPath, normAsset, scorePath, assetNote, openModZip } from "../services/ModPack.js";
 
 const DIRS = ["left", "down", "up", "right"];
+/**
+ * prefix のフレーム列。"purple" のように短い prefix だと、"purple hold piece0000" のような別の絵まで前方一致してしまう。
+ * 「prefix の直後が数字だけ」のフレームがあれば、それだけを使う（ノーツの頭を、ホールドの破片と取り違えない）。
+ */
+export function framesByPrefix(sprites, prefix) {
+  const all = sparrowFrames(sprites, prefix);
+  const strict = all.filter((f) => /^\d*$/.test(f.name.slice(String(prefix).length)));
+  return strict.length ? strict : all;
+}
 const baseName = (p) => String(p).replace(/^.*[:\\/]/, "").replace(/\.(png|xml|json)$/i, "");
 
 export class NoteStyle {
@@ -86,7 +95,7 @@ export class NoteStyle {
     const a = this.atlasOf(key);
     if (!a || !a.sprites) return null;
     const ck = key + "|" + prefix;
-    if (!this._frames.has(ck)) this._frames.set(ck, sparrowFrames(a.sprites, prefix));
+    if (!this._frames.has(ck)) this._frames.set(ck, framesByPrefix(a.sprites, prefix));
     return this._frames.get(ck);
   }
   noteData(dir) {
@@ -127,8 +136,9 @@ export class NoteStyle {
   _blit(ctx, a, fr, cx, cy, sc, alpha, flipX, flipY, offs, k) {
     const fw = fr.frameWidth || fr.width,
       fh = fr.frameHeight || fr.height;
-    const left = cx - (fw * sc) / 2 + -(fr.frameX || 0) * sc;
-    const top = cy - (fh * sc) / 2 + (-(fr.frameY || 0) * sc);
+    // offsets はグループ全体の「ずらし」（ゲーム上のピクセル）。レーン幅に合わせた縮尺 k を掛けて足す
+    const left = cx - (fw * sc) / 2 + -(fr.frameX || 0) * sc + (offs?.[0] || 0) * k;
+    const top = cy - (fh * sc) / 2 + (-(fr.frameY || 0) * sc) + (offs?.[1] || 0) * k;
     ctx.save();
     ctx.globalAlpha *= alpha;
     if (a.def?.isPixel) ctx.imageSmoothingEnabled = false;

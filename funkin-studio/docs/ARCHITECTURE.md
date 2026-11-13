@@ -227,3 +227,16 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 - 次版: プレイテストへステージ・キャラ追加（同じ pool を使う）。
 - v3.13.1: `assets/shared/images/…` や `preload/images/…` の shared / preload は「ラッパー」として飛ばし、images/ をルートにする（origin は shared の手前まで）。assetPath 末尾の `/*` はフォルダ指定として無視。
 - v3.13.2: `resolveAsset(pool, kind, assetPath, {origin})` を追加。kind = image/xml/icon/sound/music/song/character/stage/notestyle/script。V-Slice と同じ指定（images/・sounds/・music/・songs/・data/characters/ …以降）で、shared/ や mod 直下のどちらにあっても、同じ mod を優先して 1 つ選ぶ。次版（プレイテストのステージ/キャラ/音）はこれを使う。
+
+## v3.14: Workspace / ModExport
+- `services/Workspace.js`（`app.workspace`）: ホームで読み込んだ mod（zip / フォルダ）を全エディタで共有。`atlasFor`・`resolve`・`toFile`。増えると `workspace:changed` を流す。
+- `ui/ModPicker.js` + `ui/modLists.js`: Sparrow / Animate / Character / Chart に「読み込み済みの mod から選ぶ」欄。既存の `<input type=file>` に流し込んで、いつもの読み込み処理を動かす。Character は assetPath のアトラスを自動登録。Stage は workspace を pool に取り込む。
+- `services/ModExport.js`: 書き出しは mod の zip ごと（`exportMod` / `queueExport`）。編集したファイルを mod 内の正しい場所（data/stages・data/characters・data/songs・images …）に置き、元の mod 全体も含める（ホームの設定で切替）。
+- 大きな PNG（辺 > 上限）は縮小してデコード（`loadImage` の `k`）。Stage の「大きな画像の縮小」で上限を変更。描画要求は `requestDraw` で 1 フレームに 1 回へ間引く。
+- Character Editor: scale / singTime / danceEvery / isPixel / startingAnimation / cameraOffsets / healthIcon / death を編集可能。既定値のままで元から無い項目は JSON に書かない。
+
+## v3.15: Note Editor
+- `states/note/`（`nte*`）: noteStyle（data/notestyles/*.json）の編集。プレビューは runtime/noteStyle.js の NoteStyle を使い、1 レーン = 112px の実寸で 受け皿(Static/Press/Confirm)・ノーツ・ホールド・スプラッシュ・ホールドカバー を表示。絵のドラッグで offsets（グループ全体 / アニメ個別）が動く。fallback の連鎖（funkin など）も workspace から探して読む。
+- `framesByPrefix`: 短い prefix（"purple"）が "purple hold piece0000" まで前方一致する問題を避け、「prefix の直後が数字だけ」のフレームを優先する。
+- offsets はゲーム上のピクセル。プレイテストの描画にも offsets を反映（以前は無視していた）。
+- 書き出し: 元の mod のファイルは、編集した mod のフォルダの分だけ zip に含める。出力先のフォルダ名は元の mod と同じ大文字小文字に戻す。

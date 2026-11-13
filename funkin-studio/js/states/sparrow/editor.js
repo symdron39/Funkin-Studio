@@ -1,3 +1,4 @@
+import { queueExport } from "../../services/ModExport.js";
 /* ============================================================
    states/sparrow/editor.js — Sparrow Editor（Sparrow形式のアトラス: XML + PNG の編集）のロジック
    ------------------------------------------------------------
@@ -502,12 +503,13 @@ export function mountSparrowEditor(state) {
   // 9. 書き出しと結合
   // ============================================================
   // save(blob, name): Blob を指定のファイル名でダウンロードさせる
+  // mod の zip ごと書き出す（services/ModExport.js）。置き場所は、読み込んだ PNG と同じフォルダ（images/…）
   function save(blob, name) {
-    let a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = name;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    const src = $("spPng").files?.[0];
+    const dir = (src?.__path ?? "images/" + (src?.name ?? "atlas.png")).split("/").slice(0, -1).join("/") || "images";
+    const base = (src?.name ?? "spritesheet.png").replace(/\.[^.]+$/, "");
+    const fixed = /\.xml$/i.test(name) ? base + ".xml" : name; // 読み込んだ PNG と同じ名前で置き換えられるように
+    queueExport(state.app, { path: `${dir}/${fixed}`, data: blob }, { origin: src?.__origin, say: alertStatus });
   }
   // XML を spritesheet.xml として書き出す（読み込み時に保持した extra 属性も戻す）
   $("spExport").onclick = () => {

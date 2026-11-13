@@ -406,3 +406,12 @@ body {
 [data-state][hidden] {
   display: none !important;
 }
+
+/* ---- ホームの mod 読み込み欄 / 各エディタの「読み込み済みから選ぶ」 ---- */
+.modLoader{margin-top:18px;padding:12px;display:grid;gap:8px;text-align:left}
+.modLoader .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.fileBtn{display:inline-block;padding:6px 12px;border:1px solid var(--line,#555);border-radius:6px;cursor:pointer}
+.modPicker{margin:6px 0;padding:6px 8px;border:1px dashed var(--line,#666);border-radius:6px}
+.modPicker summary{cursor:pointer;font-weight:bold}
+.modPicker .row{display:flex;gap:8px;margin-top:6px}
+.modPicker select{flex:1;min-width:0}

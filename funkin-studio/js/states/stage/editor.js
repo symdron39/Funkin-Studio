@@ -18,10 +18,11 @@
    目次: 1.状態 2.画像アセット 3.履歴 4.図形の計算 5.描画 6.選択とドラッグ 7.レイヤー一覧 8.プロパティ欄
          9.ステージ全体・ファイル 10.ビューとキーボード
    ============================================================ */
+import { exportMod } from "../../services/ModExport.js";
 import { Viewport, isTextEntry } from "../../ui/Viewport.js";
 import { HudPanels } from "../../ui/HudPanels.js";
 import { defaultStage, normalizeStage, newProp, newRect, serializeStage, clone, round3, CHAR_IDS, CHAR_LABEL, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas } from "./stageData.js";
-import { loadImage, parseSparrowXml, parsePackerText } from "./sparrowAtlas.js";
+import { loadImage, parseSparrowXml, parsePackerText, getImageCap, setImageCap } from "./sparrowAtlas.js";
 import { normAsset, infoOf, infoOfDir, setAssetNoteSink, openModZip, summarize } from "../../services/ModPack.js";
 import { SpriteAtlas, animateGroups, buildAnimateAtlas, isSpritemapPng, matchFile, relPath, findAnimateAtlas } from "./atlas.js";
 import { StageCharacter } from "./stageCharacter.js";
@@ -42,7 +43,7 @@ export function mountStageEditor(state) {
       originY: 0.5,
       onChange: () => {
         $("stgZoom").value = Number(vp.zoom.toFixed(2));
-        draw();
+        requestDraw();
       },
     }),
     panels = new HudPanels(state.root, {
@@ -100,6 +101,7 @@ export function mountStageEditor(state) {
   // → mod のフォルダ全体を一度だけ選べば、json とアセットが別のフォルダにあっても、毎回ファイルを動かさずに済む。
   const pool = [];
   const poolKeys = new Set();
+  let stageFileId = ""; // 開いたステージ JSON の元のファイル名（拡張子なし）。保存時に同じ名前で置き換えるため
   let stageOrigin; // いま開いているステージ JSON が属する mod（同じ mod のアセットを優先して探す）
   setAssetNoteSink((m) => say("⚠ " + m)); // 同名ファイルがあって決められないときの注意
   state.addDisposer(() => setAssetNoteSink(null));
@@ -112,8 +114,23 @@ export function mountStageEditor(state) {
       pool.push(f);
       n++;
     }
+    if (n) state.app.workspace.add(files); // 他のエディタとも共有する
     return n;
   }
+  // ホームで読み込んだ mod（workspace）が増えたら、この pool にも入れて結び付け直す
+  async function syncWorkspace() {
+    const n = addPool(state.app.workspace.files);
+    if (n) {
+      await afterPoolChanged();
+      renderAssets?.();
+    }
+  }
+  state.addDisposer(state.app.events.on("workspace:changed", syncWorkspace));
+  $("stgImgCap").value = String(getImageCap());
+  $("stgImgCap").onchange = (e) => {
+    setImageCap(e.target.value);
+    say("画像の縮小設定を変えました。すでに読み込んだ画像は、読み込み直すと反映されます。");
+  };
   async function registerImages(files) {
     const list = [...files];
     addPool(list);
@@ -170,8 +187,8 @@ export function mountStageEditor(state) {
     if (c) return c;
     const img = entry.image;
     c = document.createElement("canvas");
-    c.width = img.naturalWidth;
-    c.height = img.naturalHeight;
+    c.width = img.width; // 縮小デコードされた画像は、その大きさで（元の大きさだと巨大なキャンバスになる）
+    c.height = img.height;
     const g = c.getContext("2d");
     g.drawImage(img, 0, 0);
     g.globalCompositeOperation = "multiply";
@@ -459,6 +476,7 @@ export function mountStageEditor(state) {
     try {
       const next = normalizeStage(JSON.parse((await it.file.text()).replace(/^\uFEFF/, "")));
       stageOrigin = it.origin;
+      stageFileId = it.file.name.replace(/\.json$/i, "");
       loadDoc(next, `「${next.name}」を読み込みました（prop ${next.props.length} 個）。画像は mod パックから探します…`);
       const n = await linkFromPool();
       say(`「${next.name}」を読み込み、prop の画像 ${n} 件を mod パックから結び付けました。`);
@@ -711,6 +729,17 @@ export function mountStageEditor(state) {
     });
   }
 
+  // pointermove / wheel は 1 フレームに何回も来る。そのたびに描くと Low-end では追いつかないので、
+  // 「描いてほしい」という印だけ付けて、次の画面更新の直前に 1 回だけ描く
+  let drawQueued = false;
+  function requestDraw() {
+    if (drawQueued) return;
+    drawQueued = true;
+    requestAnimationFrame(() => {
+      drawQueued = false;
+      draw();
+    });
+  }
   function draw() {
     const w = canvas.clientWidth,
       h = canvas.clientHeight;
@@ -865,7 +894,7 @@ export function mountStageEditor(state) {
     so.ref.position = [q(drag.orig[0] + dx), q(drag.orig[1] + dy)];
     drag.moved = true;
     syncPositionFields();
-    draw();
+    requestDraw();
   });
   const endDrag = (e) => {
     if (!drag || drag.id !== e.pointerId) return;
@@ -1352,6 +1381,7 @@ export function mountStageEditor(state) {
   $("stgNew").onclick = () => {
     if (!state.app.unsaved.confirmReplace()) return;
     loadDoc(defaultStage(), "新しいステージを作りました。");
+    stageFileId = "";
   };
   $("stgFile").onchange = async (e) => {
     const f = e.target.files[0];
@@ -1361,6 +1391,8 @@ export function mountStageEditor(state) {
     try {
       const next = normalizeStage(JSON.parse((await f.text()).replace(/^﻿/, "")));
       loadDoc(next, `「${next.name}」を読み込みました（prop ${next.props.length} 個）。画像は左の「画像アセット」から登録してください。`);
+      stageFileId = f.name.replace(/\.json$/i, "");
+      stageOrigin = f.__origin ?? undefined;
       linkFromPool(); // ファイルの山（mod フォルダ）にあれば自動で結び付ける
     } catch (err) {
       say("読み込みエラー: " + err.message);
@@ -1407,10 +1439,11 @@ export function mountStageEditor(state) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   function save() {
-    const file = (doc.name || "stage").trim().replace(/[^\w\-.]+/g, "_").replace(/^_+|_+$/g, "") || "stage";
-    download(file + ".json", serializeStage(doc, !$("stgCompact").checked));
-    state.app.unsaved?.clean();
-    say(`${file}.json を保存しました。`);
+    const file = stageFileId || (doc.name || "stage").trim().replace(/[^\w\-.]+/g, "_").replace(/^_+|_+$/g, "") || "stage";
+    // mod の zip ごと書き出す（元の mod + これまでに編集したもの）。ステージ JSON は data/stages/ に置く
+    exportMod(state.app, [{ path: `data/stages/${file}.json`, data: serializeStage(doc, !$("stgCompact").checked) }], { origin: stageOrigin, say })
+      .then(() => state.app.unsaved?.clean())
+      .catch((e) => say("書き出しエラー: " + e.message));
   }
   $("stgSave").onclick = save;
 
@@ -1485,6 +1518,7 @@ export function mountStageEditor(state) {
     onShow() {
       resize();
       syncHud();
+      syncWorkspace(); // ホームで mod を読み込んだあとに開いた場合
     },
     onHide() {},
     undo,

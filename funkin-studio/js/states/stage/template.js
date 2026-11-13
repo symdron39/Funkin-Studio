@@ -43,6 +43,7 @@ export const template = `
               <label><input id="stgCompact" type="checkbox" /> 整形して保存（オフ=1行の軽量JSON）</label>
             </div>
             <h3>画像アセット</h3>
+            <label title="辺がこの大きさを超える PNG は、縮小してデコードします（メモリ節約。Low-end 端末向け）。次に読み込む画像から反映されます。">大きな画像の縮小 <select id="stgImgCap"><option value="1024">辺 1024px まで（最軽量）</option><option value="2048">辺 2048px まで（軽量）</option><option value="4096">辺 4096px まで</option><option value="0">縮小しない（高画質・重い）</option></select></label>
             <label>画像・XML・TXT・AnimateAtlas を登録（複数可）<input id="stgImages" type="file" accept="image/*,.xml,.txt,.json,text/xml,text/plain,application/json" multiple /></label>
             <label class="stgDesktopOnly">フォルダごと登録（AnimateAtlas 向け・PC）<input id="stgAtlasDir" type="file" webkitdirectory multiple /></label>
             <label class="stgDesktopOnly" title="mod のフォルダ全体を選ぶと、json とアセットが別のフォルダにあっても、assetPath から自動で探します。中身は必要になったときだけ読むので、大きなフォルダでも軽いです">mod フォルダ全体を登録（PC）<input id="stgPoolDir" type="file" webkitdirectory multiple /></label>

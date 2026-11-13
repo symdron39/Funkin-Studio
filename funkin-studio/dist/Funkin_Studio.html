@@ -415,6 +415,15 @@ body {
   display: none !important;
 }
 
+/* ---- ホームの mod 読み込み欄 / 各エディタの「読み込み済みから選ぶ」 ---- */
+.modLoader{margin-top:18px;padding:12px;display:grid;gap:8px;text-align:left}
+.modLoader .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.fileBtn{display:inline-block;padding:6px 12px;border:1px solid var(--line,#555);border-radius:6px;cursor:pointer}
+.modPicker{margin:6px 0;padding:6px 8px;border:1px dashed var(--line,#666);border-radius:6px}
+.modPicker summary{cursor:pointer;font-weight:bold}
+.modPicker .row{display:flex;gap:8px;margin-top:6px}
+.modPicker select{flex:1;min-width:0}
+
 </style>
     <style>
 /* ===== ./funkin-studio/css/layout.css ===== */
@@ -2991,8 +3000,658 @@ class Hud {
 return { Hud };
 })();
 
-/* ===== funkin-studio/js/states/HomeState.js ===== */
+/* ===== funkin-studio/js/states/chart/zip.js ===== */
 const __m12 = (() => {
+/* ============================================================
+   chart/zip.js — .fnfc（= ZIP）の読み書き（外部ライブラリなし）
+   ------------------------------------------------------------
+   読み: 中央ディレクトリを読み、deflate は DecompressionStream("deflate-raw")、無圧縮はそのまま。
+   書き: 無圧縮（store）で作る。音声（ogg/mp3）は元々圧縮済みなので、サイズはほぼ変わらない。
+   ============================================================ */
+let crcTable = null;
+function crc32(bytes) {
+  if (!crcTable) {
+    crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      crcTable[n] = c >>> 0;
+    }
+  }
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 255] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+async function inflateRaw(data) {
+  const ds = new DecompressionStream("deflate-raw");
+  const stream = new Blob([data]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** @returns Map<名前, Uint8Array> */
+async function readZip(buffer) {
+  const u8 = new Uint8Array(buffer),
+    dv = new DataView(buffer);
+  let eocd = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("ZIP として読めません（終端が見つかりません）");
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const dec = new TextDecoder();
+  const out = new Map();
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true),
+      csize = dv.getUint32(p + 20, true),
+      nlen = dv.getUint16(p + 28, true),
+      xlen = dv.getUint16(p + 30, true),
+      clen = dv.getUint16(p + 32, true),
+      lho = dv.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nlen));
+    p += 46 + nlen + xlen + clen;
+    if (name.endsWith("/")) continue;
+    const lnlen = dv.getUint16(lho + 26, true),
+      lxlen = dv.getUint16(lho + 28, true);
+    const start = lho + 30 + lnlen + lxlen;
+    const raw = u8.subarray(start, start + csize);
+    if (method === 0) out.set(name, raw.slice());
+    else if (method === 8) out.set(name, await inflateRaw(raw));
+    else throw new Error(`未対応の圧縮方式です (${name}: method ${method})`);
+  }
+  return out;
+}
+
+/** @param entries [{ name, data: Uint8Array }] @returns Blob */
+function writeZip(entries) {
+  const enc = new TextEncoder();
+  const parts = [],
+    central = [];
+  let offset = 0;
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  for (const { name, data } of entries) {
+    const nameBytes = enc.encode(name),
+      crc = crc32(data);
+    const head = new DataView(new ArrayBuffer(30));
+    head.setUint32(0, 0x04034b50, true);
+    head.setUint16(4, 20, true);
+    head.setUint16(6, 0x0800, true); // UTF-8 名
+    head.setUint16(10, dosTime, true);
+    head.setUint16(12, dosDate, true);
+    head.setUint32(14, crc, true);
+    head.setUint32(18, data.length, true);
+    head.setUint32(22, data.length, true);
+    head.setUint16(26, nameBytes.length, true);
+    parts.push(head, nameBytes, data);
+    const c = new DataView(new ArrayBuffer(46));
+    c.setUint32(0, 0x02014b50, true);
+    c.setUint16(4, 20, true);
+    c.setUint16(6, 20, true);
+    c.setUint16(8, 0x0800, true);
+    c.setUint16(12, dosTime, true);
+    c.setUint16(14, dosDate, true);
+    c.setUint32(16, crc, true);
+    c.setUint32(20, data.length, true);
+    c.setUint32(24, data.length, true);
+    c.setUint16(28, nameBytes.length, true);
+    c.setUint32(42, offset, true);
+    central.push(c, nameBytes);
+    offset += 30 + nameBytes.length + data.length;
+  }
+  const cdSize = central.reduce((s, x) => s + (x.byteLength ?? x.length), 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, entries.length, true);
+  end.setUint16(10, entries.length, true);
+  end.setUint32(12, cdSize, true);
+  end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end], { type: "application/zip" });
+}
+
+/**
+ * ZIP を「中身を読まずに」開く。中央ディレクトリ（名前と位置の一覧）だけ読み、
+ * 各ファイルは read() を呼んだときにだけ取り出す。数百MBの mod パックでもメモリを食わない。
+ * @param file File | Blob
+ * @returns [{ name, size, read(): Promise<Uint8Array> }]
+ */
+async function openZipLazy(file) {
+  const total = file.size;
+  const tailLen = Math.min(total, 65557);
+  const tail = new DataView(await file.slice(total - tailLen, total).arrayBuffer());
+  let eocd = -1;
+  for (let i = tailLen - 22; i >= 0; i--) {
+    if (tail.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error("ZIP として読めません（終端が見つかりません）");
+  let count = tail.getUint16(eocd + 10, true);
+  const cdSize = tail.getUint32(eocd + 12, true),
+    cdOff = tail.getUint32(eocd + 16, true);
+  if (cdOff === 0xffffffff || cdSize === 0xffffffff || count === 0xffff) throw new Error("4GB を超える ZIP（ZIP64）は未対応です。mod を分けてください");
+  const cd = new DataView(await file.slice(cdOff, cdOff + cdSize).arrayBuffer());
+  const u8 = new Uint8Array(cd.buffer);
+  const dec = new TextDecoder();
+  const out = [];
+  let p = 0;
+  for (let n = 0; n < count && p + 46 <= cd.byteLength; n++) {
+    if (cd.getUint32(p, true) !== 0x02014b50) break;
+    const flags = cd.getUint16(p + 8, true),
+      method = cd.getUint16(p + 10, true),
+      csize = cd.getUint32(p + 20, true),
+      usize = cd.getUint32(p + 24, true),
+      nlen = cd.getUint16(p + 28, true),
+      xlen = cd.getUint16(p + 30, true),
+      clen = cd.getUint16(p + 32, true),
+      lho = cd.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nlen)).replace(/\\/g, "/");
+    p += 46 + nlen + xlen + clen;
+    if (name.endsWith("/") || (flags & 1)) continue; // フォルダ / 暗号化は対象外
+    out.push({
+      name,
+      size: usize,
+      async read() {
+        const head = new DataView(await file.slice(lho, lho + 30).arrayBuffer());
+        const start = lho + 30 + head.getUint16(26, true) + head.getUint16(28, true);
+        const raw = new Uint8Array(await file.slice(start, start + csize).arrayBuffer());
+        if (method === 0) return raw;
+        if (method === 8) return inflateRaw(raw);
+        throw new Error(`未対応の圧縮方式です (${name}: method ${method})`);
+      },
+    });
+  }
+  return out;
+}
+
+return { crc32, readZip, writeZip, openZipLazy };
+})();
+
+/* ===== funkin-studio/js/services/ModPack.js ===== */
+const __m13 = (() => {
+/* ============================================================
+   services/ModPack.js — mod パック（フォルダ / zip）のファイルを「パス付き」で扱う共通部品
+   ------------------------------------------------------------
+   なぜ必要か:
+     以前は assetPath を「ファイル名だけ」や「末尾のフォルダ名だけ」で探していたため、
+     別のフォルダに同じ名前のファイルがあると、先に見つかった方（= 間違った方）を拾うことがあった。
+     ここでは、ファイルの置き場所を FNF の構造（images/ data/ scripts/ …）に合わせて正規化し、
+     assetPath に「どれだけ正確に合うか」を点数で比べて選ぶ。同点（どちらか決められない）のときは、
+     黙って選ばずに注意を出す。
+   ・rootedOf(): "Mod/images/characters/bf.png" → "images/characters/bf"（最初の images/data/… から後ろ。拡張子なし・小文字）
+   ・originOf(): "Mod/images/…" → "mod"（どの mod / フォルダに属するか。同じ origin のファイルを優先する）
+   ・LazyZipFile: zip の中の 1 ファイル。File と同じ使い方ができ、中身は読まれたときだけ取り出す
+   ============================================================ */
+const { openZipLazy } = __m12;
+
+/** FNF の mod / assets 直下に来るフォルダ名。この名前が最初に出てきた所を「ルート」とみなす */
+const ANCHORS = new Set(["images", "data", "scripts", "sounds", "music", "songs", "shaders", "fonts", "videos", "preload", "shared"]);
+
+const splitPath = (p) => String(p || "").replace(/\\/g, "/").split("/").filter(Boolean);
+const relPathOf = (f) => f.webkitRelativePath || f.name;
+
+function makeInfo(path, stripExt) {
+  const segs = splitPath(path).map((s) => s.toLowerCase());
+  if (stripExt && segs.length) segs[segs.length - 1] = segs[segs.length - 1].replace(/\.[^./]+$/, "");
+  // 最初に出てくる images / data / … から後ろを「ルート以降のパス」、手前を origin（mod フォルダ名）とする
+  const isA = (i) => (stripExt ? i < segs.length - 1 : i < segs.length) && ANCHORS.has(segs[i]);
+  let first = segs.findIndex((_, i) => isA(i));
+  if (first < 0) first = 0;
+  // assets/shared/images/… や assets/preload/images/… の shared / preload は「ラッパー」なので飛ばし、images/ を本当のルートにする
+  let root = first;
+  while ((segs[root] === "shared" || segs[root] === "preload") && isA(root + 1)) root++;
+  return { segs, root, noExt: segs.slice(root).join("/"), origin: segs.slice(0, first).join("/"), originLen: first, flat: segs.length <= 1 };
+}
+const _cache = new WeakMap();
+/** { segs: 小文字の各フォルダ名, root: ルートの位置, noExt: 拡張子なしのルート以降, origin } */
+function infoOf(f) {
+  let v = _cache.get(f);
+  if (!v) _cache.set(f, (v = makeInfo(relPathOf(f), true)));
+  return v;
+}
+/** ファイルパス（文字列）版: { noExt, origin, flat, segs } */
+const infoOfPath = (path) => makeInfo(path, true);
+/** フォルダのパス版（AnimateAtlas のフォルダ用） */
+const infoOfDir = (dir) => makeInfo(dir, false);
+const rootedOf = (f) => infoOf(f).noExt;
+const originOf = (f) => infoOf(f).origin;
+
+/** assetPath を比べやすい形にする: "weeb:Characters/BF.png" → "characters/bf" */
+function normAsset(p) {
+  return String(p || "")
+    .replace(/^[^:/\\]+:/, "")
+    .replace(/\\/g, "/")
+    .replace(/\/\*+$/, "") // "stages/*" のような末尾のワイルドカードはフォルダ指定として扱う
+    .replace(/^\/+|\/+$/g, "")
+    .replace(/\.[a-z0-9]+$/i, "")
+    .toLowerCase();
+}
+
+/**
+ * ファイル(path = ルート以降のパス)が assetPath にどれだけ合うか。0 = 合わない。
+ *   100 : images/<assetPath> と完全一致（または assetPath が data/… で始まっていて一致）
+ *    60+: 末尾が assetPath と一致（フォルダ階層が違うだけ。一致した階層数ぶん加点）
+ *    20 : assetPath が 1 階層だけで、ファイル名が一致（弱い）
+ *    10 : 置き場所の情報が無いファイル（スマホで直接選んだ等）の名前が一致
+ */
+function scorePath(info, assetPath, dirPrefix = "images") {
+  const want = normAsset(assetPath);
+  if (!want) return 0;
+  const ws = want.split("/");
+  const full = info.segs;
+  if (info.noExt === `${dirPrefix}/${want}` || info.noExt === want) return 100;
+  // 末尾の一致
+  let n = 0;
+  while (n < ws.length && n < full.length && full[full.length - 1 - n] === ws[ws.length - 1 - n]) n++;
+  if (n === ws.length && ws.length >= 2) return 60 + n;
+  if (n === ws.length && ws.length === 1) return info.flat ? 10 : 20;
+  return 0;
+}
+
+/**
+ * pool から assetPath に合うファイルを順位づけして返す（高い順）。
+ * @param opts { origin: 参照元の origin（同じ mod を優先）, dirPrefix, files: 点数計算に使う拡張子の正規表現は extRe }
+ */
+function rankFiles(pool, assetPath, extRe, opts = {}) {
+  const out = [];
+  for (const f of pool) {
+    if (!extRe.test(f.name)) continue;
+    const info = infoOf(f);
+    let s = scorePath(info, assetPath, opts.dirPrefix ?? "images");
+    if (!s) continue;
+    if (opts.origin !== undefined && info.origin === opts.origin) s += 25;
+    out.push({ f, score: s, info });
+  }
+  return out.sort((a, b) => b.score - a.score);
+}
+
+/** 同点 1 位が複数あるか（= どれか決められない） */
+function topTies(ranked) {
+  if (!ranked.length) return [];
+  const top = ranked[0].score;
+  const ties = ranked.filter((r) => r.score === top);
+  const key = (r) => r.info.origin + "|" + r.info.noExt;
+  return new Set(ties.map(key)).size > 1 ? ties : ties.slice(0, 1); // 別の場所のものが同点で並んだときだけ「決められない」
+}
+
+// ---------------------------------------------------------------- 注意の通知
+const notes = new Set();
+let sink = null;
+/** 取り違えそうなときの注意文の受け取り先（Stage Editor が say に繋ぐ） */
+function setAssetNoteSink(fn) {
+  sink = fn;
+}
+function assetNote(msg) {
+  if (notes.has(msg)) return;
+  notes.add(msg);
+  sink?.(msg);
+}
+const clearAssetNotes = () => notes.clear();
+
+// ---------------------------------------------------------------- zip の 1 ファイル（File と同じ使い方）
+class LazyZipFile {
+  constructor(entry, zipName) {
+    this._e = entry;
+    this.name = entry.name.split("/").pop();
+    this.webkitRelativePath = entry.name; // zip 内のパス（mod フォルダの入れ子もそのまま）
+    this.size = entry.size;
+    this.lastModified = 0;
+    this.zip = zipName;
+    this.lazy = true;
+  }
+  async arrayBuffer() {
+    const u8 = await this._e.read();
+    return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+  }
+  async blob() {
+    const u8 = await this._e.read();
+    const ext = (this.name.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase();
+    const type = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" }[ext] || "";
+    return new Blob([u8], { type });
+  }
+  async text() {
+    return new TextDecoder().decode(await this._e.read());
+  }
+  slice(...a) {
+    return this.blob().then((b) => b.slice(...a));
+  }
+}
+
+/** zip（File）→ LazyZipFile[]。中身は読まない（名前と位置だけ） */
+async function openModZip(file) {
+  const entries = await openZipLazy(file);
+  return entries.filter((e) => !/(^|\/)(__MACOSX|\.DS_Store)(\/|$)/.test(e.name)).map((e) => new LazyZipFile(e, file.name));
+}
+
+// ---------------------------------------------------------------- mod の中身の一覧
+/** data/stages/*.json などを一覧にする。{ id, file, origin } */
+function listData(pool, dir) {
+  const out = [];
+  for (const f of pool) {
+    if (!/\.json$/i.test(f.name)) continue;
+    const info = infoOf(f);
+    const m = info.noExt.match(new RegExp(`^data/${dir}/(.+)$`));
+    if (m) out.push({ id: m[1], file: f, origin: info.origin });
+  }
+  return out.sort((a, b) => a.id.localeCompare(b.id));
+}
+/** mod のざっくりした要約 */
+function summarize(pool) {
+  const c = { images: 0, scripts: 0, data: 0, other: 0 };
+  for (const f of pool) {
+    const r = infoOf(f).noExt.split("/")[0];
+    if (r === "images") c.images++;
+    else if (r === "scripts") c.scripts++;
+    else if (r === "data") c.data++;
+    else c.other++;
+  }
+  return {
+    ...c,
+    stages: listData(pool, "stages"),
+    characters: listData(pool, "characters"),
+    noteStyles: listData(pool, "notestyles"),
+    origins: [...new Set(pool.map(originOf))].filter(Boolean),
+  };
+}
+
+// ---------------------------------------------------------------- 種類別の解決（image / sound / music / song / icon / character / stage …）
+/** 種類ごとの「ルートのフォルダ」と拡張子。assetPath はその直下からの相対（V-Slice と同じ指定）で渡す */
+const AUDIO = /\.(ogg|mp3|wav|flac)$/i;
+const KINDS = {
+  image: { dir: "images", ext: /\.png$/i },
+  xml: { dir: "images", ext: /\.(xml|txt)$/i },
+  icon: { dir: "images", ext: /\.png$/i }, // 例: "icons/icon-bf" / "freeplay/icons/bfpixel"
+  sound: { dir: "sounds", ext: AUDIO },
+  music: { dir: "music", ext: AUDIO },
+  song: { dir: "songs", ext: AUDIO }, // 例: "bopeebo/Inst" / "bopeebo/Voices-bf"
+  character: { dir: "data/characters", ext: /\.json$/i },
+  stage: { dir: "data/stages", ext: /\.json$/i },
+  notestyle: { dir: "data/notestyles", ext: /\.json$/i },
+  script: { dir: "scripts", ext: /\.hx[cs]?$/i },
+};
+/**
+ * pool から、V-Slice と同じ指定（assetPath）でファイルを 1 つ選ぶ。
+ * shared/ や preload/ の中でも、mod ルート直下でも同じように見つかる。
+ * @returns {{file, ambiguous: Array}|null} ambiguous = 同点で決められなかった候補（あれば注意を出す）
+ */
+function resolveAsset(pool, kind, assetPath, opts = {}) {
+  const k = KINDS[kind];
+  if (!k) throw new Error(`未対応の種類: ${kind}`);
+  const dirPrefix = k.dir;
+  const ranked = rankFiles(pool, assetPath, k.ext, { dirPrefix, origin: opts.origin });
+  if (!ranked.length) return null;
+  const ties = topTies(ranked);
+  if (ties.length > 1 && !opts.quiet) assetNote(`${kind}「${assetPath}」に合うファイルが複数あります: ${ties.map((t) => t.info.origin + "/" + t.info.noExt).join(" , ")}（先頭を使います）`);
+  return { file: ranked[0].f, ambiguous: ties.length > 1 ? ties.map((t) => t.f) : [] };
+}
+
+return { relPathOf, infoOf, infoOfPath, infoOfDir, rootedOf, originOf, normAsset, scorePath, rankFiles, topTies, setAssetNoteSink, assetNote, clearAssetNotes, LazyZipFile, openModZip, listData, summarize, resolveAsset };
+})();
+
+/* ===== funkin-studio/js/services/Workspace.js ===== */
+const __m14 = (() => {
+/* ============================================================
+   services/Workspace.js — 全エディタで共有する「読み込み済み mod のファイルの山」
+   ------------------------------------------------------------
+   ホーム画面で mod（zip / フォルダ）を読み込むと、ここに登録される。
+   どのエディタも app.workspace から、同じファイルをパス付きで探せる（services/ModPack.js の規則）。
+   ・files        … File / LazyZipFile の配列（中身はまだ読まない）
+   ・add(files)   … 追加（同じファイルは無視）。増えたら events に "workspace:changed" を流す
+   ・loadZip(f)   … zip を遅延展開で登録（スマホ可）
+   ・toFile(f)    … 既存の <input type=file> ベースの処理へ渡すための、通常の File への変換
+   ・atlasFor(assetPath, origin) … キャラ/prop 用の { png, def, anim } を探す
+   ============================================================ */
+const { openModZip, summarize, resolveAsset, infoOf, normAsset, relPathOf } = __m13;
+
+class Workspace {
+  constructor(app) {
+    this.app = app;
+    this.files = [];
+    this.keys = new Set();
+    this.names = []; // 読み込んだ mod の名前（表示用）
+    this.outputOrigins = new Set(); // 書き出した（編集した）mod のフォルダ
+    this.outputs = new Map(); // 編集して書き出したもの: mod 内のパス → データ（services/ModExport.js が zip にまとめる）
+  }
+  /** 小文字にした origin から、元の大文字小文字のままのフォルダ名を返す（書き出し先を元の mod と同じ綴りにするため） */
+  rawOrigin(lower) {
+    if (!lower) return lower ?? "";
+    for (const f of this.files) {
+      const i = infoOf(f);
+      if (i.origin === lower) return relPathOf(f).replace(/\\/g, "/").split("/").filter(Boolean).slice(0, i.originLen).join("/");
+    }
+    return lower;
+  }
+  /** 読み込んだファイルのうち、いちばん多い origin（mod のフォルダ）。書き出し先の階層に使う */
+  defaultOrigin() {
+    const c = new Map();
+    for (const f of this.files) {
+      const o = infoOf(f).origin;
+      c.set(o, (c.get(o) || 0) + 1);
+    }
+    return [...c].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
+  }
+  get size() {
+    return this.files.length;
+  }
+  summary() {
+    return summarize(this.files);
+  }
+  add(files, label) {
+    let n = 0;
+    for (const f of files) {
+      const k = `${relPathOf(f)}|${f.size}|${f.lastModified}`;
+      if (this.keys.has(k)) continue;
+      this.keys.add(k);
+      this.files.push(f);
+      n++;
+    }
+    if (label && !this.names.includes(label)) this.names.push(label);
+    if (n) this.app.events.emit("workspace:changed", { added: n });
+    return n;
+  }
+  async loadZip(file) {
+    return this.add(await openModZip(file), file.name);
+  }
+  clear() {
+    this.files = [];
+    this.keys.clear();
+    this.names = [];
+    this.outputs.clear();
+    this.outputOrigins.clear();
+    this.app.events.emit("workspace:changed", { added: 0, cleared: true });
+  }
+  /** 種類と assetPath から 1 つ選ぶ（ModPack.resolveAsset と同じ） */
+  resolve(kind, assetPath, opts) {
+    return resolveAsset(this.files, kind, assetPath, opts)?.file ?? null;
+  }
+  /** LazyZipFile → 通常の File（<input> や URL.createObjectURL に渡せる形）。File ならそのまま */
+  async toFile(f) {
+    if (!f?.lazy) return f;
+    return new File([await f.blob()], f.name, { type: (await f.blob()).type });
+  }
+  /** assetPath に対応するアトラス一式を探す: { kind: "sparrow"|"animate", png, def, anim } / 見つからなければ null */
+  atlasFor(assetPath, origin) {
+    const png = this.resolve("image", assetPath, { origin, quiet: true });
+    if (png) {
+      const info = infoOf(png);
+      // 同じパスの XML / TXT（Sparrow / Packer）
+      const def = this.files.find((f) => /\.(xml|txt)$/i.test(f.name) && infoOf(f).noExt === info.noExt && infoOf(f).origin === info.origin);
+      if (def) return { kind: "sparrow", png, def };
+    }
+    // AnimateAtlas: images/<assetPath>/ の下に Animation.json がある
+    const want = "images/" + normAsset(assetPath) + "/";
+    const inDir = this.files.filter((f) => {
+      const i = infoOf(f);
+      return (i.noExt + "/").startsWith(want) && (!origin || i.origin === origin || true);
+    });
+    const anim = inDir.find((f) => /^animation\.json$/i.test(f.name));
+    if (anim) {
+      const dir = infoOf(anim);
+      const same = inDir.filter((f) => infoOf(f).origin === dir.origin);
+      const def = same.find((f) => /^spritemap1\.json$/i.test(f.name)) || same.find((f) => /^spritemap\d*\.json$/i.test(f.name));
+      const sp = def && same.find((f) => /\.png$/i.test(f.name) && f.name.replace(/\.png$/i, "") === def.name.replace(/\.json$/i, ""));
+      if (def && sp) return { kind: "animate", png: sp, def, anim };
+    }
+    return null;
+  }
+}
+
+return { Workspace };
+})();
+
+/* ===== funkin-studio/js/services/ModExport.js ===== */
+const __m15 = (() => {
+/* ============================================================
+   services/ModExport.js — 各エディタの書き出しを「mod の zip ごと」にまとめる
+   ------------------------------------------------------------
+   これまでは json / xml / png を 1 つずつダウンロードしていた。
+   今後は exportMod() に「mod の中での場所（例: data/stages/foo.json）」付きで渡すと、
+     ・これまでに編集して書き出したもの（app.workspace.outputs）
+     ・ホームで読み込んだ元の mod のファイル（「元の mod 全体を含める」が ON のとき）
+   をまとめた zip をダウンロードさせる。zip の中身の場所は元の mod と同じなので、そのまま上書きして使える。
+   ・queueExport … 同じ瞬間に何度も呼ばれる（png + json など）ものを 1 つの zip にまとめる
+   ============================================================ */
+const { crc32 } = __m12;
+const { relPathOf, infoOf } = __m13;
+
+const KEY = "studio.exportWholeMod";
+const getIncludeOriginal = () => {
+  try {
+    return localStorage.getItem(KEY) !== "0";
+  } catch {
+    return true;
+  }
+};
+const setIncludeOriginal = (on) => {
+  try {
+    localStorage.setItem(KEY, on ? "1" : "0");
+  } catch {}
+};
+
+const toBytes = async (d) => (typeof d === "string" ? new TextEncoder().encode(d) : d instanceof Uint8Array ? d : new Uint8Array(await (d instanceof Blob ? d : new Blob([d])).arrayBuffer()));
+const join = (a, b) => [a, b].filter(Boolean).join("/").replace(/\/+/g, "/");
+
+/** 1 つずつ読んで、すぐ Blob にする（全部をメモリに溜めない）。entries: [{ name, get }] */
+async function buildZip(entries) {
+  const enc = new TextEncoder();
+  const parts = [],
+    central = [];
+  let offset = 0;
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  for (const { name, get } of entries) {
+    const data = await toBytes(await get());
+    const nb = enc.encode(name),
+      crc = crc32(data);
+    const h = new DataView(new ArrayBuffer(30));
+    h.setUint32(0, 0x04034b50, true);
+    h.setUint16(4, 20, true);
+    h.setUint16(6, 0x0800, true);
+    h.setUint16(10, dosTime, true);
+    h.setUint16(12, dosDate, true);
+    h.setUint32(14, crc, true);
+    h.setUint32(18, data.length, true);
+    h.setUint32(22, data.length, true);
+    h.setUint16(26, nb.length, true);
+    parts.push(new Blob([h, nb, data]));
+    const c = new DataView(new ArrayBuffer(46));
+    c.setUint32(0, 0x02014b50, true);
+    c.setUint16(4, 20, true);
+    c.setUint16(6, 20, true);
+    c.setUint16(8, 0x0800, true);
+    c.setUint16(12, dosTime, true);
+    c.setUint16(14, dosDate, true);
+    c.setUint32(16, crc, true);
+    c.setUint32(20, data.length, true);
+    c.setUint32(24, data.length, true);
+    c.setUint16(28, nb.length, true);
+    c.setUint32(42, offset, true);
+    central.push(c, nb);
+    offset += 30 + nb.length + data.length;
+  }
+  const cd = new Blob(central);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, entries.length, true);
+  end.setUint16(10, entries.length, true);
+  end.setUint32(12, cd.size, true);
+  end.setUint32(16, offset, true);
+  return new Blob([...parts, cd, end], { type: "application/zip" });
+}
+
+function download(blob, name) {
+  const u = URL.createObjectURL(blob),
+    a = document.createElement("a");
+  a.href = u;
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(u), 4000);
+}
+
+/**
+ * @param files [{ path: "data/stages/x.json", data: string | Blob | Uint8Array }]  mod の中での場所
+ * @param opts  { origin: 編集した mod のフォルダ名（読み込み元と同じ階層に置く）, say(msg) }
+ * @returns { name, count }
+ */
+async function exportMod(app, files, opts = {}) {
+  const ws = app.workspace;
+  const origin = ws.rawOrigin(opts.origin ?? ws.defaultOrigin());
+  for (const f of files) ws.outputs.set(join(origin, f.path), f.data);
+  ws.outputOrigins.add(origin.toLowerCase()); // 元の mod のファイルは、編集した mod の分だけ含める（一緒に読み込んだ別の mod は含めない）
+  const entries = [];
+  const written = new Set();
+  for (const [name, data] of ws.outputs) {
+    entries.push({ name, get: () => data });
+    written.add(name.toLowerCase());
+  }
+  let originalCount = 0;
+  if (getIncludeOriginal()) {
+    for (const f of ws.files) {
+      const name = relPathOf(f);
+      if (!ws.outputOrigins.has(infoOf(f).origin)) continue;
+      if (written.has(name.toLowerCase())) continue; // 編集したもので置き換える
+      entries.push({ name, get: () => (f.lazy ? f.blob() : f) });
+      originalCount++;
+    }
+  }
+  const base = (ws.names[0] || origin.split("/").pop() || "mod").replace(/\.zip$/i, "");
+  const zipName = `${base}-edited.zip`;
+  const blob = await buildZip(entries);
+  download(blob, zipName);
+  opts.say?.(`${zipName} を書き出しました（編集したファイル ${ws.outputs.size} 個` + (originalCount ? ` + 元の mod のファイル ${originalCount} 個）。` : "。元の mod は含めていません）。"));
+  return { name: zipName, count: entries.length };
+}
+
+/** 同じ瞬間（約 80ms 以内）に積まれた書き出しを 1 つの zip にまとめる（png と json を続けて出すエディタ向け） */
+let pending = null;
+function queueExport(app, file, opts = {}) {
+  if (!pending) {
+    pending = { files: [], opts };
+    setTimeout(() => {
+      const p = pending;
+      pending = null;
+      exportMod(app, p.files, p.opts).catch((e) => p.opts.say?.("書き出しエラー: " + e.message));
+    }, 80);
+  }
+  pending.files.push(file);
+  Object.assign(pending.opts, opts);
+}
+
+return { getIncludeOriginal, setIncludeOriginal, exportMod, queueExport };
+})();
+
+/* ===== funkin-studio/js/states/HomeState.js ===== */
+const __m16 = (() => {
 /* ============================================================
    states/HomeState.js — ホーム画面（最初に出る画面）
    ------------------------------------------------------------
@@ -3001,6 +3660,7 @@ const __m12 = (() => {
      ① static id / template を決める
      ② create() でボタンを配線する
    ============================================================ */
+const { getIncludeOriginal, setIncludeOriginal } = __m15;
 const { State } = __m2;
 
 class HomeState extends State {
@@ -3024,6 +3684,17 @@ class HomeState extends State {
             <small>注意事項や、クレジットなどが記載されています。</small>
           </button>
         </div>
+        <div class="modLoader panel">
+          <strong>mod を読み込む</strong>
+          <small class="tiny">ここで読み込んだ mod は、すべてのエディタで共有されます（中身は必要になったときだけ読みます）。</small>
+          <div class="row">
+            <label class="fileBtn">zip（スマホ可）<input id="homeModZip" type="file" accept=".zip,application/zip" multiple hidden /></label>
+            <label class="fileBtn stgDesktopOnly">フォルダ（PC）<input id="homeModDir" type="file" webkitdirectory multiple hidden /></label>
+            <button id="homeModClear" type="button">空にする</button>
+          </div>
+          <label class="tiny"><input id="homeModWhole" type="checkbox" /> 書き出し時に、読み込んだ元の mod 全体も zip に含める</label>
+          <p id="homeModInfo" class="tiny">まだ読み込んでいません。</p>
+        </div>
       </div>
     </div>`;
 
@@ -3031,6 +3702,42 @@ class HomeState extends State {
     this.goOnClick("#homeAnimate", "renderMenu");
     this.goOnClick("#homeFunkin", "funkinMenu");
     this.goOnClick("#homeOther", "otherMenu");
+    const ws = this.app.workspace;
+    const q = (id) => this.root.querySelector(id);
+    const info = q("#homeModInfo");
+    const render = () => {
+      if (!ws.size) return (info.textContent = "まだ読み込んでいません。");
+      const sm = ws.summary();
+      info.textContent = `読み込み済み: ${ws.size} ファイル（${ws.names.join(", ") || "フォルダ"}）。ステージ ${sm.stages.length}・キャラ ${sm.characters.length}・noteStyle ${sm.noteStyles.length}・images ${sm.images}・scripts ${sm.scripts}`;
+    };
+    const off = this.app.events.on("workspace:changed", render);
+    this.addDisposer(() => off());
+    q("#homeModZip").onchange = async (e) => {
+      const fs = [...e.target.files];
+      e.target.value = "";
+      info.textContent = "zip を開いています…";
+      try {
+        for (const f of fs) await ws.loadZip(f);
+      } catch (err) {
+        info.textContent = "zip を開けません: " + err.message;
+      }
+      render();
+    };
+    q("#homeModDir").onchange = (e) => {
+      const fs = [...e.target.files];
+      e.target.value = "";
+      const top = fs[0]?.webkitRelativePath?.split("/")[0];
+      ws.add(fs, top);
+      render();
+    };
+    this._render = render;
+    q("#homeModWhole").checked = getIncludeOriginal();
+    q("#homeModWhole").onchange = (e) => setIncludeOriginal(e.target.checked);
+    q("#homeModClear").onclick = () => ws.clear();
+    render();
+  }
+  onShow() {
+    this._render?.();
   }
 }
 
@@ -3038,7 +3745,7 @@ return { HomeState };
 })();
 
 /* ===== funkin-studio/js/states/RenderMenuState.js ===== */
-const __m13 = (() => {
+const __m17 = (() => {
 /* ============================================================
    states/RenderMenuState.js — アトラス形式の選択（AnimateAtlas / Sparrow）
    ============================================================ */
@@ -3079,7 +3786,7 @@ return { RenderMenuState };
 })();
 
 /* ===== funkin-studio/js/states/FunkinMenuState.js ===== */
-const __m14 = (() => {
+const __m18 = (() => {
 /* ============================================================
    states/FunkinMenuState.js — Funkin' Editor のツール選択
    ============================================================ */
@@ -3102,6 +3809,10 @@ class FunkinMenuState extends State {
             <strong>Stage Editor</strong>
             <small>V-Slice ステージ / prop・キャラ位置</small>
           </button>
+          <button id="chooseNote" class="render-choice">
+            <strong>Note Editor</strong>
+            <small>noteStyle / ノーツ・受け皿・ホールドのオフセット（Studio 独自）</small>
+          </button>
           <button id="chooseChart" class="render-choice">
             <strong>Chart Editor</strong>
             <small>V-Slice 譜面 / chart・metadata・イベント</small>
@@ -3115,6 +3826,7 @@ class FunkinMenuState extends State {
     this.goOnClick("#chooseCharacter", "character");
     this.goOnClick("#chooseStage", "stage");
     this.goOnClick("#chooseChart", "chart");
+    this.goOnClick("#chooseNote", "note");
   }
 }
 
@@ -3122,7 +3834,7 @@ return { FunkinMenuState };
 })();
 
 /* ===== funkin-studio/js/states/OtherMenuState.js ===== */
-const __m15 = (() => {
+const __m19 = (() => {
 /* ============================================================
    states/OtherMenuState.js — その他（コミュニティ / クレジット）
    ============================================================ */
@@ -3163,7 +3875,7 @@ return { OtherMenuState };
 })();
 
 /* ===== funkin-studio/js/data/contributors.js ===== */
-const __m16 = (() => {
+const __m20 = (() => {
 /*
  * Contributors: Add a new object to the array to publish a new credit.
  * image: optional image URL or local file path relative to the repository root.
@@ -3216,7 +3928,7 @@ return { CONTRIBUTORS };
 })();
 
 /* ===== funkin-studio/js/states/ContributorsState.js ===== */
-const __m17 = (() => {
+const __m21 = (() => {
 /* ============================================================
    states/ContributorsState.js — クレジット一覧
    ------------------------------------------------------------
@@ -3225,7 +3937,7 @@ const __m17 = (() => {
    言語が切り替わったら作り直す（app.events の "language-changed"）。
    ============================================================ */
 const { State } = __m2;
-const { CONTRIBUTORS } = __m16;
+const { CONTRIBUTORS } = __m20;
 
 // http/https のリンクだけ許可する（javascript: などを防ぐ）
 function safeUrl(url) {
@@ -3333,8 +4045,139 @@ class ContributorsState extends State {
 return { ContributorsState };
 })();
 
+/* ===== funkin-studio/js/ui/ModPicker.js ===== */
+const __m22 = (() => {
+/* ============================================================
+   ui/ModPicker.js — 各エディタに置く「読み込み済みの mod から選ぶ」欄
+   ------------------------------------------------------------
+   ホームで読み込んだ mod（app.workspace）の中身を一覧にし、選んだものを
+   そのエディタの既存の <input type=file> に流し込んで、いつもの「読み込む」処理を動かす。
+   → エディタ側のロジックは変えずに、全エディタでアセットを共有できる。
+   使い方: mountModPicker(state, hostEl, { title, list(ws) → [{label, files:{inputId: File}}], run(): 読み込みボタンを押す関数 })
+   ============================================================ */
+const { infoOf } = __m13;
+
+function mountModPicker(state, host, spec) {
+  const ws = state.app.workspace;
+  const box = document.createElement("details");
+  box.className = "modPicker";
+  box.innerHTML = `<summary>${spec.title || "読み込み済みの mod から選ぶ"}</summary>
+    <div class="row"><select class="mpSel"></select><button type="button" class="mpGo primary">これを開く</button></div>
+    <p class="tiny mpInfo"></p>`;
+  host.prepend(box);
+  const sel = box.querySelector(".mpSel"),
+    info = box.querySelector(".mpInfo");
+  let items = [];
+  const render = () => {
+    items = ws.size ? spec.list(ws) : [];
+    box.hidden = !ws.size;
+    sel.textContent = "";
+    items.forEach((it, i) => sel.append(new Option(it.label, String(i))));
+    info.textContent = items.length ? `${items.length} 件。ホーム画面で読み込んだ mod から探しています。` : ws.size ? "この種類のファイルは見つかりませんでした。" : "";
+  };
+  box.querySelector(".mpGo").onclick = async () => {
+    const it = items[Number(sel.value)];
+    if (!it) return;
+    try {
+      for (const [id, v] of Object.entries(it.files)) {
+        const dt = new DataTransfer();
+        for (const f of [].concat(v)) {
+          const real = await ws.toFile(f);
+          if (real === f) {
+            dt.items.add(f);
+          } else dt.items.add(real);
+          // zip 由来で File を作り直すと元のパスが消えるので、同じ mod を優先して探すための目印を付ける
+          try {
+            const tf = dt.files[dt.files.length - 1];
+            Object.defineProperty(tf, "__origin", { value: infoOf(f).origin });
+            Object.defineProperty(tf, "__path", { value: infoOf(f).noExt + (f.name.match(/\.[^.]+$/)?.[0] ?? "") }); // mod 内のパス（images/… など）
+          } catch {}
+        }
+        const input = state.root.querySelector("#" + id);
+        input.files = dt.files;
+        if (spec.fire?.includes(id)) {
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+          await new Promise((r) => setTimeout(r, spec.wait ?? 300));
+        }
+      }
+      await spec.run?.(it);
+    } catch (e) {
+      info.textContent = "⚠ " + e.message;
+    }
+  };
+  const off = state.app.events.on("workspace:changed", render);
+  state.addDisposer?.(() => off?.());
+  render();
+  return { render };
+}
+
+return { mountModPicker };
+})();
+
+/* ===== funkin-studio/js/ui/modLists.js ===== */
+const __m23 = (() => {
+/* ============================================================
+   ui/modLists.js — 各エディタの「mod から選ぶ」一覧の作り方（種類ごと）
+   ============================================================ */
+const { infoOf } = __m13;
+
+const label = (i) => (i.origin ? i.origin + " / " : "") + i.noExt;
+
+/** Sparrow: 同じパスに XML がある PNG */
+function sparrowList(ws) {
+  const xml = new Map();
+  for (const f of ws.files) if (/\.xml$/i.test(f.name)) xml.set(infoOf(f).origin + "|" + infoOf(f).noExt, f);
+  const out = [];
+  for (const f of ws.files) {
+    if (!/\.png$/i.test(f.name)) continue;
+    const i = infoOf(f);
+    const x = xml.get(i.origin + "|" + i.noExt);
+    if (x) out.push({ label: label(i), files: { spPng: f, spXml: x } });
+  }
+  return out.sort((a, b) => a.label.localeCompare(b.label));
+}
+/** AnimateAtlas: Animation.json があるフォルダごと（spritemap1.json / spritemap1.png と一緒に） */
+function animateList(ws) {
+  const out = [];
+  for (const a of ws.files) {
+    if (!/^animation\.json$/i.test(a.name)) continue;
+    const ai = infoOf(a);
+    const dir = ai.segs.slice(0, -1).join("/");
+    const same = ws.files.filter((f) => infoOf(f).segs.slice(0, -1).join("/") === dir);
+    const map = same.find((f) => /^spritemap1\.json$/i.test(f.name)) || same.find((f) => /^spritemap\d*\.json$/i.test(f.name));
+    const png = map && same.find((f) => f.name.replace(/\.png$/i, "") === map.name.replace(/\.json$/i, "") && /\.png$/i.test(f.name));
+    if (map && png) out.push({ label: dir || "(root)", files: { png, mapfile: map, animfile: a } });
+  }
+  return out.sort((a, b) => a.label.localeCompare(b.label));
+}
+/** Character: data/characters/*.json */
+function characterList(ws) {
+  return ws.summary().characters.map((c) => ({ label: c.id + (c.origin ? `（${c.origin}）` : ""), files: { offCharacter: c.file } }));
+}
+/** Chart: data/songs/<id>/<id>-metadata*.json + chart json + songs/<id>/ の音声 */
+function songList(ws) {
+  const out = [];
+  for (const m of ws.files) {
+    const mi = infoOf(m);
+    const mm = mi.noExt.match(/^data\/songs\/([^/]+)\/([^/]+)-metadata(-.+)?$/);
+    if (!mm || !/\.json$/i.test(m.name)) continue;
+    const id = mm[1];
+    const base = `data/songs/${id}/`;
+    const group = ws.files.filter((f) => /\.json$/i.test(f.name) && infoOf(f).origin === mi.origin && infoOf(f).noExt.startsWith(base) && /-(metadata|chart)/.test(infoOf(f).noExt));
+    const audio = ws.files.filter((f) => /\.(ogg|mp3|wav)$/i.test(f.name) && infoOf(f).origin === mi.origin && infoOf(f).noExt.startsWith(`songs/${id}/`));
+    const inst = audio.filter((f) => /^inst/i.test(f.name)).slice(0, 1);
+    const voices = audio.filter((f) => /^voices/i.test(f.name));
+    out.push({ label: id + (mi.origin ? `（${mi.origin}）` : ""), files: { chtOpen: group, ...(inst.length ? { chtInst: inst } : {}), ...(voices.length ? { chtVoices: voices } : {}) } });
+  }
+  const seen = new Set();
+  return out.filter((o) => !seen.has(o.label) && seen.add(o.label)).sort((a, b) => a.label.localeCompare(b.label));
+}
+
+return { sparrowList, animateList, characterList, songList };
+})();
+
 /* ===== funkin-studio/js/states/EditorState.js ===== */
-const __m18 = (() => {
+const __m24 = (() => {
 /* ============================================================
    states/EditorState.js — 3つのエディタ共通の親クラス（State → EditorState → 各エディタ）
    ------------------------------------------------------------
@@ -3361,7 +4204,7 @@ return { EditorState };
 })();
 
 /* ===== funkin-studio/js/states/animate/template.js ===== */
-const __m19 = (() => {
+const __m25 = (() => {
 /* ============================================================
    animate/template.js — animate 画面の HTML
    ------------------------------------------------------------
@@ -4034,7 +4877,8 @@ return { template };
 })();
 
 /* ===== funkin-studio/js/states/animate/editor.js ===== */
-const __m20 = (() => {
+const __m26 = (() => {
+const { queueExport } = __m15;
 /* ============================================================
    states/animate/editor.js — Animate Editor（AnimateAtlas）本体のロジック
    ------------------------------------------------------------
@@ -5735,13 +6579,15 @@ function mountAnimateEditor(state) {
   // 15. 書き出し（ダウンロード）
   // ============================================================
   // downloadBlob(blob, name): Blob を指定のファイル名でダウンロードさせる
+  // mod の zip ごと書き出す（services/ModExport.js）。置き場所は読み込んだ Animation.json と同じフォルダ。
+  // ファイル名は「-edited」などを外して元の名前に戻す（zip を元の mod に重ねるだけで置き換わるように）
   function downloadBlob(blob, name) {
-    const u = URL.createObjectURL(blob),
-      a = document.createElement("a");
-    a.href = u;
-    a.download = name;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(u), 1500);
+    const src = $("animfile")?.files?.[0] ?? $("mapfile")?.files?.[0] ?? $("png")?.files?.[0];
+    const dir = (src?.__path ? src.__path.split("/").slice(0, -1).join("/") : "images/animate-atlas") || "images";
+    let fixed = name.replace(/-legacy/, "").replace(/-edited|-restored/, "");
+    if (/^spritemap\.json$/i.test(fixed)) fixed = ($("mapfile")?.files?.[0]?.name) || "spritemap1.json";
+    if (/^spritemap1?\.png$/i.test(fixed) && $("png")?.files?.[0]?.name) fixed = $("png").files[0].name;
+    queueExport(state.app, { path: `${dir}/${fixed}`, data: blob }, { origin: src?.__origin, say: status });
   }
   // Animation JSON を Animation-edited.json として書き出す（書き出す直前に、最後のキーの延長補正をかける）
   $("export").onclick = () => {
@@ -7106,7 +7952,7 @@ return { mountAnimateEditor };
 })();
 
 /* ===== funkin-studio/js/states/animate/partsPanel.js ===== */
-const __m21 = (() => {
+const __m27 = (() => {
 /* ============================================================
    states/animate/partsPanel.js — パーツ管理パネル（Animate 画面の下の折りたたみパネル）
    ------------------------------------------------------------
@@ -7185,7 +8031,7 @@ return { mountPartsPanel };
 })();
 
 /* ===== funkin-studio/js/states/AnimateEditorState.js ===== */
-const __m22 = (() => {
+const __m28 = (() => {
 /* ============================================================
    states/AnimateEditorState.js — Animate Editor（AnimateAtlas）の画面
    ------------------------------------------------------------
@@ -7193,10 +8039,12 @@ const __m22 = (() => {
    persistent（隠れても破棄しない）・hud（HUD を出す）・未保存の確認は、親の EditorState から引き継いでいる。
    隠れるときは onHide、戻ってくると onShow が呼ばれる。
    ============================================================ */
-const { EditorState } = __m18;
-const { template } = __m19;
-const { mountAnimateEditor } = __m20;
-const { mountPartsPanel } = __m21;
+const { mountModPicker } = __m22;
+const { animateList } = __m23;
+const { EditorState } = __m24;
+const { template } = __m25;
+const { mountAnimateEditor } = __m26;
+const { mountPartsPanel } = __m27;
 
 class AnimateEditorState extends EditorState {
   static id = "animate";
@@ -7207,6 +8055,7 @@ class AnimateEditorState extends EditorState {
   create() {
     // HTML が root に入った「あと」で、ロジックを起動する
     this.editor = mountAnimateEditor(this);
+    mountModPicker(this, this.root.querySelector(".studio-file-content"), { title: "読み込み済みの mod から AnimateAtlas を選ぶ", list: animateList, run: () => this.root.querySelector("#load").click() });
     this.api = this.editor.api; // autosave など外から使うためにも公開
     mountPartsPanel(this, this.api);
   }
@@ -7229,7 +8078,7 @@ return { AnimateEditorState };
 })();
 
 /* ===== funkin-studio/js/states/sparrow/template.js ===== */
-const __m23 = (() => {
+const __m29 = (() => {
 /* ============================================================
    sparrow/template.js — sparrow 画面の HTML
    ------------------------------------------------------------
@@ -7428,7 +8277,8 @@ return { template };
 })();
 
 /* ===== funkin-studio/js/states/sparrow/editor.js ===== */
-const __m24 = (() => {
+const __m30 = (() => {
+const { queueExport } = __m15;
 /* ============================================================
    states/sparrow/editor.js — Sparrow Editor（Sparrow形式のアトラス: XML + PNG の編集）のロジック
    ------------------------------------------------------------
@@ -7933,12 +8783,13 @@ function mountSparrowEditor(state) {
   // 9. 書き出しと結合
   // ============================================================
   // save(blob, name): Blob を指定のファイル名でダウンロードさせる
+  // mod の zip ごと書き出す（services/ModExport.js）。置き場所は、読み込んだ PNG と同じフォルダ（images/…）
   function save(blob, name) {
-    let a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = name;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    const src = $("spPng").files?.[0];
+    const dir = (src?.__path ?? "images/" + (src?.name ?? "atlas.png")).split("/").slice(0, -1).join("/") || "images";
+    const base = (src?.name ?? "spritesheet.png").replace(/\.[^.]+$/, "");
+    const fixed = /\.xml$/i.test(name) ? base + ".xml" : name; // 読み込んだ PNG と同じ名前で置き換えられるように
+    queueExport(state.app, { path: `${dir}/${fixed}`, data: blob }, { origin: src?.__origin, say: alertStatus });
   }
   // XML を spritesheet.xml として書き出す（読み込み時に保持した extra 属性も戻す）
   $("spExport").onclick = () => {
@@ -8038,15 +8889,17 @@ return { mountSparrowEditor };
 })();
 
 /* ===== funkin-studio/js/states/SparrowEditorState.js ===== */
-const __m25 = (() => {
+const __m31 = (() => {
 /* ============================================================
    states/SparrowEditorState.js — Sparrow Editor の画面
    ------------------------------------------------------------
    構造は AnimateEditorState と同じ（入れ物 + editor.js のロジック + template.js の HTML）。
    ============================================================ */
-const { EditorState } = __m18;
-const { template } = __m23;
-const { mountSparrowEditor } = __m24;
+const { mountModPicker } = __m22;
+const { sparrowList } = __m23;
+const { EditorState } = __m24;
+const { template } = __m29;
+const { mountSparrowEditor } = __m30;
 
 class SparrowEditorState extends EditorState {
   static id = "sparrow";
@@ -8056,6 +8909,7 @@ class SparrowEditorState extends EditorState {
 
   create() {
     this.editor = mountSparrowEditor(this);
+    mountModPicker(this, this.root.querySelector("#sparrowWorkspace .panel"), { title: "読み込み済みの mod から Sparrow を選ぶ", list: sparrowList, run: () => this.root.querySelector("#spLoad").click() });
   }
   onShow() {
     this.editor.onShow();
@@ -8075,7 +8929,7 @@ return { SparrowEditorState };
 })();
 
 /* ===== funkin-studio/js/states/character/template.js ===== */
-const __m26 = (() => {
+const __m32 = (() => {
 /* ============================================================
    character/template.js — character 画面の HTML
    ------------------------------------------------------------
@@ -8285,6 +9139,48 @@ const template = `
                 >renderType<input id="offRenderType" type="text" readonly /></label
               ><button id="offGlobalApply">全体オフセットを適用</button>
             </div>
+            <h3>キャラクター設定（V-Slice）</h3>
+            <p class="tiny">scale を変えるとプレビューもすぐ変わります。既定値のままの項目は、JSON に書き出しません（元から書かれていた項目は残します）。</p>
+            <div class="row">
+              <label>scale<input id="offScale" type="number" step="0.01" min="0.01" /></label
+              ><label title="歌ってから idle に戻るまでの長さ（ステップ数。既定 8）">singTime<input id="offSingTime" type="number" step="0.1" min="0" /></label
+              ><label title="何拍ごとに idle を再生するか（既定 1）">danceEvery<input id="offDanceEvery" type="number" step="0.5" min="0" /></label>
+            </div>
+            <div class="row">
+              <label>startingAnimation<select id="offStartAnim"></select></label
+              ><label class="hudCheck"><input id="offIsPixel" type="checkbox" /> isPixel（ドット絵・補間なし）</label>
+            </div>
+            <div class="row">
+              <label>cameraOffsets X<input id="offCamX" type="number" step="1" /></label
+              ><label>cameraOffsets Y<input id="offCamY" type="number" step="1" /></label>
+            </div>
+            <details>
+              <summary>healthIcon（ヘルスアイコン）</summary>
+              <div class="row">
+                <label>id<input id="offHIId" type="text" placeholder="bf" /></label
+                ><label>scale<input id="offHIScale" type="number" step="0.01" min="0.01" /></label>
+              </div>
+              <div class="row">
+                <label class="hudCheck"><input id="offHIPixel" type="checkbox" /> isPixel</label
+                ><label class="hudCheck"><input id="offHIFlip" type="checkbox" /> flipX</label>
+              </div>
+              <div class="row">
+                <label>offsets X<input id="offHIOffX" type="number" step="1" /></label
+                ><label>offsets Y<input id="offHIOffY" type="number" step="1" /></label>
+              </div>
+            </details>
+            <details>
+              <summary>death（ゲームオーバー演出）</summary>
+              <div class="row">
+                <label>cameraOffsets X<input id="offDeathCamX" type="number" step="1" /></label
+                ><label>cameraOffsets Y<input id="offDeathCamY" type="number" step="1" /></label>
+              </div>
+              <div class="row">
+                <label>cameraZoom<input id="offDeathZoom" type="number" step="0.01" min="0.01" /></label
+                ><label>preTransitionDelay<input id="offDeathDelay" type="number" step="0.1" min="0" /></label>
+              </div>
+            </details>
+            <div class="row"><button id="offPropsApply" class="primary">キャラクター設定を適用</button></div>
           </aside>
         </div>
 
@@ -8318,7 +9214,7 @@ return { template };
 })();
 
 /* ===== funkin-studio/js/ui/Viewport.js ===== */
-const __m27 = (() => {
+const __m33 = (() => {
 /* ============================================================
    ui/Viewport.js — 画面いっぱいの「スクロール(パン)＆ズームできるプレビュー」
    ------------------------------------------------------------
@@ -8569,7 +9465,7 @@ return { isTypingTarget, isTextEntry, Viewport };
 })();
 
 /* ===== funkin-studio/js/ui/HudPanels.js ===== */
-const __m28 = (() => {
+const __m34 = (() => {
 /* ============================================================
    ui/HudPanels.js — 画面の上に重ねる「Hud パネル」の表示 / 非表示を管理する
    ------------------------------------------------------------
@@ -8693,7 +9589,7 @@ return { HudPanels };
 })();
 
 /* ===== funkin-studio/js/states/stage/sparrowAtlas.js ===== */
-const __m29 = (() => {
+const __m35 = (() => {
 /* ============================================================
    stage/sparrowAtlas.js — Sparrow アトラス（PNG + XML）の読み込みと切り出し描画
    ------------------------------------------------------------
@@ -8709,11 +9605,58 @@ const __m29 = (() => {
  * ImageBitmap はデコード済みのピクセルをそのまま持ち続けるので、これが起きない。
  * 既存コードが使う naturalWidth / naturalHeight も付けておく。
  */
+// ---- 大きな画像の縮小デコード（Low-end 端末の落ちる原因対策）----
+// 8192×8192 の PNG は、デコードすると約 256MB。複数あるとメモリが足りず、タブごと落ちる。
+// エディタの画面で見るだけなら、辺が cap px を超える画像は縮小してデコードすれば足りる。
+// 縮小したときは bmp.k（縮小率）を付け、切り出し座標（x, y, 幅, 高さ）には k を掛けて描く。
+// naturalWidth / naturalHeight は元の大きさのまま（prop の大きさや位置の計算は変わらない）。
+const lowEnd = () => {
+  try {
+    return (navigator.deviceMemory && navigator.deviceMemory <= 4) || (navigator.hardwareConcurrency || 8) <= 4 || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
+  } catch {
+    return false;
+  }
+};
+let imageCap = (() => {
+  try {
+    const v = Number(localStorage.getItem("stg.imageCap"));
+    if (v >= 0 && localStorage.getItem("stg.imageCap") !== null) return v;
+  } catch {}
+  return lowEnd() ? 2048 : 4096;
+})();
+/** 0 = 縮小しない */
+const getImageCap = () => imageCap;
+function setImageCap(n) {
+  imageCap = Math.max(0, Number(n) || 0);
+  try {
+    localStorage.setItem("stg.imageCap", String(imageCap));
+  } catch {}
+}
+/** PNG の先頭 24 バイトから幅・高さを読む（デコードせずに大きさだけ知るため） */
+async function pngSize(blob) {
+  try {
+    const b = new DataView(await blob.slice(0, 24).arrayBuffer());
+    if (b.getUint32(0) !== 0x89504e47) return null;
+    return [b.getUint32(16), b.getUint32(20)];
+  } catch {
+    return null;
+  }
+}
+
 async function loadImage(file) {
   if (file.lazy) file = await file.blob(); // zip の中のファイル: ここで初めて取り出す
-  let bmp;
+  let bmp,
+    k = 1,
+    ow = 0,
+    oh = 0;
   try {
-    bmp = await createImageBitmap(file); // PNG / WebP / JPEG をデコード（メインスレッドを塞がない）
+    const size = imageCap ? await pngSize(file) : null;
+    if (size && Math.max(size[0], size[1]) > imageCap) {
+      k = imageCap / Math.max(size[0], size[1]);
+      [ow, oh] = size;
+      bmp = await createImageBitmap(file, { resizeWidth: Math.max(1, Math.round(ow * k)), resizeHeight: Math.max(1, Math.round(oh * k)), resizeQuality: "medium" });
+      k = bmp.width / ow;
+    } else bmp = await createImageBitmap(file); // PNG / WebP / JPEG をデコード（メインスレッドを塞がない）
   } catch {
     // createImageBitmap が使えない・失敗したときは、従来どおり <img> で読む
     const img = new Image();
@@ -8726,8 +9669,9 @@ async function loadImage(file) {
     }
     return img;
   }
-  Object.defineProperty(bmp, "naturalWidth", { value: bmp.width });
-  Object.defineProperty(bmp, "naturalHeight", { value: bmp.height });
+  Object.defineProperty(bmp, "naturalWidth", { value: ow || bmp.width });
+  Object.defineProperty(bmp, "naturalHeight", { value: oh || bmp.height });
+  Object.defineProperty(bmp, "k", { value: k }); // 縮小率（1 = そのまま）
   return bmp;
 }
 
@@ -8795,22 +9739,23 @@ function sparrowSequenceOf(sprites, anim) {
 
 /** アトラスから1フレームを (x, y) に w × h で描く。rotated は 90° 回して描く */
 function paintSparrow(ctx, sp, img, x, y, w, h) {
+  const k = img.k || 1; // 縮小デコードした画像は、切り出し座標も縮める
   if (!sp.rotated) {
-    ctx.drawImage(img, sp.x, sp.y, sp.width, sp.height, x, y, w, h);
+    ctx.drawImage(img, sp.x * k, sp.y * k, sp.width * k, sp.height * k, x, y, w, h);
     return;
   }
   ctx.save();
   ctx.translate(x, y + h);
   ctx.rotate(-Math.PI / 2);
-  ctx.drawImage(img, sp.x, sp.y, sp.width, sp.height, 0, 0, h, w);
+  ctx.drawImage(img, sp.x * k, sp.y * k, sp.width * k, sp.height * k, 0, 0, h, w);
   ctx.restore();
 }
 
-return { loadImage, parseSparrowXml, parsePackerText, sparrowFrames, sparrowSequenceOf, paintSparrow };
+return { getImageCap, setImageCap, loadImage, parseSparrowXml, parsePackerText, sparrowFrames, sparrowSequenceOf, paintSparrow };
 })();
 
 /* ===== funkin-studio/js/states/character/editor.js ===== */
-const __m30 = (() => {
+const __m36 = (() => {
 /* ============================================================
    states/character/editor.js — Character Editor（V-Slice の character.json / Offset 編集）のロジック
    ------------------------------------------------------------
@@ -8844,9 +9789,10 @@ const __m30 = (() => {
    目次: 1.状態変数 2.アトラスの登録 3.基本ヘルパーと Undo/Redo 4.再生するフレーム列の決め方
          5.描画 6.読み込みとアニメの追加・改名・削除 7.再生操作 8.オフセットの編集と書き出し 9.ビューと Hud の操作
    ============================================================ */
-const { Viewport, isTextEntry } = __m27;
-const { HudPanels } = __m28;
-const { parsePackerText } = __m29;
+const { exportMod } = __m15;
+const { Viewport, isTextEntry } = __m33;
+const { HudPanels } = __m34;
+const { parsePackerText } = __m35;
 const { GENERATED_BY } = __m10;
 
 function mountCharacterEditor(state) {
@@ -9068,7 +10014,74 @@ function mountCharacterEditor(state) {
     $("offCharName").value = doc.name ?? "";
     $("offGeneratedBy").value = GENERATED_BY;
     $("offFlipX").checked = !!doc.flipX;
+    syncProps();
   }
+  // ---- キャラクター設定（V-Slice の CharacterData の項目）----
+  // 既定値（V-Slice 側の既定）。既定のままで、JSON に元から無い項目は書き出さない
+  const DEF = { scale: 1, singTime: 8, danceEvery: 1, isPixel: false, startingAnimation: "idle", cameraOffsets: [0, 0], hi: { scale: 1, isPixel: false, flipX: false, offsets: [0, 0] }, death: { cameraOffsets: [0, 0], cameraZoom: 1, preTransitionDelay: 0 } };
+  const num = (id, fb) => {
+    const v = $(id).value;
+    return v === "" || !Number.isFinite(Number(v)) ? fb : Number(v);
+  };
+  function syncProps() {
+    if (!doc) return;
+    const hi = doc.healthIcon ?? {},
+      de = doc.death ?? {};
+    $("offScale").value = doc.scale ?? DEF.scale;
+    $("offSingTime").value = doc.singTime ?? DEF.singTime;
+    $("offDanceEvery").value = doc.danceEvery ?? DEF.danceEvery;
+    $("offIsPixel").checked = !!doc.isPixel;
+    const names = (doc.animations ?? []).map((a) => a.name);
+    const sa = doc.startingAnimation ?? DEF.startingAnimation;
+    $("offStartAnim").textContent = "";
+    for (const n of new Set([...names, sa])) $("offStartAnim").append(new Option(n, n));
+    $("offStartAnim").value = sa;
+    $("offCamX").value = doc.cameraOffsets?.[0] ?? 0;
+    $("offCamY").value = doc.cameraOffsets?.[1] ?? 0;
+    $("offHIId").value = hi.id ?? "";
+    $("offHIScale").value = hi.scale ?? DEF.hi.scale;
+    $("offHIPixel").checked = !!hi.isPixel;
+    $("offHIFlip").checked = !!hi.flipX;
+    $("offHIOffX").value = hi.offsets?.[0] ?? 0;
+    $("offHIOffY").value = hi.offsets?.[1] ?? 0;
+    $("offDeathCamX").value = de.cameraOffsets?.[0] ?? 0;
+    $("offDeathCamY").value = de.cameraOffsets?.[1] ?? 0;
+    $("offDeathZoom").value = de.cameraZoom ?? DEF.death.cameraZoom;
+    $("offDeathDelay").value = de.preTransitionDelay ?? DEF.death.preTransitionDelay;
+  }
+  /** obj[key] = val。ただし既定値と同じで、もともと無かった項目なら書かない（JSON を汚さない） */
+  function setOpt(obj, key, val, def) {
+    const same = JSON.stringify(val) === JSON.stringify(def);
+    if (same && !(key in obj)) return;
+    obj[key] = val;
+  }
+  $("offPropsApply").onclick = () => {
+    if (!doc) return say("character.json を読み込んでください");
+    snapshot();
+    const sc = num("offScale", 1);
+    if (!(sc > 0)) return say("scale は 0 より大きい値にしてください");
+    doc.scale = sc;
+    setOpt(doc, "singTime", num("offSingTime", DEF.singTime), DEF.singTime);
+    setOpt(doc, "danceEvery", num("offDanceEvery", DEF.danceEvery), DEF.danceEvery);
+    setOpt(doc, "isPixel", $("offIsPixel").checked, DEF.isPixel);
+    setOpt(doc, "startingAnimation", $("offStartAnim").value || "idle", DEF.startingAnimation);
+    setOpt(doc, "cameraOffsets", [num("offCamX", 0), num("offCamY", 0)], DEF.cameraOffsets);
+    const hid = $("offHIId").value.trim();
+    const hi = doc.healthIcon ?? {};
+    if (hid) hi.id = hid;
+    setOpt(hi, "scale", num("offHIScale", 1), DEF.hi.scale);
+    setOpt(hi, "isPixel", $("offHIPixel").checked, DEF.hi.isPixel);
+    setOpt(hi, "flipX", $("offHIFlip").checked, DEF.hi.flipX);
+    setOpt(hi, "offsets", [num("offHIOffX", 0), num("offHIOffY", 0)], DEF.hi.offsets);
+    if (Object.keys(hi).length) doc.healthIcon = hi;
+    const de = doc.death ?? {};
+    setOpt(de, "cameraOffsets", [num("offDeathCamX", 0), num("offDeathCamY", 0)], DEF.death.cameraOffsets);
+    setOpt(de, "cameraZoom", num("offDeathZoom", 1), DEF.death.cameraZoom);
+    setOpt(de, "preTransitionDelay", num("offDeathDelay", 0), DEF.death.preTransitionDelay);
+    if (Object.keys(de).length) doc.death = de;
+    draw();
+    say("キャラクター設定を適用しました。JSON保存で書き出せます。");
+  };
   // 変更の直前に呼ぶ: doc を丸ごと複製して履歴に積む（最大60件。Redo 履歴は破棄）
   function snapshot() {
     if (!doc) return;
@@ -9565,10 +10578,36 @@ function mountCharacterEditor(state) {
   // ============================================================
   // detectCharacter(): character.json を読み込む。animations 配列を確認 → 状態を全リセット → 必要な assetPath を一覧表示
   //                    （アトラスの PNG などは、このあと各欄から別途登録する）
+  // ホームで読み込んだ mod（workspace）に、assetPath のアトラスがあれば自動で登録する
+  let charOrigin = "",
+    loadedName = "";
+  async function autoRegisterFromWorkspace(paths) {
+    const ws = state.app.workspace;
+    if (!ws?.size) return 0;
+    let n = 0;
+    for (const path of paths) {
+      try {
+        const set = ws.atlasFor(path, charOrigin);
+        if (!set) continue;
+        const data = await parseAssetFiles(await ws.toFile(set.png), await ws.toFile(set.def), set.anim ? await ws.toFile(set.anim) : undefined);
+        atlasRegistry.set(path, data);
+        n++;
+      } catch (e) {
+        say(`自動登録できませんでした: ${path}（${e.message}）`);
+      }
+    }
+    if (n) {
+      updateRegistryUI();
+      refresh();
+    }
+    return n;
+  }
   async function detectCharacter() {
     try {
       const f = $("offCharacter").files[0];
       if (!f) throw Error("character.json を選択してください");
+      charOrigin = f.__origin ?? "";
+      loadedName = f.name;
       const parsed = JSON.parse(await f.text());
       if (!Array.isArray(parsed.animations)) throw Error("animations 配列が見つかりません");
       stopOffPlayback();
@@ -9589,8 +10628,10 @@ function mountCharacterEditor(state) {
       refresh();
       resize();
       const paths = requiredPaths(doc);
+      const auto = await autoRegisterFromWorkspace(paths);
       say(
-        `JSON解析完了: ${parsed.animations.length} アニメーション、${paths.length} 種類のassetPath。各欄から対応するファイルを登録してください。`,
+        `JSON解析完了: ${parsed.animations.length} アニメーション、${paths.length} 種類のassetPath。` +
+          (auto ? `読み込み済みの mod から ${auto} 件のアトラスを自動登録しました。` : "各欄から対応するファイルを登録してください。"),
       );
     } catch (e) {
       say("JSON解析エラー: " + e.message);
@@ -9841,13 +10882,9 @@ function mountCharacterEditor(state) {
     }
     const before = new TextEncoder().encode(JSON.stringify(doc, null, 2)).length;
     const after = new TextEncoder().encode(json).length;
-    const b = new Blob([json], { type: "application/json;charset=utf-8" }),
-      u = URL.createObjectURL(b),
-      a = document.createElement("a");
-    a.href = u;
-    a.download = "character-offset-edited.json";
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(u), 1500);
+    // mod の zip ごと書き出す。キャラ JSON は data/characters/<id>.json（読み込んだ名前があればそれ、なければ name から）
+    const cid = (loadedName || doc.name || "character").toString().replace(/\.json$/i, "").trim().replace(/[^\w\-.]+/g, "_").replace(/^_+|_+$/g, "") || "character";
+    exportMod(state.app, [{ path: `data/characters/${cid}.json`, data: json }], { origin: charOrigin || undefined, say }).catch((e) => say("書き出しエラー: " + e.message));
     say(
       "character.json を保存しました。" +
         (compact
@@ -9938,16 +10975,18 @@ return { mountCharacterEditor };
 })();
 
 /* ===== funkin-studio/js/states/CharacterEditorState.js ===== */
-const __m31 = (() => {
+const __m37 = (() => {
 /* ============================================================
    states/CharacterEditorState.js — Character Editor（V-Slice の character.json / Offset 編集）の画面
    ------------------------------------------------------------
    この画面の Undo/Redo は画面内のボタン（offUndo など）で行い、HUD の Undo/Redo は使わない。
    （State に undo()/redo() を書かなければ、HUD のボタンは押せないままになる）
    ============================================================ */
-const { EditorState } = __m18;
-const { template } = __m26;
-const { mountCharacterEditor } = __m30;
+const { mountModPicker } = __m22;
+const { characterList } = __m23;
+const { EditorState } = __m24;
+const { template } = __m32;
+const { mountCharacterEditor } = __m36;
 
 class CharacterEditorState extends EditorState {
   static id = "character";
@@ -9957,6 +10996,7 @@ class CharacterEditorState extends EditorState {
 
   create() {
     this.editor = mountCharacterEditor(this);
+    mountModPicker(this, this.root.querySelector("#offCharacter").closest("label").parentElement, { title: "読み込み済みの mod からキャラを選ぶ", list: characterList, run: () => this.root.querySelector("#offDetect").click() });
   }
   onShow() {
     this.editor.onShow();
@@ -9970,7 +11010,7 @@ return { CharacterEditorState };
 })();
 
 /* ===== funkin-studio/js/states/stage/template.js ===== */
-const __m32 = (() => {
+const __m38 = (() => {
 /* ============================================================
    stage/template.js — Stage Editor 画面の HTML
    ------------------------------------------------------------
@@ -10016,6 +11056,7 @@ const template = `
               <label><input id="stgCompact" type="checkbox" /> 整形して保存（オフ=1行の軽量JSON）</label>
             </div>
             <h3>画像アセット</h3>
+            <label title="辺がこの大きさを超える PNG は、縮小してデコードします（メモリ節約。Low-end 端末向け）。次に読み込む画像から反映されます。">大きな画像の縮小 <select id="stgImgCap"><option value="1024">辺 1024px まで（最軽量）</option><option value="2048">辺 2048px まで（軽量）</option><option value="4096">辺 4096px まで</option><option value="0">縮小しない（高画質・重い）</option></select></label>
             <label>画像・XML・TXT・AnimateAtlas を登録（複数可）<input id="stgImages" type="file" accept="image/*,.xml,.txt,.json,text/xml,text/plain,application/json" multiple /></label>
             <label class="stgDesktopOnly">フォルダごと登録（AnimateAtlas 向け・PC）<input id="stgAtlasDir" type="file" webkitdirectory multiple /></label>
             <label class="stgDesktopOnly" title="mod のフォルダ全体を選ぶと、json とアセットが別のフォルダにあっても、assetPath から自動で探します。中身は必要になったときだけ読むので、大きなフォルダでも軽いです">mod フォルダ全体を登録（PC）<input id="stgPoolDir" type="file" webkitdirectory multiple /></label>
@@ -10178,7 +11219,7 @@ return { template };
 })();
 
 /* ===== funkin-studio/js/states/stage/stageData.js ===== */
-const __m33 = (() => {
+const __m39 = (() => {
 /* ============================================================
    stage/stageData.js — V-Slice の「ステージ JSON」（StageData.hx）を扱う純粋な関数群
    ------------------------------------------------------------
@@ -10367,403 +11408,8 @@ function serializeStage(doc, compact = true) {
 return { STAGE_VERSION, CHAR_IDS, CHAR_LABEL, clone, round3, defaultCharacter, defaultStage, normalizeStage, normalizeProp, newProp, newRect, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas, serializeStage };
 })();
 
-/* ===== funkin-studio/js/states/chart/zip.js ===== */
-const __m34 = (() => {
-/* ============================================================
-   chart/zip.js — .fnfc（= ZIP）の読み書き（外部ライブラリなし）
-   ------------------------------------------------------------
-   読み: 中央ディレクトリを読み、deflate は DecompressionStream("deflate-raw")、無圧縮はそのまま。
-   書き: 無圧縮（store）で作る。音声（ogg/mp3）は元々圧縮済みなので、サイズはほぼ変わらない。
-   ============================================================ */
-let crcTable = null;
-function crc32(bytes) {
-  if (!crcTable) {
-    crcTable = new Uint32Array(256);
-    for (let n = 0; n < 256; n++) {
-      let c = n;
-      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-      crcTable[n] = c >>> 0;
-    }
-  }
-  let c = 0xffffffff;
-  for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 255] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-async function inflateRaw(data) {
-  const ds = new DecompressionStream("deflate-raw");
-  const stream = new Blob([data]).stream().pipeThrough(ds);
-  return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-
-/** @returns Map<名前, Uint8Array> */
-async function readZip(buffer) {
-  const u8 = new Uint8Array(buffer),
-    dv = new DataView(buffer);
-  let eocd = -1;
-  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) {
-    if (dv.getUint32(i, true) === 0x06054b50) {
-      eocd = i;
-      break;
-    }
-  }
-  if (eocd < 0) throw new Error("ZIP として読めません（終端が見つかりません）");
-  const count = dv.getUint16(eocd + 10, true);
-  let p = dv.getUint32(eocd + 16, true);
-  const dec = new TextDecoder();
-  const out = new Map();
-  for (let n = 0; n < count; n++) {
-    if (dv.getUint32(p, true) !== 0x02014b50) break;
-    const method = dv.getUint16(p + 10, true),
-      csize = dv.getUint32(p + 20, true),
-      nlen = dv.getUint16(p + 28, true),
-      xlen = dv.getUint16(p + 30, true),
-      clen = dv.getUint16(p + 32, true),
-      lho = dv.getUint32(p + 42, true);
-    const name = dec.decode(u8.subarray(p + 46, p + 46 + nlen));
-    p += 46 + nlen + xlen + clen;
-    if (name.endsWith("/")) continue;
-    const lnlen = dv.getUint16(lho + 26, true),
-      lxlen = dv.getUint16(lho + 28, true);
-    const start = lho + 30 + lnlen + lxlen;
-    const raw = u8.subarray(start, start + csize);
-    if (method === 0) out.set(name, raw.slice());
-    else if (method === 8) out.set(name, await inflateRaw(raw));
-    else throw new Error(`未対応の圧縮方式です (${name}: method ${method})`);
-  }
-  return out;
-}
-
-/** @param entries [{ name, data: Uint8Array }] @returns Blob */
-function writeZip(entries) {
-  const enc = new TextEncoder();
-  const parts = [],
-    central = [];
-  let offset = 0;
-  const now = new Date();
-  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
-  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
-  for (const { name, data } of entries) {
-    const nameBytes = enc.encode(name),
-      crc = crc32(data);
-    const head = new DataView(new ArrayBuffer(30));
-    head.setUint32(0, 0x04034b50, true);
-    head.setUint16(4, 20, true);
-    head.setUint16(6, 0x0800, true); // UTF-8 名
-    head.setUint16(10, dosTime, true);
-    head.setUint16(12, dosDate, true);
-    head.setUint32(14, crc, true);
-    head.setUint32(18, data.length, true);
-    head.setUint32(22, data.length, true);
-    head.setUint16(26, nameBytes.length, true);
-    parts.push(head, nameBytes, data);
-    const c = new DataView(new ArrayBuffer(46));
-    c.setUint32(0, 0x02014b50, true);
-    c.setUint16(4, 20, true);
-    c.setUint16(6, 20, true);
-    c.setUint16(8, 0x0800, true);
-    c.setUint16(12, dosTime, true);
-    c.setUint16(14, dosDate, true);
-    c.setUint32(16, crc, true);
-    c.setUint32(20, data.length, true);
-    c.setUint32(24, data.length, true);
-    c.setUint16(28, nameBytes.length, true);
-    c.setUint32(42, offset, true);
-    central.push(c, nameBytes);
-    offset += 30 + nameBytes.length + data.length;
-  }
-  const cdSize = central.reduce((s, x) => s + (x.byteLength ?? x.length), 0);
-  const end = new DataView(new ArrayBuffer(22));
-  end.setUint32(0, 0x06054b50, true);
-  end.setUint16(8, entries.length, true);
-  end.setUint16(10, entries.length, true);
-  end.setUint32(12, cdSize, true);
-  end.setUint32(16, offset, true);
-  return new Blob([...parts, ...central, end], { type: "application/zip" });
-}
-
-/**
- * ZIP を「中身を読まずに」開く。中央ディレクトリ（名前と位置の一覧）だけ読み、
- * 各ファイルは read() を呼んだときにだけ取り出す。数百MBの mod パックでもメモリを食わない。
- * @param file File | Blob
- * @returns [{ name, size, read(): Promise<Uint8Array> }]
- */
-async function openZipLazy(file) {
-  const total = file.size;
-  const tailLen = Math.min(total, 65557);
-  const tail = new DataView(await file.slice(total - tailLen, total).arrayBuffer());
-  let eocd = -1;
-  for (let i = tailLen - 22; i >= 0; i--) {
-    if (tail.getUint32(i, true) === 0x06054b50) {
-      eocd = i;
-      break;
-    }
-  }
-  if (eocd < 0) throw new Error("ZIP として読めません（終端が見つかりません）");
-  let count = tail.getUint16(eocd + 10, true);
-  const cdSize = tail.getUint32(eocd + 12, true),
-    cdOff = tail.getUint32(eocd + 16, true);
-  if (cdOff === 0xffffffff || cdSize === 0xffffffff || count === 0xffff) throw new Error("4GB を超える ZIP（ZIP64）は未対応です。mod を分けてください");
-  const cd = new DataView(await file.slice(cdOff, cdOff + cdSize).arrayBuffer());
-  const u8 = new Uint8Array(cd.buffer);
-  const dec = new TextDecoder();
-  const out = [];
-  let p = 0;
-  for (let n = 0; n < count && p + 46 <= cd.byteLength; n++) {
-    if (cd.getUint32(p, true) !== 0x02014b50) break;
-    const flags = cd.getUint16(p + 8, true),
-      method = cd.getUint16(p + 10, true),
-      csize = cd.getUint32(p + 20, true),
-      usize = cd.getUint32(p + 24, true),
-      nlen = cd.getUint16(p + 28, true),
-      xlen = cd.getUint16(p + 30, true),
-      clen = cd.getUint16(p + 32, true),
-      lho = cd.getUint32(p + 42, true);
-    const name = dec.decode(u8.subarray(p + 46, p + 46 + nlen)).replace(/\\/g, "/");
-    p += 46 + nlen + xlen + clen;
-    if (name.endsWith("/") || (flags & 1)) continue; // フォルダ / 暗号化は対象外
-    out.push({
-      name,
-      size: usize,
-      async read() {
-        const head = new DataView(await file.slice(lho, lho + 30).arrayBuffer());
-        const start = lho + 30 + head.getUint16(26, true) + head.getUint16(28, true);
-        const raw = new Uint8Array(await file.slice(start, start + csize).arrayBuffer());
-        if (method === 0) return raw;
-        if (method === 8) return inflateRaw(raw);
-        throw new Error(`未対応の圧縮方式です (${name}: method ${method})`);
-      },
-    });
-  }
-  return out;
-}
-
-return { readZip, writeZip, openZipLazy };
-})();
-
-/* ===== funkin-studio/js/services/ModPack.js ===== */
-const __m35 = (() => {
-/* ============================================================
-   services/ModPack.js — mod パック（フォルダ / zip）のファイルを「パス付き」で扱う共通部品
-   ------------------------------------------------------------
-   なぜ必要か:
-     以前は assetPath を「ファイル名だけ」や「末尾のフォルダ名だけ」で探していたため、
-     別のフォルダに同じ名前のファイルがあると、先に見つかった方（= 間違った方）を拾うことがあった。
-     ここでは、ファイルの置き場所を FNF の構造（images/ data/ scripts/ …）に合わせて正規化し、
-     assetPath に「どれだけ正確に合うか」を点数で比べて選ぶ。同点（どちらか決められない）のときは、
-     黙って選ばずに注意を出す。
-   ・rootedOf(): "Mod/images/characters/bf.png" → "images/characters/bf"（最初の images/data/… から後ろ。拡張子なし・小文字）
-   ・originOf(): "Mod/images/…" → "mod"（どの mod / フォルダに属するか。同じ origin のファイルを優先する）
-   ・LazyZipFile: zip の中の 1 ファイル。File と同じ使い方ができ、中身は読まれたときだけ取り出す
-   ============================================================ */
-const { openZipLazy } = __m34;
-
-/** FNF の mod / assets 直下に来るフォルダ名。この名前が最初に出てきた所を「ルート」とみなす */
-const ANCHORS = new Set(["images", "data", "scripts", "sounds", "music", "songs", "shaders", "fonts", "videos", "preload", "shared"]);
-
-const splitPath = (p) => String(p || "").replace(/\\/g, "/").split("/").filter(Boolean);
-const relPathOf = (f) => f.webkitRelativePath || f.name;
-
-function makeInfo(path, stripExt) {
-  const segs = splitPath(path).map((s) => s.toLowerCase());
-  if (stripExt && segs.length) segs[segs.length - 1] = segs[segs.length - 1].replace(/\.[^./]+$/, "");
-  // 最初に出てくる images / data / … から後ろを「ルート以降のパス」、手前を origin（mod フォルダ名）とする
-  const isA = (i) => (stripExt ? i < segs.length - 1 : i < segs.length) && ANCHORS.has(segs[i]);
-  let first = segs.findIndex((_, i) => isA(i));
-  if (first < 0) first = 0;
-  // assets/shared/images/… や assets/preload/images/… の shared / preload は「ラッパー」なので飛ばし、images/ を本当のルートにする
-  let root = first;
-  while ((segs[root] === "shared" || segs[root] === "preload") && isA(root + 1)) root++;
-  return { segs, root, noExt: segs.slice(root).join("/"), origin: segs.slice(0, first).join("/"), flat: segs.length <= 1 };
-}
-const _cache = new WeakMap();
-/** { segs: 小文字の各フォルダ名, root: ルートの位置, noExt: 拡張子なしのルート以降, origin } */
-function infoOf(f) {
-  let v = _cache.get(f);
-  if (!v) _cache.set(f, (v = makeInfo(relPathOf(f), true)));
-  return v;
-}
-/** ファイルパス（文字列）版: { noExt, origin, flat, segs } */
-const infoOfPath = (path) => makeInfo(path, true);
-/** フォルダのパス版（AnimateAtlas のフォルダ用） */
-const infoOfDir = (dir) => makeInfo(dir, false);
-const rootedOf = (f) => infoOf(f).noExt;
-const originOf = (f) => infoOf(f).origin;
-
-/** assetPath を比べやすい形にする: "weeb:Characters/BF.png" → "characters/bf" */
-function normAsset(p) {
-  return String(p || "")
-    .replace(/^[^:/\\]+:/, "")
-    .replace(/\\/g, "/")
-    .replace(/\/\*+$/, "") // "stages/*" のような末尾のワイルドカードはフォルダ指定として扱う
-    .replace(/^\/+|\/+$/g, "")
-    .replace(/\.[a-z0-9]+$/i, "")
-    .toLowerCase();
-}
-
-/**
- * ファイル(path = ルート以降のパス)が assetPath にどれだけ合うか。0 = 合わない。
- *   100 : images/<assetPath> と完全一致（または assetPath が data/… で始まっていて一致）
- *    60+: 末尾が assetPath と一致（フォルダ階層が違うだけ。一致した階層数ぶん加点）
- *    20 : assetPath が 1 階層だけで、ファイル名が一致（弱い）
- *    10 : 置き場所の情報が無いファイル（スマホで直接選んだ等）の名前が一致
- */
-function scorePath(info, assetPath, dirPrefix = "images") {
-  const want = normAsset(assetPath);
-  if (!want) return 0;
-  const ws = want.split("/");
-  const full = info.segs;
-  if (info.noExt === `${dirPrefix}/${want}` || info.noExt === want) return 100;
-  // 末尾の一致
-  let n = 0;
-  while (n < ws.length && n < full.length && full[full.length - 1 - n] === ws[ws.length - 1 - n]) n++;
-  if (n === ws.length && ws.length >= 2) return 60 + n;
-  if (n === ws.length && ws.length === 1) return info.flat ? 10 : 20;
-  return 0;
-}
-
-/**
- * pool から assetPath に合うファイルを順位づけして返す（高い順）。
- * @param opts { origin: 参照元の origin（同じ mod を優先）, dirPrefix, files: 点数計算に使う拡張子の正規表現は extRe }
- */
-function rankFiles(pool, assetPath, extRe, opts = {}) {
-  const out = [];
-  for (const f of pool) {
-    if (!extRe.test(f.name)) continue;
-    const info = infoOf(f);
-    let s = scorePath(info, assetPath, opts.dirPrefix ?? "images");
-    if (!s) continue;
-    if (opts.origin !== undefined && info.origin === opts.origin) s += 25;
-    out.push({ f, score: s, info });
-  }
-  return out.sort((a, b) => b.score - a.score);
-}
-
-/** 同点 1 位が複数あるか（= どれか決められない） */
-function topTies(ranked) {
-  if (!ranked.length) return [];
-  const top = ranked[0].score;
-  const ties = ranked.filter((r) => r.score === top);
-  const key = (r) => r.info.origin + "|" + r.info.noExt;
-  return new Set(ties.map(key)).size > 1 ? ties : ties.slice(0, 1); // 別の場所のものが同点で並んだときだけ「決められない」
-}
-
-// ---------------------------------------------------------------- 注意の通知
-const notes = new Set();
-let sink = null;
-/** 取り違えそうなときの注意文の受け取り先（Stage Editor が say に繋ぐ） */
-function setAssetNoteSink(fn) {
-  sink = fn;
-}
-function assetNote(msg) {
-  if (notes.has(msg)) return;
-  notes.add(msg);
-  sink?.(msg);
-}
-const clearAssetNotes = () => notes.clear();
-
-// ---------------------------------------------------------------- zip の 1 ファイル（File と同じ使い方）
-class LazyZipFile {
-  constructor(entry, zipName) {
-    this._e = entry;
-    this.name = entry.name.split("/").pop();
-    this.webkitRelativePath = entry.name; // zip 内のパス（mod フォルダの入れ子もそのまま）
-    this.size = entry.size;
-    this.lastModified = 0;
-    this.zip = zipName;
-    this.lazy = true;
-  }
-  async arrayBuffer() {
-    const u8 = await this._e.read();
-    return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
-  }
-  async blob() {
-    const u8 = await this._e.read();
-    const ext = (this.name.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase();
-    const type = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp" }[ext] || "";
-    return new Blob([u8], { type });
-  }
-  async text() {
-    return new TextDecoder().decode(await this._e.read());
-  }
-  slice(...a) {
-    return this.blob().then((b) => b.slice(...a));
-  }
-}
-
-/** zip（File）→ LazyZipFile[]。中身は読まない（名前と位置だけ） */
-async function openModZip(file) {
-  const entries = await openZipLazy(file);
-  return entries.filter((e) => !/(^|\/)(__MACOSX|\.DS_Store)(\/|$)/.test(e.name)).map((e) => new LazyZipFile(e, file.name));
-}
-
-// ---------------------------------------------------------------- mod の中身の一覧
-/** data/stages/*.json などを一覧にする。{ id, file, origin } */
-function listData(pool, dir) {
-  const out = [];
-  for (const f of pool) {
-    if (!/\.json$/i.test(f.name)) continue;
-    const info = infoOf(f);
-    const m = info.noExt.match(new RegExp(`^data/${dir}/(.+)$`));
-    if (m) out.push({ id: m[1], file: f, origin: info.origin });
-  }
-  return out.sort((a, b) => a.id.localeCompare(b.id));
-}
-/** mod のざっくりした要約 */
-function summarize(pool) {
-  const c = { images: 0, scripts: 0, data: 0, other: 0 };
-  for (const f of pool) {
-    const r = infoOf(f).noExt.split("/")[0];
-    if (r === "images") c.images++;
-    else if (r === "scripts") c.scripts++;
-    else if (r === "data") c.data++;
-    else c.other++;
-  }
-  return {
-    ...c,
-    stages: listData(pool, "stages"),
-    characters: listData(pool, "characters"),
-    noteStyles: listData(pool, "notestyles"),
-    origins: [...new Set(pool.map(originOf))].filter(Boolean),
-  };
-}
-
-// ---------------------------------------------------------------- 種類別の解決（image / sound / music / song / icon / character / stage …）
-/** 種類ごとの「ルートのフォルダ」と拡張子。assetPath はその直下からの相対（V-Slice と同じ指定）で渡す */
-const AUDIO = /\.(ogg|mp3|wav|flac)$/i;
-const KINDS = {
-  image: { dir: "images", ext: /\.png$/i },
-  xml: { dir: "images", ext: /\.(xml|txt)$/i },
-  icon: { dir: "images", ext: /\.png$/i }, // 例: "icons/icon-bf" / "freeplay/icons/bfpixel"
-  sound: { dir: "sounds", ext: AUDIO },
-  music: { dir: "music", ext: AUDIO },
-  song: { dir: "songs", ext: AUDIO }, // 例: "bopeebo/Inst" / "bopeebo/Voices-bf"
-  character: { dir: "data/characters", ext: /\.json$/i },
-  stage: { dir: "data/stages", ext: /\.json$/i },
-  notestyle: { dir: "data/notestyles", ext: /\.json$/i },
-  script: { dir: "scripts", ext: /\.hx[cs]?$/i },
-};
-/**
- * pool から、V-Slice と同じ指定（assetPath）でファイルを 1 つ選ぶ。
- * shared/ や preload/ の中でも、mod ルート直下でも同じように見つかる。
- * @returns {{file, ambiguous: Array}|null} ambiguous = 同点で決められなかった候補（あれば注意を出す）
- */
-function resolveAsset(pool, kind, assetPath, opts = {}) {
-  const k = KINDS[kind];
-  if (!k) throw new Error(`未対応の種類: ${kind}`);
-  const dirPrefix = k.dir;
-  const ranked = rankFiles(pool, assetPath, k.ext, { dirPrefix, origin: opts.origin });
-  if (!ranked.length) return null;
-  const ties = topTies(ranked);
-  if (ties.length > 1 && !opts.quiet) assetNote(`${kind}「${assetPath}」に合うファイルが複数あります: ${ties.map((t) => t.info.origin + "/" + t.info.noExt).join(" , ")}（先頭を使います）`);
-  return { file: ranked[0].f, ambiguous: ties.length > 1 ? ties.map((t) => t.f) : [] };
-}
-
-return { relPathOf, infoOf, infoOfPath, infoOfDir, rootedOf, originOf, normAsset, scorePath, rankFiles, topTies, setAssetNoteSink, assetNote, clearAssetNotes, LazyZipFile, openModZip, listData, summarize, resolveAsset };
-})();
-
 /* ===== funkin-studio/js/states/stage/atlas.js ===== */
-const __m36 = (() => {
+const __m40 = (() => {
 /* ============================================================
    stage/atlas.js — 絵の形式ごとの違いを「フレーム」にそろえる（Sparrow / Packer / AnimateAtlas）
    ------------------------------------------------------------
@@ -10785,8 +11431,8 @@ const __m36 = (() => {
           MultiSparrowCharacter / MultiAnimateAtlasCharacter（アニメごとの assetPath と renderType）
    ※ AnimateAtlas の描画ロジックは Character Editor（states/character/editor.js）と同じ。あちらは触らない方針のため重複している。
    ============================================================ */
-const { loadImage, parseSparrowXml, parsePackerText, sparrowSequenceOf, paintSparrow } = __m29;
-const { rankFiles, topTies, assetNote, infoOf, infoOfDir, scorePath, originOf } = __m35;
+const { loadImage, parseSparrowXml, parsePackerText, sparrowSequenceOf, paintSparrow } = __m35;
+const { rankFiles, topTies, assetNote, infoOf, infoOfDir, scorePath, originOf } = __m13;
 
 // ============================================================
 // 1. Sparrow / Packer（切り出す形式）
@@ -10982,7 +11628,8 @@ class AnimateFrame {
     for (const { sp, m } of this.list) {
       const M = mul(base, m);
       ctx.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
-      ctx.drawImage(sp.image, sp.x, sp.y, sp.w, sp.h, 0, 0, sp.w, sp.h);
+      const k = sp.image.k || 1;
+      ctx.drawImage(sp.image, sp.x * k, sp.y * k, sp.w * k, sp.h * k, 0, 0, sp.w, sp.h);
     }
     ctx.setTransform(t);
   }
@@ -11292,7 +11939,7 @@ return { SpriteAtlas, AnimateAtlas, isAnimationJsonName, isSpritemapJsonName, bu
 })();
 
 /* ===== funkin-studio/js/states/stage/stageCharacter.js ===== */
-const __m37 = (() => {
+const __m41 = (() => {
 /* ============================================================
    stage/stageCharacter.js — ステージ上に「実物のキャラクター」を出すための部品
    ------------------------------------------------------------
@@ -11318,8 +11965,8 @@ const __m37 = (() => {
    ■ 左右反転: BF は !flipX、DAD / GF は flipX（Stage.addCharacter）。反転は「表示中フレーム自身の枠」の中で行う。
    ■ カメラ焦点: originalPosition + (幅/2, 高さ/2) + キャラの cameraOffsets + ステージ側の cameraOffsets
    ============================================================ */
-const { findSpriteAtlas, findAnimateAtlas } = __m36;
-const { originOf } = __m35;
+const { findSpriteAtlas, findAnimateAtlas } = __m40;
+const { originOf } = __m13;
 
 const RENDER_TYPES = ["sparrow", "packer", "multisparrow", "animateatlas", "multianimateatlas"];
 
@@ -11485,7 +12132,7 @@ return { RENDER_TYPES, atlasKindOf, referenceAnimOf, StageCharacter };
 })();
 
 /* ===== funkin-studio/js/states/stage/editor.js ===== */
-const __m38 = (() => {
+const __m42 = (() => {
 /* ============================================================
    stage/editor.js — Stage Editor（V-Slice のステージ JSON の編集）のロジック
    ------------------------------------------------------------
@@ -11506,13 +12153,14 @@ const __m38 = (() => {
    目次: 1.状態 2.画像アセット 3.履歴 4.図形の計算 5.描画 6.選択とドラッグ 7.レイヤー一覧 8.プロパティ欄
          9.ステージ全体・ファイル 10.ビューとキーボード
    ============================================================ */
-const { Viewport, isTextEntry } = __m27;
-const { HudPanels } = __m28;
-const { defaultStage, normalizeStage, newProp, newRect, serializeStage, clone, round3, CHAR_IDS, CHAR_LABEL, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas } = __m33;
-const { loadImage, parseSparrowXml, parsePackerText } = __m29;
-const { normAsset, infoOf, infoOfDir, setAssetNoteSink, openModZip, summarize } = __m35;
-const { SpriteAtlas, animateGroups, buildAnimateAtlas, isSpritemapPng, matchFile, relPath, findAnimateAtlas } = __m36;
-const { StageCharacter } = __m37;
+const { exportMod } = __m15;
+const { Viewport, isTextEntry } = __m33;
+const { HudPanels } = __m34;
+const { defaultStage, normalizeStage, newProp, newRect, serializeStage, clone, round3, CHAR_IDS, CHAR_LABEL, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas } = __m39;
+const { loadImage, parseSparrowXml, parsePackerText, getImageCap, setImageCap } = __m35;
+const { normAsset, infoOf, infoOfDir, setAssetNoteSink, openModZip, summarize } = __m13;
+const { SpriteAtlas, animateGroups, buildAnimateAtlas, isSpritemapPng, matchFile, relPath, findAnimateAtlas } = __m40;
+const { StageCharacter } = __m41;
 
 const SEL_COLOR = "#ffb020"; // 選択枠の色
 const PLACEHOLDER = { bf: "#4a8cff", dad: "#a15cff", gf: "#ff6fb1" }; // キャラ未読み込み時のシルエット色
@@ -11530,7 +12178,7 @@ function mountStageEditor(state) {
       originY: 0.5,
       onChange: () => {
         $("stgZoom").value = Number(vp.zoom.toFixed(2));
-        draw();
+        requestDraw();
       },
     }),
     panels = new HudPanels(state.root, {
@@ -11588,6 +12236,7 @@ function mountStageEditor(state) {
   // → mod のフォルダ全体を一度だけ選べば、json とアセットが別のフォルダにあっても、毎回ファイルを動かさずに済む。
   const pool = [];
   const poolKeys = new Set();
+  let stageFileId = ""; // 開いたステージ JSON の元のファイル名（拡張子なし）。保存時に同じ名前で置き換えるため
   let stageOrigin; // いま開いているステージ JSON が属する mod（同じ mod のアセットを優先して探す）
   setAssetNoteSink((m) => say("⚠ " + m)); // 同名ファイルがあって決められないときの注意
   state.addDisposer(() => setAssetNoteSink(null));
@@ -11600,8 +12249,23 @@ function mountStageEditor(state) {
       pool.push(f);
       n++;
     }
+    if (n) state.app.workspace.add(files); // 他のエディタとも共有する
     return n;
   }
+  // ホームで読み込んだ mod（workspace）が増えたら、この pool にも入れて結び付け直す
+  async function syncWorkspace() {
+    const n = addPool(state.app.workspace.files);
+    if (n) {
+      await afterPoolChanged();
+      renderAssets?.();
+    }
+  }
+  state.addDisposer(state.app.events.on("workspace:changed", syncWorkspace));
+  $("stgImgCap").value = String(getImageCap());
+  $("stgImgCap").onchange = (e) => {
+    setImageCap(e.target.value);
+    say("画像の縮小設定を変えました。すでに読み込んだ画像は、読み込み直すと反映されます。");
+  };
   async function registerImages(files) {
     const list = [...files];
     addPool(list);
@@ -11658,8 +12322,8 @@ function mountStageEditor(state) {
     if (c) return c;
     const img = entry.image;
     c = document.createElement("canvas");
-    c.width = img.naturalWidth;
-    c.height = img.naturalHeight;
+    c.width = img.width; // 縮小デコードされた画像は、その大きさで（元の大きさだと巨大なキャンバスになる）
+    c.height = img.height;
     const g = c.getContext("2d");
     g.drawImage(img, 0, 0);
     g.globalCompositeOperation = "multiply";
@@ -11947,6 +12611,7 @@ function mountStageEditor(state) {
     try {
       const next = normalizeStage(JSON.parse((await it.file.text()).replace(/^\uFEFF/, "")));
       stageOrigin = it.origin;
+      stageFileId = it.file.name.replace(/\.json$/i, "");
       loadDoc(next, `「${next.name}」を読み込みました（prop ${next.props.length} 個）。画像は mod パックから探します…`);
       const n = await linkFromPool();
       say(`「${next.name}」を読み込み、prop の画像 ${n} 件を mod パックから結び付けました。`);
@@ -12199,6 +12864,17 @@ function mountStageEditor(state) {
     });
   }
 
+  // pointermove / wheel は 1 フレームに何回も来る。そのたびに描くと Low-end では追いつかないので、
+  // 「描いてほしい」という印だけ付けて、次の画面更新の直前に 1 回だけ描く
+  let drawQueued = false;
+  function requestDraw() {
+    if (drawQueued) return;
+    drawQueued = true;
+    requestAnimationFrame(() => {
+      drawQueued = false;
+      draw();
+    });
+  }
   function draw() {
     const w = canvas.clientWidth,
       h = canvas.clientHeight;
@@ -12353,7 +13029,7 @@ function mountStageEditor(state) {
     so.ref.position = [q(drag.orig[0] + dx), q(drag.orig[1] + dy)];
     drag.moved = true;
     syncPositionFields();
-    draw();
+    requestDraw();
   });
   const endDrag = (e) => {
     if (!drag || drag.id !== e.pointerId) return;
@@ -12840,6 +13516,7 @@ function mountStageEditor(state) {
   $("stgNew").onclick = () => {
     if (!state.app.unsaved.confirmReplace()) return;
     loadDoc(defaultStage(), "新しいステージを作りました。");
+    stageFileId = "";
   };
   $("stgFile").onchange = async (e) => {
     const f = e.target.files[0];
@@ -12849,6 +13526,8 @@ function mountStageEditor(state) {
     try {
       const next = normalizeStage(JSON.parse((await f.text()).replace(/^﻿/, "")));
       loadDoc(next, `「${next.name}」を読み込みました（prop ${next.props.length} 個）。画像は左の「画像アセット」から登録してください。`);
+      stageFileId = f.name.replace(/\.json$/i, "");
+      stageOrigin = f.__origin ?? undefined;
       linkFromPool(); // ファイルの山（mod フォルダ）にあれば自動で結び付ける
     } catch (err) {
       say("読み込みエラー: " + err.message);
@@ -12895,10 +13574,11 @@ function mountStageEditor(state) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   function save() {
-    const file = (doc.name || "stage").trim().replace(/[^\w\-.]+/g, "_").replace(/^_+|_+$/g, "") || "stage";
-    download(file + ".json", serializeStage(doc, !$("stgCompact").checked));
-    state.app.unsaved?.clean();
-    say(`${file}.json を保存しました。`);
+    const file = stageFileId || (doc.name || "stage").trim().replace(/[^\w\-.]+/g, "_").replace(/^_+|_+$/g, "") || "stage";
+    // mod の zip ごと書き出す（元の mod + これまでに編集したもの）。ステージ JSON は data/stages/ に置く
+    exportMod(state.app, [{ path: `data/stages/${file}.json`, data: serializeStage(doc, !$("stgCompact").checked) }], { origin: stageOrigin, say })
+      .then(() => state.app.unsaved?.clean())
+      .catch((e) => say("書き出しエラー: " + e.message));
   }
   $("stgSave").onclick = save;
 
@@ -12973,6 +13653,7 @@ function mountStageEditor(state) {
     onShow() {
       resize();
       syncHud();
+      syncWorkspace(); // ホームで mod を読み込んだあとに開いた場合
     },
     onHide() {},
     undo,
@@ -12984,16 +13665,16 @@ return { mountStageEditor };
 })();
 
 /* ===== funkin-studio/js/states/StageEditorState.js ===== */
-const __m39 = (() => {
+const __m43 = (() => {
 /* ============================================================
    states/StageEditorState.js — Stage Editor（V-Slice のステージ JSON の編集）の画面
    ------------------------------------------------------------
    構造は他のエディタと同じ（入れ物 + stage/editor.js のロジック + stage/template.js の HTML）。
    Character Editor と違い、HUD の Undo / Redo ボタンをそのまま使う（undo() / redo() を持つ画面は HUD のボタンが押せる）。
    ============================================================ */
-const { EditorState } = __m18;
-const { template } = __m32;
-const { mountStageEditor } = __m38;
+const { EditorState } = __m24;
+const { template } = __m38;
+const { mountStageEditor } = __m42;
 
 class StageEditorState extends EditorState {
   static id = "stage";
@@ -13022,7 +13703,7 @@ return { StageEditorState };
 })();
 
 /* ===== funkin-studio/js/states/chart/template.js ===== */
-const __m40 = (() => {
+const __m44 = (() => {
 /* ============================================================
    chart/template.js — Chart Editor 画面の HTML
    ------------------------------------------------------------
@@ -13086,9 +13767,9 @@ const template = `
             <p class="tiny">SongEvent を継承したクラスから、イベントの ID・名前・項目を読み取って、イベントの種類に追加します（スクリプトは実行しません）。読み込んだものはこのブラウザに記憶されます。</p>
             <h3>個別に保存（いまのバリエーション）</h3>
             <div class="row">
-              <button id="chtSaveChart" type="button">chart.json</button>
+              <button id="chtSaveChart" type="button">chart → mod zip</button>
               <button id="chtSaveMeta" type="button">metadata.json</button>
-              <button id="chtSaveAllJson" type="button" title="全バリエーションの JSON を .zip に（音声なし）">全JSON zip</button>
+              <button id="chtSaveAllJson" type="button" title="全バリエーションの JSON と音声を、mod の zip にまとめて書き出す">mod zip（全部）</button>
             </div>
             <div class="row"><label><input id="chtCompact" type="checkbox" /> 1行の軽量JSONで保存</label></div>
             <label>songId（ファイル名に使う）<input id="chtSongId" type="text" placeholder="例: bopeebo" /></label>
@@ -13309,7 +13990,7 @@ return { template };
 })();
 
 /* ===== funkin-studio/js/states/chart/chartData.js ===== */
-const __m41 = (() => {
+const __m45 = (() => {
 /* ============================================================
    chart/chartData.js — Chart Editor のデータ（metadata / chart）と時間計算
    ------------------------------------------------------------
@@ -13633,7 +14314,7 @@ return { METADATA_VERSION, CHART_VERSION, STRUMLINE_SIZE, STEPS_PER_BEAT, DEFAUL
 })();
 
 /* ===== funkin-studio/js/states/chart/audio.js ===== */
-const __m42 = (() => {
+const __m46 = (() => {
 /* ============================================================
    chart/audio.js — Chart Editor の音声（Inst / Voices の複数トラック）
    ------------------------------------------------------------
@@ -13797,7 +14478,7 @@ return { PEAK_MS, AudioEngine };
 })();
 
 /* ===== funkin-studio/js/states/chart/scriptEvents.js ===== */
-const __m43 = (() => {
+const __m47 = (() => {
 /* ============================================================
    chart/scriptEvents.js — HScript（.hxc）から「イベントのスキーマ」と「ノーツ kind」を読み取る
    ------------------------------------------------------------
@@ -14058,7 +14739,7 @@ return { parseHxc };
 })();
 
 /* ===== funkin-studio/js/runtime/hscript.js ===== */
-const __m44 = (() => {
+const __m48 = (() => {
 /* ============================================================
    runtime/hscript.js — HScript（Haxe のサブセット）の軽量インタプリタ
    ------------------------------------------------------------
@@ -15596,7 +16277,7 @@ return { HScriptError, HMap, isStub, makeStub, HScript };
 })();
 
 /* ===== funkin-studio/js/runtime/glpost.js ===== */
-const __m45 = (() => {
+const __m49 = (() => {
 /* ============================================================
    runtime/glpost.js — カメラの「フィルター（シェーダー）」を WebGL で掛ける後処理
    ------------------------------------------------------------
@@ -15704,7 +16385,7 @@ return { GLSL_GRAYSCALE, GLPost };
 })();
 
 /* ===== funkin-studio/js/runtime/runtime.js ===== */
-const __m46 = (() => {
+const __m50 = (() => {
 /* ============================================================
    runtime/runtime.js — V-Slice の演出スクリプト（SongEvent / Module）を動かす、軽量なゲーム環境
    ------------------------------------------------------------
@@ -15716,8 +16397,8 @@ const __m46 = (() => {
    ・軽量化: ・描画は 1280×720 の仮想座標を縮尺する 2D キャンバス描画  ・シェーダーを持つカメラだけ WebGL を通す
      ・画面外 / alpha 0 のものは描かない  ・Tween は 1 本のリストを 1 回なめるだけ
    ============================================================ */
-const { HScript, HMap, makeStub } = __m44;
-const { GLPost, GLSL_GRAYSCALE } = __m45;
+const { HScript, HMap, makeStub } = __m48;
+const { GLPost, GLSL_GRAYSCALE } = __m49;
 
 const LAYER_MAX_W = 1280; // フィルターを掛けるカメラの絵の最大幅(px)
 const GAME_W = 1280,
@@ -16548,7 +17229,7 @@ return { GAME_W, FlxEase, FlxColor, FlxSprite, FlxText, FlxTypedGroup, FlxCamera
 })();
 
 /* ===== funkin-studio/js/states/chart/playtest.js ===== */
-const __m47 = (() => {
+const __m51 = (() => {
 /* ============================================================
    chart/playtest.js — Chart のプレイテスト（音ズレ・譜面の難しさの確認用）
    ------------------------------------------------------------
@@ -16560,8 +17241,8 @@ const __m47 = (() => {
    ・ホールドは押し続ける必要がある（終わる 160ms 前までに離すとドロップ）。相手側ノーツは自動で叩かれる。
    ・スマホは画面タップ（プレイヤー側の4レーン）で叩ける。
    ============================================================ */
-const { Runtime } = __m46;
-const { openModZip } = __m35;
+const { Runtime } = __m50;
+const { openModZip } = __m13;
 const PIXELS_PER_MS = 0.45;
 const WIN = { sick: 45, good: 90, bad: 135, shit: 160 };
 const NOTE_COLORS = ["#c24b99", "#00ffff", "#12fa05", "#f9393f"];
@@ -17261,7 +17942,7 @@ return { createPlayTest };
 })();
 
 /* ===== funkin-studio/js/runtime/noteStyle.js ===== */
-const __m48 = (() => {
+const __m52 = (() => {
 /* ============================================================
    runtime/noteStyle.js — V-Slice のノートスキン（notestyles/*.json + PNG/XML）の読み込みと描画
    ------------------------------------------------------------
@@ -17271,10 +17952,19 @@ const __m48 = (() => {
    ・描画の大きさは「1 レーン = 112px の 720p」を基準にした倍率 k で縮尺する（プレイテストのレーン幅に合わせる）。
    ・軽量化: 画像は ImageBitmap（デコード済み）で保持し、フレーム検索は prefix ごとにキャッシュする。
    ============================================================ */
-const { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } = __m29;
-const { infoOfPath, normAsset, scorePath, assetNote, openModZip } = __m35;
+const { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } = __m35;
+const { infoOfPath, normAsset, scorePath, assetNote, openModZip } = __m13;
 
 const DIRS = ["left", "down", "up", "right"];
+/**
+ * prefix のフレーム列。"purple" のように短い prefix だと、"purple hold piece0000" のような別の絵まで前方一致してしまう。
+ * 「prefix の直後が数字だけ」のフレームがあれば、それだけを使う（ノーツの頭を、ホールドの破片と取り違えない）。
+ */
+function framesByPrefix(sprites, prefix) {
+  const all = sparrowFrames(sprites, prefix);
+  const strict = all.filter((f) => /^\d*$/.test(f.name.slice(String(prefix).length)));
+  return strict.length ? strict : all;
+}
 const baseName = (p) => String(p).replace(/^.*[:\\/]/, "").replace(/\.(png|xml|json)$/i, "");
 
 class NoteStyle {
@@ -17350,7 +18040,7 @@ class NoteStyle {
     const a = this.atlasOf(key);
     if (!a || !a.sprites) return null;
     const ck = key + "|" + prefix;
-    if (!this._frames.has(ck)) this._frames.set(ck, sparrowFrames(a.sprites, prefix));
+    if (!this._frames.has(ck)) this._frames.set(ck, framesByPrefix(a.sprites, prefix));
     return this._frames.get(ck);
   }
   noteData(dir) {
@@ -17391,8 +18081,9 @@ class NoteStyle {
   _blit(ctx, a, fr, cx, cy, sc, alpha, flipX, flipY, offs, k) {
     const fw = fr.frameWidth || fr.width,
       fh = fr.frameHeight || fr.height;
-    const left = cx - (fw * sc) / 2 + -(fr.frameX || 0) * sc;
-    const top = cy - (fh * sc) / 2 + (-(fr.frameY || 0) * sc);
+    // offsets はグループ全体の「ずらし」（ゲーム上のピクセル）。レーン幅に合わせた縮尺 k を掛けて足す
+    const left = cx - (fw * sc) / 2 + -(fr.frameX || 0) * sc + (offs?.[0] || 0) * k;
+    const top = cy - (fh * sc) / 2 + (-(fr.frameY || 0) * sc) + (offs?.[1] || 0) * k;
     ctx.save();
     ctx.globalAlpha *= alpha;
     if (a.def?.isPixel) ctx.imageSmoothingEnabled = false;
@@ -17545,11 +18236,11 @@ function pickByPath(map, assetPath, origin) {
   return best;
 }
 
-return { NoteStyle, NoteStyleSet };
+return { framesByPrefix, NoteStyle, NoteStyleSet };
 })();
 
 /* ===== funkin-studio/js/states/chart/editor.js ===== */
-const __m49 = (() => {
+const __m53 = (() => {
 /* ============================================================
    chart/editor.js — Chart Editor（V-Slice の chart.json / metadata.json 編集）のロジック
    ------------------------------------------------------------
@@ -17565,14 +18256,15 @@ const __m49 = (() => {
 
    目次: 1.状態 2.データ参照 3.履歴 4.音声と読み込み 5.描画 6.操作(ポインタ) 7.パネル 8.保存 9.再生・キーボード
    ============================================================ */
-const { isTextEntry } = __m27;
-const { HudPanels } = __m28;
-const { DEFAULT_VARIATION, SNAP_QUANTS, BASE_QUANT_INDEX, STRUMLINE_SIZE, STEPS_PER_BEAT, DIR_NAMES, EVENT_SCHEMAS, eventKinds, isCustomEvent, registerEventSchema, unregisterEventSchema, eventTitle, defaultEventValue, defaultMetadata, defaultChart, normalizeMetadata, normalizeChart, serializeMetadata, serializeChart, Timing, clone, round3 } = __m41;
-const { AudioEngine, PEAK_MS } = __m42;
-const { readZip, writeZip } = __m34;
-const { parseHxc } = __m43;
-const { createPlayTest } = __m47;
-const { NoteStyleSet } = __m48;
+const { exportMod } = __m15;
+const { isTextEntry } = __m33;
+const { HudPanels } = __m34;
+const { DEFAULT_VARIATION, SNAP_QUANTS, BASE_QUANT_INDEX, STRUMLINE_SIZE, STEPS_PER_BEAT, DIR_NAMES, EVENT_SCHEMAS, eventKinds, isCustomEvent, registerEventSchema, unregisterEventSchema, eventTitle, defaultEventValue, defaultMetadata, defaultChart, normalizeMetadata, normalizeChart, serializeMetadata, serializeChart, Timing, clone, round3 } = __m45;
+const { AudioEngine, PEAK_MS } = __m46;
+const { readZip, writeZip } = __m12;
+const { parseHxc } = __m47;
+const { createPlayTest } = __m51;
+const { NoteStyleSet } = __m52;
 
 const GRID = 40; // 1マスの基準ピクセル（V-Slice の GRID_SIZE）
 const COLS = STRUMLINE_SIZE * 2 + 1; // 相手4 + プレイヤー4 + イベント1
@@ -19117,20 +19809,21 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     }
     return out;
   };
+  // mod の zip ごと書き出す（services/ModExport.js）。曲の JSON は data/songs/<id>/、音声は songs/<id>/
+  const songPath = (n) => `data/songs/${fileId()}/${n}`;
+  const modOut = (files) => exportMod(state.app, files, { say }).catch((e) => say("書き出しエラー: " + e.message));
   $("chtSaveChart").onclick = () => {
     ensureConsistent();
-    download(names(curVar).chart, serializeChart(chart(), pretty()));
-    say(`${names(curVar).chart} を保存しました。`);
+    modOut([{ path: songPath(names(curVar).chart), data: serializeChart(chart(), pretty()) }]);
   };
   $("chtSaveMeta").onclick = () => {
     ensureConsistent();
-    download(names(curVar).meta, serializeMetadata(meta(), pretty()));
-    say(`${names(curVar).meta} を保存しました。`);
+    modOut([{ path: songPath(names(curVar).meta), data: serializeMetadata(meta(), pretty()) }]);
   };
   $("chtSaveAllJson").onclick = () => {
-    download(`${fileId()}-json.zip`, writeZip(jsonEntries()));
-    state.app.unsaved?.clean();
-    say("全バリエーションの JSON を zip にして保存しました。");
+    const files = jsonEntries().map((e) => ({ path: songPath(e.name), data: e.data }));
+    for (const t of audio.tracks) files.push({ path: `songs/${fileId()}/${t.id}${t.ext || ".ogg"}`, data: t.bytes });
+    modOut(files).then(() => state.app.unsaved?.clean());
   };
   function saveFnfc() {
     const entries = jsonEntries();
@@ -19338,15 +20031,17 @@ return { mountChartEditor };
 })();
 
 /* ===== funkin-studio/js/states/ChartEditorState.js ===== */
-const __m50 = (() => {
+const __m54 = (() => {
 /* ============================================================
    states/ChartEditorState.js — Chart Editor（V-Slice の chart.json / metadata.json の編集）の画面
    ------------------------------------------------------------
    構造は Stage Editor と同じ（入れ物 + chart/editor.js のロジック + chart/template.js の HTML）。
    ============================================================ */
-const { EditorState } = __m18;
-const { template } = __m40;
-const { mountChartEditor } = __m49;
+const { mountModPicker } = __m22;
+const { songList } = __m23;
+const { EditorState } = __m24;
+const { template } = __m44;
+const { mountChartEditor } = __m53;
 
 class ChartEditorState extends EditorState {
   static id = "chart";
@@ -19356,6 +20051,7 @@ class ChartEditorState extends EditorState {
 
   create() {
     this.editor = mountChartEditor(this);
+    mountModPicker(this, this.root.querySelector("#chtOpen").closest("label")?.parentElement ?? this.root, { title: "読み込み済みの mod から曲を選ぶ", list: songList, fire: ["chtOpen", "chtInst", "chtVoices"], wait: 600 });
   }
   onShow() {
     this.editor.onShow();
@@ -19374,8 +20070,877 @@ class ChartEditorState extends EditorState {
 return { ChartEditorState };
 })();
 
+/* ===== funkin-studio/js/states/note/template.js ===== */
+const __m55 = (() => {
+/* ============================================================
+   note/template.js — Note Editor 画面の HTML
+   ------------------------------------------------------------
+   Stage / Character Editor と同じ「全画面プレビュー + Hud パネル」方式。ID はすべて "nte" で始まる。
+   V-Slice 本体には無いエディタ: noteStyle（data/notestyles/*.json）を編集し、ノーツ・受け皿・ホールド・スプラッシュの
+   見た目とオフセットを、プレビューを見ながらドラッグで調整する。
+   ============================================================ */
+const template = `
+    <section id="noteWorkspace" class="hudWorkspace" hidden>
+      <canvas id="nteCanvas"></canvas>
+      <div class="hudLayer" data-all-hidden="false">
+        <button id="nteHudEye" class="hudEye" type="button" data-hud-all title="Hud の表示 / 非表示 (H)" aria-label="Hud の表示 / 非表示">👁</button>
+
+        <div class="hudBar" data-hud-panel="bar" data-hud-always>
+          <button type="button" data-hud-toggle="files" data-ja="📁 ファイル" data-en="📁 Files">📁 ファイル</button>
+          <button type="button" data-hud-toggle="group" data-ja="🎯 グループ" data-en="🎯 Group">🎯 グループ</button>
+          <button type="button" data-hud-toggle="entry" data-ja="🎞 アニメ" data-en="🎞 Anim">🎞 アニメ</button>
+          <span class="hudSep"></span>
+          <button id="nteZoomOut" type="button" title="ズームアウト">−</button>
+          <input id="nteZoom" type="number" min=".05" max="16" step=".05" value="1" title="ズーム（ホイールでも可）" />
+          <button id="nteZoomIn" type="button" title="ズームイン">＋</button>
+          <button id="nteFit" type="button" title="全体を画面に収める (F)">⊡ 全体</button>
+          <button id="nteResetView" type="button" title="ズーム100%">⌖ 原点</button>
+          <button id="ntePanTool" type="button" title="左ドラッグでビューを動かす（Space長押し / 中・右ドラッグでも可）">✋ 移動</button>
+          <label class="hudCheck" title="アニメーションを再生する"><input id="ntePlay" type="checkbox" checked /><span>▶ 再生</span></label>
+          <label class="hudCheck" title="ノーツの大きさの目安（レーンの枠）"><input id="nteGuide" type="checkbox" checked /><span>枠</span></label>
+          <span class="hudSep"></span>
+          <span id="nteReadout" class="hudReadout"></span>
+        </div>
+
+        <div class="hudDock hudDockLeft">
+          <aside class="hudPanel" data-hud-panel="files">
+            <h2>Note Editor</h2>
+            <p class="tiny">noteStyle（data/notestyles/*.json）の見た目とオフセットを編集します。V-Slice 本体には無い、Funkin' Studio のエディタです。</p>
+            <div class="row">
+              <button id="nteNew" type="button">新規</button>
+              <button id="nteSave" class="primary" type="button">mod zip に書き出す</button>
+            </div>
+            <label>noteStyle の JSON を開く<input id="nteFile" type="file" accept=".json,application/json" /></label>
+            <label>画像・XML・JSON を追加（複数可。fallback 先の noteStyle もここへ）<input id="nteAssets" type="file" multiple accept="image/*,.xml,.json,text/xml,application/json" /></label>
+            <div class="row"><label class="hudCheck"><input id="nteCompact" type="checkbox" /> 整形して保存（オフ=1行の軽量JSON）</label></div>
+            <h3>スタイル情報</h3>
+            <label>name<input id="nteName" type="text" /></label>
+            <div class="row">
+              <label>author<input id="nteAuthor" type="text" /></label>
+              <label>fallback（無い項目の代わりに使う noteStyle）<input id="nteFallback" type="text" list="nteIds" placeholder="funkin" /></label>
+            </div>
+            <datalist id="nteIds"></datalist>
+            <div id="nteMissing" class="tiny"></div>
+          </aside>
+        </div>
+
+        <div class="hudDock hudDockRight">
+          <aside class="hudPanel" data-hud-panel="group">
+            <h2>グループ</h2>
+            <p class="tiny">プレビューの絵をクリックすると、そのグループが選ばれます。ドラッグで offsets が動きます（Shift: 縦横どちらかに固定 / Alt: 小数のまま）。</p>
+            <label>編集するグループ
+              <select id="nteGroup">
+                <option value="noteStrumline">noteStrumline（受け皿）</option>
+                <option value="note">note（ノーツの頭）</option>
+                <option value="holdNote">holdNote（ホールドの胴体・終端）</option>
+                <option value="noteSplash">noteSplash（ヒット時のスプラッシュ）</option>
+                <option value="holdNoteCover">holdNoteCover（ホールド中のカバー）</option>
+              </select>
+            </label>
+            <label>assetPath<input id="nteAssetPath" type="text" placeholder="notes/corrupt/corrupt_note" /></label>
+            <div class="row">
+              <label>scale<input id="nteScale" type="number" step="0.01" min="0.01" /></label>
+              <label>alpha<input id="nteAlpha" type="number" step="0.05" min="0" max="1" /></label>
+            </div>
+            <div class="row">
+              <label>offsets X<input id="nteOffX" type="number" step="1" /></label>
+              <label>offsets Y<input id="nteOffY" type="number" step="1" /></label>
+              <button id="nteOffZero" type="button">0,0</button>
+            </div>
+            <div class="row"><label class="hudCheck"><input id="nteIsPixel" type="checkbox" /> isPixel（ドット絵・補間なし）</label></div>
+            <div class="row"><label class="hudCheck" title="オフにすると、グループ全体の offsets を動かします"><input id="nteDragEntry" type="checkbox" /> ドラッグで「選択中のアニメ個別」の offsets を動かす</label></div>
+            <div id="nteGroupInfo" class="tiny"></div>
+          </aside>
+          <aside class="hudPanel" data-hud-panel="entry">
+            <h2>アニメ</h2>
+            <label>対象<select id="nteEntry"></select></label>
+            <label>prefix（XML のフレーム名の頭）<input id="nteEntryPrefix" type="text" /></label>
+            <div class="row">
+              <label>offsets X<input id="nteEntryOffX" type="number" step="1" /></label>
+              <label>offsets Y<input id="nteEntryOffY" type="number" step="1" /></label>
+            </div>
+            <div id="nteFrameInfo" class="tiny"></div>
+            <div id="nteSpecial"></div>
+          </aside>
+        </div>
+
+        <div class="hudTransport" data-hud-panel="transport"><div id="nteStatus" class="tiny">noteStyle を開くか、「新規」で作り始めてください。</div></div>
+        <div id="nteToast" class="hudToast" hidden></div>
+      </div>
+    </section>
+`;
+
+return { template };
+})();
+
+/* ===== funkin-studio/js/states/note/editor.js ===== */
+const __m56 = (() => {
+/* ============================================================
+   note/editor.js — Note Editor（noteStyle の編集）
+   ------------------------------------------------------------
+   V-Slice 本体には無いエディタ。data/notestyles/<id>.json を編集し、ノーツ・受け皿・ホールド・
+   スプラッシュ・ホールドカバーを「1 レーン = 112px」の実寸でプレビューする。絵をドラッグすると offsets が動く。
+   ・画像の探し方は他のエディタと同じ（services/ModPack.js のパス付き探索。同じ mod を優先）
+   ・プレビューの描画は runtime/noteStyle.js（プレイテストと同じ NoteStyle）を使う。fallback の連鎖もたどる
+   ・書き出しは mod の zip ごと（services/ModExport.js）→ data/notestyles/<id>.json
+   ============================================================ */
+const { Viewport } = __m33;
+const { HudPanels } = __m34;
+const { mountModPicker } = __m22;
+const { NoteStyleSet, NoteStyle, framesByPrefix } = __m52;
+const { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } = __m35;
+const { infoOf } = __m13;
+const { exportMod } = __m15;
+
+const DIRS = ["left", "down", "up", "right"];
+const LANE = 112; // 1 レーンの幅（V-Slice の Strumline.NOTE_SPACING）
+const FPS = 24;
+const SEL = "#ffb020";
+const baseName = (n) => String(n).replace(/^.*[:\\/]/, "").replace(/\.(json|png|xml)$/i, "");
+const laneX = (l) => (l - 1.5) * LANE;
+// プレビューの行（world の y）
+const ROW = { static: 0, press: 150, confirm: 300, note: 480, splash: 860, cover: 1010 };
+const HOLD_LEN = 230;
+const GROUPS = ["noteStrumline", "note", "holdNote", "noteSplash", "holdNoteCover"];
+
+function defaultStyle() {
+  return {
+    version: "1.1.0",
+    name: "New NoteStyle",
+    author: "",
+    fallback: "funkin",
+    assets: {
+      note: { assetPath: "", scale: 0.7, data: { left: { prefix: "noteLeft" }, down: { prefix: "noteDown" }, up: { prefix: "noteUp" }, right: { prefix: "noteRight" } } },
+      noteStrumline: { assetPath: "", scale: 0.7, offsets: [0, 0], data: {} },
+    },
+  };
+}
+
+function mountNoteEditor(state) {
+  const $ = (id) => document.getElementById(id),
+    canvas = $("nteCanvas"),
+    ctx = canvas.getContext("2d");
+  const ws = () => state.app.workspace;
+
+  let doc = defaultStyle();
+  let docId = "newstyle",
+    docOrigin = "";
+  let selGroup = "noteStrumline",
+    selEntry = "";
+  const set = new NoteStyleSet();
+  const loaded = new Set(); // 読み込み済みの画像（assetPath|origin）
+  let missing = [];
+  let hits = [];
+  let t0 = performance.now();
+
+  // ---------- 通知 ----------
+  let toastTimer = null;
+  const say = (s) => {
+    $("nteStatus").textContent = s;
+    const t = $("nteToast");
+    t.textContent = s;
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (t.hidden = true), 4500);
+  };
+  state.addDisposer(() => clearTimeout(toastTimer));
+  const markDirty = () => state.app.unsaved?.mark();
+
+  // ---------- ビュー ----------
+  const vp = new Viewport(canvas, {
+    state,
+    originY: 0.5,
+    onChange: () => {
+      $("nteZoom").value = Number(vp.zoom.toFixed(2));
+      requestDraw();
+    },
+  });
+  new HudPanels(state.root, { storageKey: "note", defaults: ["files", "group"], narrowDefaults: ["group"], narrowExclusive: ["files", "group", "entry"] });
+  $("nteZoom").oninput = () => vp.setZoom(Number($("nteZoom").value));
+  $("nteZoomIn").onclick = () => vp.setZoom(vp.zoom * 1.25);
+  $("nteZoomOut").onclick = () => vp.setZoom(vp.zoom / 1.25);
+  $("nteResetView").onclick = () => vp.reset();
+  $("ntePanTool").onclick = () => {
+    vp.panMode = !vp.panMode;
+    $("ntePanTool").setAttribute("aria-pressed", String(vp.panMode));
+    vp._updateCursor?.();
+  };
+  const fit = () => vp.fit(-420, -130, 420, ROW.cover + 130);
+  $("nteFit").onclick = fit;
+
+  // ---------- 履歴 ----------
+  let history = [JSON.stringify(doc)],
+    hi = 0;
+  const syncHud = () => state.active && state.app.hud.setHistory(hi > 0, hi < history.length - 1);
+  function commit() {
+    const s = JSON.stringify(doc);
+    if (s === history[hi]) return;
+    history.length = hi + 1;
+    history.push(s);
+    if (history.length > 100) history.shift();
+    hi = history.length - 1;
+    markDirty();
+    syncHud();
+    rebuild();
+    syncPanels();
+    requestDraw();
+  }
+  function resetHistory() {
+    history = [JSON.stringify(doc)];
+    hi = 0;
+    syncHud();
+  }
+  function restoreAt(i) {
+    hi = i;
+    doc = JSON.parse(history[hi]);
+    rebuild();
+    syncPanels();
+    markDirty();
+    syncHud();
+    requestDraw();
+  }
+  const undo = () => hi > 0 && restoreAt(hi - 1);
+  const redo = () => hi < history.length - 1 && restoreAt(hi + 1);
+
+  // ---------- noteStyle の読み書き ----------
+  const A = (g, create) => (create ? (doc.assets[g] ??= { data: {} }) : doc.assets?.[g]);
+  /** グループ内の 1 要素（{prefix, offsets…}）。create=true なら無ければ作る */
+  function entry(g, key, create = false) {
+    const a = A(g, create);
+    if (!a) return null;
+    const d = create ? (a.data ??= {}) : a.data;
+    if (!d) return null;
+    if (g === "noteSplash") {
+      const [dir, i] = key.split("#");
+      const arr = create ? (d[dir + "Splashes"] ??= []) : d[dir + "Splashes"];
+      if (!arr) return null;
+      return create ? (arr[+i] ??= { prefix: "" }) : (arr[+i] ?? null);
+    }
+    if (g === "holdNoteCover") {
+      const [dir, part] = key.split(".");
+      const l = create ? (d[dir] ??= {}) : d[dir];
+      if (!l) return null;
+      return create ? (l[part] ??= { prefix: "" }) : (l[part] ?? null);
+    }
+    return create ? (d[key] ??= { prefix: "" }) : (d[key] ?? null);
+  }
+  function entryKeys(g) {
+    if (g === "noteStrumline") return DIRS.flatMap((d) => ["Static", "Press", "Confirm", "ConfirmHold"].map((s) => d + s));
+    if (g === "note") return [...DIRS];
+    if (g === "noteSplash") return DIRS.flatMap((d) => [0, 1].map((i) => `${d}#${i}`));
+    if (g === "holdNoteCover") return DIRS.flatMap((d) => ["start", "hold", "end"].map((p) => `${d}.${p}`));
+    return [];
+  }
+
+  /** doc（と fallback 先）から NoteStyle を作り直す */
+  function rebuild() {
+    set.raw.set(docId, doc);
+    set.origins.set(docId, docOrigin);
+    for (const [id, data] of set.raw) set.styles.set(id, new NoteStyle(set, id, data));
+    set.version++;
+  }
+  const style = () => set.get(docId);
+
+  /** workspace から noteStyle の JSON を探す（fallback 先など）。id.json */
+  function findStyleFile(id) {
+    const c = ws().files.filter((f) => /\.json$/i.test(f.name) && baseName(f.name).toLowerCase() === String(id).toLowerCase());
+    return c.sort((a, b) => (infoOf(b).origin === docOrigin) - (infoOf(a).origin === docOrigin) || /notestyles/i.test(relOf(b)) - /notestyles/i.test(relOf(a)))[0] ?? null;
+  }
+  const relOf = (f) => f.webkitRelativePath || f.name;
+  const readText = async (f) => (f.lazy ? (await f.blob()).text() : f.text());
+
+  /** doc と fallback 連鎖に必要な画像・XML を workspace から読み込む */
+  async function loadAssets() {
+    const w = ws();
+    missing = [];
+    // 1. fallback の連鎖の JSON
+    let cur = doc;
+    for (let depth = 0; depth < 6 && cur?.fallback; depth++) {
+      const id = cur.fallback;
+      if (!set.raw.has(id)) {
+        const f = findStyleFile(id);
+        if (!f) {
+          missing.push(`fallback「${id}」の JSON`);
+          break;
+        }
+        try {
+          const j = JSON.parse((await readText(f)).replace(/^﻿/, ""));
+          set.raw.set(id, j);
+          set.origins.set(id, infoOf(f).origin);
+        } catch (e) {
+          missing.push(`${id}.json（${e.message}）`);
+          break;
+        }
+      }
+      cur = set.raw.get(id);
+    }
+    rebuild();
+    // 2. 各スタイルが使う画像
+    for (const [id, data] of set.raw) {
+      const origin = set.origins.get(id) ?? "";
+      const paths = new Set();
+      for (const [k, def] of Object.entries(data.assets ?? {})) {
+        if (!["note", "noteStrumline", "holdNote", "noteSplash"].includes(k)) continue;
+        if (def?.assetPath) paths.add(def.assetPath);
+      }
+      for (const d of DIRS) {
+        const p = data.assets?.holdNoteCover?.data?.[d]?.assetPath;
+        if (p) paths.add(p);
+      }
+      for (const p of paths) {
+        const key = p + "|" + origin;
+        if (loaded.has(key)) continue;
+        const png = w.resolve("image", p, { origin, quiet: true });
+        if (!png) {
+          missing.push(`${id}: 画像「${p}」`);
+          continue;
+        }
+        loaded.add(key);
+        const info = infoOf(png);
+        try {
+          set.images.set(info.noExt, { img: await loadImage(png), origin: info.origin });
+          const xml = w.files.find((f) => /\.xml$/i.test(f.name) && infoOf(f).noExt === info.noExt && infoOf(f).origin === info.origin);
+          if (xml) set.xmls.set(info.noExt, { sprites: parseSparrowXml(await readText(xml)), origin: info.origin });
+        } catch (e) {
+          missing.push(`${p}（${e.message}）`);
+        }
+      }
+    }
+    rebuild();
+    $("nteMissing").textContent = missing.length ? "⚠ 見つからない: " + missing.join(" / ") : "";
+    syncPanels();
+    requestDraw();
+  }
+
+  async function openDoc(file, text) {
+    let json;
+    try {
+      json = JSON.parse((text ?? (await readText(file))).replace(/^﻿/, ""));
+    } catch (e) {
+      return say("JSON を読み込めません: " + e.message);
+    }
+    if (!json || typeof json.assets !== "object") return say("noteStyle の JSON ではありません（assets がありません）");
+    set.raw.clear();
+    set.styles.clear();
+    set.images.clear();
+    set.xmls.clear();
+    set.origins.clear();
+    loaded.clear();
+    doc = json;
+    doc.assets ??= {};
+    docId = baseName(file.name);
+    docOrigin = file.__origin ?? (file.webkitRelativePath || file.lazy ? infoOf(file).origin : "");
+    selGroup = "noteStrumline";
+    selEntry = "";
+    resetHistory();
+    state.app.unsaved?.clean();
+    rebuild();
+    syncPanels();
+    say(`「${doc.name ?? docId}」を読み込みました。画像を探しています…`);
+    await loadAssets();
+    say(missing.length ? `読み込みました（見つからないもの ${missing.length} 件）。` : `「${doc.name ?? docId}」を読み込みました。`);
+    fit();
+  }
+  $("nteFile").onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = "";
+    if (!f || !state.app.unsaved.confirmReplace()) return;
+    ws().add([f]);
+    await openDoc(f);
+  };
+  $("nteAssets").onchange = async (e) => {
+    const fs = [...e.target.files];
+    e.target.value = "";
+    if (!fs.length) return;
+    ws().add(fs); // 他のエディタと共有
+    loaded.clear();
+    for (const k of [...set.raw.keys()]) if (k !== docId) set.raw.delete(k);
+    await loadAssets();
+    say(`${fs.length} 個のファイルを追加しました。`);
+  };
+  state.addDisposer(state.app.events.on("workspace:changed", () => ws().size && loadedOnce && loadAssets()));
+  let loadedOnce = false;
+  $("nteNew").onclick = () => {
+    if (!state.app.unsaved.confirmReplace()) return;
+    doc = defaultStyle();
+    docId = "newstyle";
+    docOrigin = ws().defaultOrigin();
+    set.raw.clear();
+    set.styles.clear();
+    loaded.clear();
+    selGroup = "noteStrumline";
+    resetHistory();
+    state.app.unsaved?.clean();
+    rebuild();
+    syncPanels();
+    loadAssets();
+    say("新しい noteStyle を作りました。グループの assetPath と prefix を設定してください。");
+  };
+  $("nteSave").onclick = () => {
+    const id = docId.replace(/[^\w\-.]+/g, "_") || "notestyle";
+    exportMod(state.app, [{ path: `data/notestyles/${id}.json`, data: JSON.stringify(doc, null, $("nteCompact").checked ? 2 : 0) }], { origin: docOrigin || undefined, say })
+      .then(() => state.app.unsaved?.clean())
+      .catch((e) => say("書き出しエラー: " + e.message));
+  };
+
+  // 「読み込み済みの mod から選ぶ」: ホームで読み込んだ mod の noteStyle
+  mountModPicker(state, state.root.querySelector('[data-hud-panel="files"]'), {
+    title: "読み込み済みの mod から noteStyle を選ぶ",
+    list: (w) => {
+      const out = [];
+      for (const f of w.files) {
+        if (!/\.json$/i.test(f.name)) continue;
+        const i = infoOf(f);
+        if (/(^|\/)notestyles\//i.test(i.noExt) || /^(data\/)?notestyles?\//i.test(i.noExt)) out.push({ label: baseName(f.name) + (i.origin ? `（${i.origin}）` : ""), files: { nteFile: f } });
+      }
+      return out.sort((a, b) => a.label.localeCompare(b.label));
+    },
+    fire: ["nteFile"],
+    wait: 100,
+  });
+
+  // ---------- 描画 ----------
+  function frameAt(frames, t, loop = true) {
+    if (!frames?.length) return null;
+    const i = Math.floor(t * FPS);
+    return frames[loop ? i % frames.length : Math.min(i, frames.length - 1)];
+  }
+  /** フレーム fr を中心 (cx, cy) に描き、当たり判定を登録 */
+  function blit(a, fr, cx, cy, sc, pixel, tag) {
+    const fw = fr.frameWidth || fr.width,
+      fh = fr.frameHeight || fr.height;
+    const left = cx - (fw * sc) / 2 - (fr.frameX || 0) * sc,
+      top = cy - (fh * sc) / 2 - (fr.frameY || 0) * sc;
+    ctx.save();
+    ctx.imageSmoothingEnabled = !pixel;
+    paintSparrow(ctx, fr, a.img, left, top, fr.width * sc, fr.height * sc);
+    ctx.restore();
+    const r = { x0: cx - (fw * sc) / 2, y0: cy - (fh * sc) / 2, x1: cx + (fw * sc) / 2, y1: cy + (fh * sc) / 2, ...tag };
+    hits.push(r);
+    if (tag.group === selGroup && (tag.key === selEntry || !selEntry)) {
+      ctx.save();
+      ctx.strokeStyle = SEL;
+      ctx.lineWidth = 2 / vp.zoom;
+      ctx.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+      ctx.restore();
+    }
+  }
+  const sub = (key, f) => ctx.fillText(key, -400, f);
+  const missBox = (x, y, label, tag) => {
+    ctx.save();
+    ctx.strokeStyle = "#ff6b6b";
+    ctx.setLineDash([6 / vp.zoom, 4 / vp.zoom]);
+    ctx.lineWidth = 1.5 / vp.zoom;
+    ctx.strokeRect(x - 40, y - 40, 80, 80);
+    ctx.fillStyle = "#ff6b6b";
+    ctx.font = `${11 / vp.zoom}px system-ui`;
+    ctx.textAlign = "center";
+    ctx.fillText(label, x, y + 3 / vp.zoom);
+    ctx.restore();
+    hits.push({ x0: x - 40, y0: y - 40, x1: x + 40, y1: y + 40, ...tag });
+  };
+
+  function draw() {
+    const w = canvas.clientWidth,
+      h = canvas.clientHeight;
+    ctx.clearRect(0, 0, w, h);
+    vp.drawGrid(ctx);
+    hits = [];
+    const st = style();
+    const o = vp.origin(),
+      z = vp.zoom;
+    const time = ($("ntePlay").checked ? (performance.now() - t0) / 1000 : 0) || 0;
+    ctx.save();
+    ctx.translate(o.x, o.y);
+    ctx.scale(z, z);
+    ctx.font = `${13 / z}px system-ui`;
+    ctx.fillStyle = "#9aa4b5";
+    ctx.textAlign = "left";
+    for (const [name, y] of [["受け皿 Static", ROW.static], ["受け皿 Press", ROW.press], ["受け皿 Confirm", ROW.confirm], ["ノーツ + ホールド", ROW.note], ["スプラッシュ", ROW.splash], ["ホールドカバー", ROW.cover]]) ctx.fillText(name, -520, y + 4);
+    if ($("nteGuide").checked) {
+      ctx.strokeStyle = "rgba(150,170,200,.25)";
+      ctx.lineWidth = 1 / z;
+      for (const y of Object.values(ROW)) for (let l = 0; l < 4; l++) ctx.strokeRect(laneX(l) - 52, y - 52, 104, 104);
+    }
+    if (st) {
+      const gOff = (g) => st.asset(g)?.offsets ?? [0, 0];
+      // ---- 受け皿
+      const sa = st.atlasOf("noteStrumline");
+      const sOff = gOff("noteStrumline"),
+        sSc = st.getStrumlineScale();
+      for (const [mode, key, y] of [["Static", "Static", ROW.static], ["Press", "Press", ROW.press], ["Confirm", "Confirm", ROW.confirm]]) {
+        for (let l = 0; l < 4; l++) {
+          const k = DIRS[l] + key,
+            tag = { group: "noteStrumline", key: k, lane: l };
+          const sd = st.strumData(DIRS[l], mode);
+          const fr = sa && sd ? frameAt(st.framesOf("noteStrumline", sd.prefix), mode === "Static" ? 0 : time) : null;
+          if (!fr) {
+            missBox(laneX(l), y, k, tag);
+            continue;
+          }
+          const eo = sd.offsets ?? [0, 0];
+          blit(sa, fr, laneX(l) + sOff[0] + eo[0], y + sOff[1] + eo[1], sSc, sa.def?.isPixel, tag);
+        }
+      }
+      // ---- ノーツ + ホールド
+      const na = st.atlasOf("note"),
+        nOff = gOff("note"),
+        nSc = st.getNoteScale(),
+        hOff = gOff("holdNote");
+      for (let l = 0; l < 4; l++) {
+        ctx.save();
+        ctx.translate(laneX(l) + hOff[0], hOff[1]);
+        const ok = st.drawHold(ctx, l, 0, ROW.note + 20, ROW.note + HOLD_LEN, 1, 1);
+        ctx.restore();
+        if (ok) {
+          const hw = (st.atlasOf("holdNote")?.img.width / 8) * st.fetchHoldNoteScale();
+          hits.push({ x0: laneX(l) + hOff[0] - hw / 2, y0: ROW.note + hOff[1], x1: laneX(l) + hOff[0] + hw / 2, y1: ROW.note + HOLD_LEN + hOff[1], group: "holdNote", key: "", lane: l });
+        }
+        const nd = st.noteData(DIRS[l]),
+          tag = { group: "note", key: DIRS[l], lane: l };
+        const fr = na && nd ? st.framesOf("note", nd.prefix)?.[0] : null;
+        if (!fr) missBox(laneX(l), ROW.note, DIRS[l], tag);
+        else {
+          const eo = nd.offsets ?? [0, 0];
+          blit(na, fr, laneX(l) + nOff[0] + eo[0], ROW.note + nOff[1] + eo[1], nSc, na.def?.isPixel, tag);
+        }
+      }
+      // ---- スプラッシュ
+      const sp = st.asset("noteSplash");
+      if (sp?.data?.enabled !== false && sp) {
+        const spa = st.atlasOf("noteSplash"),
+          spOff = sp.offsets ?? [0, 0];
+        for (let l = 0; l < 4; l++) {
+          const list = sp.data?.[DIRS[l] + "Splashes"] ?? [];
+          const idx = Math.floor(time / 1.2) % Math.max(1, list.length);
+          const e = list[idx];
+          const tag = { group: "noteSplash", key: `${DIRS[l]}#${idx}`, lane: l };
+          const fr = spa && e ? frameAt(st.framesOf("noteSplash", e.prefix), time % 1.2, false) : null;
+          if (!fr) missBox(laneX(l), ROW.splash, DIRS[l] + " splash", tag);
+          else {
+            ctx.save();
+            ctx.globalAlpha = sp.alpha ?? 1;
+            blit(spa, fr, laneX(l) + spOff[0] + (e.offsets?.[0] ?? 0), ROW.splash + spOff[1] + (e.offsets?.[1] ?? 0), sp.scale ?? 1, spa.def?.isPixel, tag);
+            ctx.restore();
+          }
+        }
+      }
+      // ---- ホールドカバー: start → hold → end を繰り返す
+      const hc = st.asset("holdNoteCover");
+      if (hc?.data?.enabled !== false && hc) {
+        const phase = time % 3,
+          part = phase < 0.8 ? "start" : phase < 2.2 ? "hold" : "end";
+        const pt = part === "start" ? phase : part === "hold" ? phase - 0.8 : phase - 2.2;
+        const hcOff = hc.offsets ?? [0, 0];
+        for (let l = 0; l < 4; l++) {
+          const lane = hc.data?.[DIRS[l]];
+          const tag = { group: "holdNoteCover", key: `${DIRS[l]}.${part}`, lane: l };
+          const a = lane?.assetPath ? set.atlas(lane.assetPath, set.origins.get(docId) ?? "") : null;
+          const fr = a?.sprites && lane?.[part] ? frameAt(framesByPrefix(a.sprites, lane[part].prefix), pt, part === "hold") : null;
+          if (!fr) missBox(laneX(l), ROW.cover, DIRS[l] + " cover", tag);
+          else blit({ img: a.img }, fr, laneX(l) + hcOff[0] + (lane[part].offsets?.[0] ?? 0), ROW.cover + hcOff[1] + (lane[part].offsets?.[1] ?? 0), hc.scale ?? 1, false, tag);
+        }
+      }
+    } else {
+      ctx.fillStyle = "#9aa4b5";
+      ctx.font = `${16 / z}px system-ui`;
+      ctx.fillText("noteStyle を開くか、「新規」で作り始めてください", -240, 40);
+    }
+    ctx.restore();
+    $("nteReadout").textContent = `${doc.name ?? docId}　${selGroup}${selEntry ? " / " + selEntry : ""}`;
+  }
+  let drawQueued = false;
+  function requestDraw() {
+    if (drawQueued) return;
+    drawQueued = true;
+    requestAnimationFrame(() => {
+      drawQueued = false;
+      draw();
+    });
+  }
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(canvas.clientWidth * dpr));
+    canvas.height = Math.max(1, Math.round(canvas.clientHeight * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+  const ro = new ResizeObserver(() => resize());
+  ro.observe(canvas);
+  state.addDisposer(() => ro.disconnect());
+  // アニメ再生: 24fps で描く（表示中だけ）
+  let raf = 0,
+    lastTick = 0;
+  const tick = (now) => {
+    raf = requestAnimationFrame(tick);
+    if (!state.active || !$("ntePlay").checked) return;
+    if (now - lastTick >= 1000 / FPS - 2) {
+      lastTick = now;
+      draw();
+    }
+  };
+  raf = requestAnimationFrame(tick);
+  state.addDisposer(() => cancelAnimationFrame(raf));
+  $("ntePlay").onchange = () => {
+    t0 = performance.now();
+    draw();
+  };
+  $("nteGuide").onchange = () => draw();
+
+  // ---------- ドラッグ（offsets を動かす） ----------
+  let drag = null;
+  const worldOf = (e) => {
+    const r = canvas.getBoundingClientRect();
+    return vp.toWorld(e.clientX - r.left, e.clientY - r.top);
+  };
+  canvas.addEventListener("pointerdown", (e) => {
+    if (vp.panning || e.button !== 0) return;
+    const p = worldOf(e);
+    const hit = [...hits].reverse().find((h) => p.x >= h.x0 && p.x <= h.x1 && p.y >= h.y0 && p.y <= h.y1);
+    if (!hit) return;
+    selGroup = hit.group;
+    selEntry = hit.key;
+    const perEntry = $("nteDragEntry").checked && hit.key;
+    const target = perEntry ? entry(hit.group, hit.key, true) : A(hit.group, true);
+    drag = { id: e.pointerId, start: p, orig: [...(target.offsets ?? [0, 0])], perEntry, hit, moved: false };
+    canvas.setPointerCapture(e.pointerId);
+    syncPanels();
+    requestDraw();
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!drag || drag.id !== e.pointerId) return;
+    const p = worldOf(e);
+    let dx = p.x - drag.start.x,
+      dy = p.y - drag.start.y;
+    if (e.shiftKey) Math.abs(dx) > Math.abs(dy) ? (dy = 0) : (dx = 0);
+    const q = e.altKey ? (v) => Math.round(v * 1000) / 1000 : Math.round;
+    const target = drag.perEntry ? entry(drag.hit.group, drag.hit.key, true) : A(drag.hit.group, true);
+    target.offsets = [q(drag.orig[0] + dx), q(drag.orig[1] + dy)];
+    drag.moved = true;
+    syncOffsetFields();
+    requestDraw();
+  });
+  const endDrag = (e) => {
+    if (!drag || drag.id !== e.pointerId) return;
+    const moved = drag.moved;
+    drag = null;
+    if (moved) commit();
+  };
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", endDrag);
+
+  // ---------- パネル ----------
+  const num = (v, fb) => (v === "" || !Number.isFinite(Number(v)) ? fb : Number(v));
+  function activeOffsets() {
+    const a = A(selGroup);
+    return a?.offsets ?? [0, 0];
+  }
+  function syncOffsetFields() {
+    const o = $("nteDragEntry").checked && selEntry ? (entry(selGroup, selEntry)?.offsets ?? [0, 0]) : activeOffsets();
+    $("nteOffX").value = o[0];
+    $("nteOffY").value = o[1];
+    const eo = entry(selGroup, selEntry)?.offsets ?? [0, 0];
+    $("nteEntryOffX").value = eo[0];
+    $("nteEntryOffY").value = eo[1];
+  }
+  function frameInfo() {
+    const st = style();
+    const e = entry(selGroup, selEntry);
+    if (!st || !e || !selEntry) return "";
+    let a = null;
+    if (selGroup === "holdNoteCover") {
+      const lp = A("holdNoteCover")?.data?.[selEntry.split(".")[0]]?.assetPath;
+      a = lp ? set.atlas(lp, set.origins.get(docId) ?? "") : null;
+    } else a = st.atlasOf(selGroup);
+    if (!a) return "⚠ 画像がまだありません（assetPath を確認してください）";
+    if (!a.sprites) return "⚠ この画像の XML がありません";
+    const n = framesByPrefix(a.sprites, e.prefix ?? "").length;
+    return n ? `✓ このプレフィックスで ${n} フレーム` : "⚠ このプレフィックスのフレームがありません";
+  }
+  function syncPanels() {
+    $("nteName").value = doc.name ?? "";
+    $("nteAuthor").value = doc.author ?? "";
+    $("nteFallback").value = doc.fallback ?? "";
+    $("nteIds").innerHTML = ws().files.filter((f) => /\.json$/i.test(f.name) && /notestyles/i.test(relOf(f))).map((f) => `<option value="${baseName(f.name)}">`).join("");
+    $("nteGroup").value = selGroup;
+    const a = A(selGroup);
+    const st = style();
+    const eff = st?.asset(selGroup);
+    $("nteAssetPath").value = a?.assetPath ?? "";
+    $("nteAssetPath").placeholder = eff?.assetPath ? `(fallback: ${eff.assetPath})` : "notes/corrupt/corrupt_note";
+    $("nteScale").value = a?.scale ?? "";
+    $("nteScale").placeholder = eff?.scale ?? "1";
+    $("nteAlpha").value = a?.alpha ?? "";
+    $("nteIsPixel").checked = !!a?.isPixel;
+    syncOffsetFields();
+    $("nteGroupInfo").textContent = a ? "" : `このスタイルには ${selGroup} がありません（fallback の物を使います）。値を入れるとここに作られます。`;
+    // アニメの一覧
+    const keys = entryKeys(selGroup);
+    $("nteEntry").textContent = "";
+    for (const k of keys) $("nteEntry").append(new Option(k + (entry(selGroup, k) ? "" : "（未設定）"), k));
+    if (!keys.includes(selEntry)) selEntry = keys[0] ?? "";
+    $("nteEntry").value = selEntry;
+    $("nteEntry").disabled = !keys.length;
+    const e = entry(selGroup, selEntry);
+    $("nteEntryPrefix").value = e?.prefix ?? "";
+    $("nteEntryPrefix").disabled = !keys.length;
+    $("nteFrameInfo").textContent = frameInfo();
+    syncOffsetFields();
+    renderSpecial();
+  }
+  function renderSpecial() {
+    const box = $("nteSpecial");
+    const a = A(selGroup);
+    box.textContent = "";
+    if (selGroup === "noteSplash" || selGroup === "holdNoteCover") {
+      const lab = document.createElement("label");
+      lab.className = "hudCheck";
+      lab.innerHTML = `<input type="checkbox" id="nteEnabled" /> enabled（${selGroup === "noteSplash" ? "スプラッシュを出す" : "カバーを出す"}）`;
+      box.append(lab);
+      $("nteEnabled").checked = a?.data?.enabled !== false && !!a;
+      $("nteEnabled").onchange = () => {
+        A(selGroup, true).data.enabled = $("nteEnabled").checked;
+        commit();
+      };
+    }
+    if (selGroup === "holdNoteCover") {
+      for (const d of DIRS) {
+        const l = document.createElement("label");
+        l.innerHTML = `${d} の assetPath<input type="text" data-cover="${d}" />`;
+        l.querySelector("input").value = a?.data?.[d]?.assetPath ?? "";
+        box.append(l);
+      }
+      box.onchange = (ev) => {
+        const d = ev.target?.dataset?.cover;
+        if (!d) return;
+        (A("holdNoteCover", true).data[d] ??= {}).assetPath = ev.target.value.trim();
+        commit();
+        loaded.clear();
+        loadAssets();
+      };
+    } else box.onchange = null;
+    if (selGroup === "holdNote") {
+      const p = document.createElement("p");
+      p.className = "tiny";
+      p.textContent = "ホールドの画像は 8 列の 1 枚絵（左から 4 列が胴体、右の 4 列が終端）です。assetPath・scale・offsets を設定します。";
+      box.append(p);
+    }
+  }
+
+  // 入力 → doc
+  const onChange = (id, fn) => ($(id).onchange = () => (fn(), commit()));
+  onChange("nteName", () => (doc.name = $("nteName").value));
+  onChange("nteAuthor", () => (doc.author = $("nteAuthor").value));
+  $("nteFallback").onchange = async () => {
+    doc.fallback = $("nteFallback").value.trim() || null;
+    for (const k of [...set.raw.keys()]) if (k !== docId) set.raw.delete(k);
+    commit();
+    await loadAssets();
+  };
+  $("nteGroup").onchange = () => {
+    selGroup = $("nteGroup").value;
+    selEntry = "";
+    syncPanels();
+    requestDraw();
+  };
+  $("nteAssetPath").onchange = async () => {
+    A(selGroup, true).assetPath = $("nteAssetPath").value.trim();
+    commit();
+    loaded.clear();
+    await loadAssets();
+  };
+  const setOptNum = (key, id, def) => () => {
+    const v = $(id).value;
+    const a = A(selGroup, true);
+    if (v === "" || (def !== undefined && Number(v) === def && !(key in a))) delete a[key];
+    else a[key] = num(v, def);
+  };
+  onChange("nteScale", setOptNum("scale", "nteScale"));
+  onChange("nteAlpha", setOptNum("alpha", "nteAlpha", 1));
+  onChange("nteIsPixel", () => {
+    const a = A(selGroup, true);
+    if ($("nteIsPixel").checked) a.isPixel = true;
+    else delete a.isPixel;
+  });
+  const offChange = () => {
+    const target = $("nteDragEntry").checked && selEntry ? entry(selGroup, selEntry, true) : A(selGroup, true);
+    target.offsets = [num($("nteOffX").value, 0), num($("nteOffY").value, 0)];
+  };
+  onChange("nteOffX", offChange);
+  onChange("nteOffY", offChange);
+  $("nteOffZero").onclick = () => {
+    $("nteOffX").value = 0;
+    $("nteOffY").value = 0;
+    offChange();
+    commit();
+  };
+  $("nteDragEntry").onchange = () => syncOffsetFields();
+  $("nteEntry").onchange = () => {
+    selEntry = $("nteEntry").value;
+    syncPanels();
+    requestDraw();
+  };
+  onChange("nteEntryPrefix", () => (entry(selGroup, selEntry, true).prefix = $("nteEntryPrefix").value));
+  const entryOff = () => (entry(selGroup, selEntry, true).offsets = [num($("nteEntryOffX").value, 0), num($("nteEntryOffY").value, 0)]);
+  onChange("nteEntryOffX", entryOff);
+  onChange("nteEntryOffY", entryOff);
+
+  rebuild();
+  syncPanels();
+  loadedOnce = true;
+  fit();
+  return {
+    onShow() {
+      resize();
+      syncHud();
+      syncPanels();
+    },
+    onHide() {},
+    undo,
+    redo,
+  };
+}
+
+return { defaultStyle, mountNoteEditor };
+})();
+
+/* ===== funkin-studio/js/states/NoteEditorState.js ===== */
+const __m57 = (() => {
+/* ============================================================
+   states/NoteEditorState.js — Note Editor（noteStyle の編集）の画面。V-Slice 本体には無い、Funkin' Studio 独自のエディタ。
+   ============================================================ */
+const { EditorState } = __m24;
+const { template } = __m55;
+const { mountNoteEditor } = __m56;
+
+class NoteEditorState extends EditorState {
+  static id = "note";
+  static template = template;
+  static hudLabel = "Note Editor";
+  static hudBack = "funkinMenu";
+
+  create() {
+    this.editor = mountNoteEditor(this);
+  }
+  onShow() {
+    this.editor.onShow();
+  }
+  onHide() {
+    this.editor.onHide();
+  }
+  undo() {
+    this.editor.undo();
+  }
+  redo() {
+    this.editor.redo();
+  }
+}
+
+return { NoteEditorState };
+})();
+
 /* ===== funkin-studio/js/main.js ===== */
-const __m51 = (() => {
+const __m58 = (() => {
 /* ============================================================
    main.js — アプリの入口（Haxe の Main.hx / FlxGame の起動に相当）
    ------------------------------------------------------------
@@ -19402,17 +20967,19 @@ const { startAutosave } = __m7;
 const { startColorLab } = __m8;
 const { startMobileFilePicker } = __m9;
 const { Hud } = __m11;
+const { Workspace } = __m14;
 
-const { HomeState } = __m12;
-const { RenderMenuState } = __m13;
-const { FunkinMenuState } = __m14;
-const { OtherMenuState } = __m15;
-const { ContributorsState } = __m17;
-const { AnimateEditorState } = __m22;
-const { SparrowEditorState } = __m25;
-const { CharacterEditorState } = __m31;
-const { StageEditorState } = __m39;
-const { ChartEditorState } = __m50;
+const { HomeState } = __m16;
+const { RenderMenuState } = __m17;
+const { FunkinMenuState } = __m18;
+const { OtherMenuState } = __m19;
+const { ContributorsState } = __m21;
+const { AnimateEditorState } = __m28;
+const { SparrowEditorState } = __m31;
+const { CharacterEditorState } = __m37;
+const { StageEditorState } = __m43;
+const { ChartEditorState } = __m54;
+const { NoteEditorState } = __m57;
 
 const app = new App(document.getElementById("app"));
 
@@ -19420,6 +20987,7 @@ const app = new App(document.getElementById("app"));
 app.i18n = new I18n(app);
 app.hud = new Hud(app);
 app.unsaved = new UnsavedGuard(app);
+app.workspace = new Workspace(app); // ホームで読み込んだ mod を全エディタで共有
 
 // 画面を登録（各クラスの static id が名前になる）
 app.states.register(
@@ -19433,6 +21001,7 @@ app.states.register(
   CharacterEditorState,
   StageEditorState,
   ChartEditorState,
+  NoteEditorState,
 );
 
 startColorLab();

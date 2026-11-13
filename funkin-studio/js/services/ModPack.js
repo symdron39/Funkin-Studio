@@ -29,7 +29,7 @@ function makeInfo(path, stripExt) {
   // assets/shared/images/… や assets/preload/images/… の shared / preload は「ラッパー」なので飛ばし、images/ を本当のルートにする
   let root = first;
   while ((segs[root] === "shared" || segs[root] === "preload") && isA(root + 1)) root++;
-  return { segs, root, noExt: segs.slice(root).join("/"), origin: segs.slice(0, first).join("/"), flat: segs.length <= 1 };
+  return { segs, root, noExt: segs.slice(root).join("/"), origin: segs.slice(0, first).join("/"), originLen: first, flat: segs.length <= 1 };
 }
 const _cache = new WeakMap();
 /** { segs: 小文字の各フォルダ名, root: ルートの位置, noExt: 拡張子なしのルート以降, origin } */

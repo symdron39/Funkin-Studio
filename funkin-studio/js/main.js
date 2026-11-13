@@ -24,6 +24,7 @@ import { startAutosave } from "./services/Autosave.js";
 import { startColorLab } from "./services/ColorLab.js";
 import { startMobileFilePicker } from "./services/MobileFilePicker.js";
 import { Hud } from "./ui/Hud.js";
+import { Workspace } from "./services/Workspace.js";
 
 import { HomeState } from "./states/HomeState.js";
 import { RenderMenuState } from "./states/RenderMenuState.js";
@@ -35,6 +36,7 @@ import { SparrowEditorState } from "./states/SparrowEditorState.js";
 import { CharacterEditorState } from "./states/CharacterEditorState.js";
 import { StageEditorState } from "./states/StageEditorState.js";
 import { ChartEditorState } from "./states/ChartEditorState.js";
+import { NoteEditorState } from "./states/NoteEditorState.js";
 
 const app = new App(document.getElementById("app"));
 
@@ -42,6 +44,7 @@ const app = new App(document.getElementById("app"));
 app.i18n = new I18n(app);
 app.hud = new Hud(app);
 app.unsaved = new UnsavedGuard(app);
+app.workspace = new Workspace(app); // ホームで読み込んだ mod を全エディタで共有
 
 // 画面を登録（各クラスの static id が名前になる）
 app.states.register(
@@ -55,6 +58,7 @@ app.states.register(
   CharacterEditorState,
   StageEditorState,
   ChartEditorState,
+  NoteEditorState,
 );
 
 startColorLab();

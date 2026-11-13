@@ -207,6 +207,48 @@ export const template = `
                 >renderType<input id="offRenderType" type="text" readonly /></label
               ><button id="offGlobalApply">全体オフセットを適用</button>
             </div>
+            <h3>キャラクター設定（V-Slice）</h3>
+            <p class="tiny">scale を変えるとプレビューもすぐ変わります。既定値のままの項目は、JSON に書き出しません（元から書かれていた項目は残します）。</p>
+            <div class="row">
+              <label>scale<input id="offScale" type="number" step="0.01" min="0.01" /></label
+              ><label title="歌ってから idle に戻るまでの長さ（ステップ数。既定 8）">singTime<input id="offSingTime" type="number" step="0.1" min="0" /></label
+              ><label title="何拍ごとに idle を再生するか（既定 1）">danceEvery<input id="offDanceEvery" type="number" step="0.5" min="0" /></label>
+            </div>
+            <div class="row">
+              <label>startingAnimation<select id="offStartAnim"></select></label
+              ><label class="hudCheck"><input id="offIsPixel" type="checkbox" /> isPixel（ドット絵・補間なし）</label>
+            </div>
+            <div class="row">
+              <label>cameraOffsets X<input id="offCamX" type="number" step="1" /></label
+              ><label>cameraOffsets Y<input id="offCamY" type="number" step="1" /></label>
+            </div>
+            <details>
+              <summary>healthIcon（ヘルスアイコン）</summary>
+              <div class="row">
+                <label>id<input id="offHIId" type="text" placeholder="bf" /></label
+                ><label>scale<input id="offHIScale" type="number" step="0.01" min="0.01" /></label>
+              </div>
+              <div class="row">
+                <label class="hudCheck"><input id="offHIPixel" type="checkbox" /> isPixel</label
+                ><label class="hudCheck"><input id="offHIFlip" type="checkbox" /> flipX</label>
+              </div>
+              <div class="row">
+                <label>offsets X<input id="offHIOffX" type="number" step="1" /></label
+                ><label>offsets Y<input id="offHIOffY" type="number" step="1" /></label>
+              </div>
+            </details>
+            <details>
+              <summary>death（ゲームオーバー演出）</summary>
+              <div class="row">
+                <label>cameraOffsets X<input id="offDeathCamX" type="number" step="1" /></label
+                ><label>cameraOffsets Y<input id="offDeathCamY" type="number" step="1" /></label>
+              </div>
+              <div class="row">
+                <label>cameraZoom<input id="offDeathZoom" type="number" step="0.01" min="0.01" /></label
+                ><label>preTransitionDelay<input id="offDeathDelay" type="number" step="0.1" min="0" /></label>
+              </div>
+            </details>
+            <div class="row"><button id="offPropsApply" class="primary">キャラクター設定を適用</button></div>
           </aside>
         </div>
 

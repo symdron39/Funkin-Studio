@@ -5,7 +5,7 @@
    書き: 無圧縮（store）で作る。音声（ogg/mp3）は元々圧縮済みなので、サイズはほぼ変わらない。
    ============================================================ */
 let crcTable = null;
-function crc32(bytes) {
+export function crc32(bytes) {
   if (!crcTable) {
     crcTable = new Uint32Array(256);
     for (let n = 0; n < 256; n++) {

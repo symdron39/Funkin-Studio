@@ -13,11 +13,58 @@
  * ImageBitmap はデコード済みのピクセルをそのまま持ち続けるので、これが起きない。
  * 既存コードが使う naturalWidth / naturalHeight も付けておく。
  */
+// ---- 大きな画像の縮小デコード（Low-end 端末の落ちる原因対策）----
+// 8192×8192 の PNG は、デコードすると約 256MB。複数あるとメモリが足りず、タブごと落ちる。
+// エディタの画面で見るだけなら、辺が cap px を超える画像は縮小してデコードすれば足りる。
+// 縮小したときは bmp.k（縮小率）を付け、切り出し座標（x, y, 幅, 高さ）には k を掛けて描く。
+// naturalWidth / naturalHeight は元の大きさのまま（prop の大きさや位置の計算は変わらない）。
+const lowEnd = () => {
+  try {
+    return (navigator.deviceMemory && navigator.deviceMemory <= 4) || (navigator.hardwareConcurrency || 8) <= 4 || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
+  } catch {
+    return false;
+  }
+};
+let imageCap = (() => {
+  try {
+    const v = Number(localStorage.getItem("stg.imageCap"));
+    if (v >= 0 && localStorage.getItem("stg.imageCap") !== null) return v;
+  } catch {}
+  return lowEnd() ? 2048 : 4096;
+})();
+/** 0 = 縮小しない */
+export const getImageCap = () => imageCap;
+export function setImageCap(n) {
+  imageCap = Math.max(0, Number(n) || 0);
+  try {
+    localStorage.setItem("stg.imageCap", String(imageCap));
+  } catch {}
+}
+/** PNG の先頭 24 バイトから幅・高さを読む（デコードせずに大きさだけ知るため） */
+async function pngSize(blob) {
+  try {
+    const b = new DataView(await blob.slice(0, 24).arrayBuffer());
+    if (b.getUint32(0) !== 0x89504e47) return null;
+    return [b.getUint32(16), b.getUint32(20)];
+  } catch {
+    return null;
+  }
+}
+
 export async function loadImage(file) {
   if (file.lazy) file = await file.blob(); // zip の中のファイル: ここで初めて取り出す
-  let bmp;
+  let bmp,
+    k = 1,
+    ow = 0,
+    oh = 0;
   try {
-    bmp = await createImageBitmap(file); // PNG / WebP / JPEG をデコード（メインスレッドを塞がない）
+    const size = imageCap ? await pngSize(file) : null;
+    if (size && Math.max(size[0], size[1]) > imageCap) {
+      k = imageCap / Math.max(size[0], size[1]);
+      [ow, oh] = size;
+      bmp = await createImageBitmap(file, { resizeWidth: Math.max(1, Math.round(ow * k)), resizeHeight: Math.max(1, Math.round(oh * k)), resizeQuality: "medium" });
+      k = bmp.width / ow;
+    } else bmp = await createImageBitmap(file); // PNG / WebP / JPEG をデコード（メインスレッドを塞がない）
   } catch {
     // createImageBitmap が使えない・失敗したときは、従来どおり <img> で読む
     const img = new Image();
@@ -30,8 +77,9 @@ export async function loadImage(file) {
     }
     return img;
   }
-  Object.defineProperty(bmp, "naturalWidth", { value: bmp.width });
-  Object.defineProperty(bmp, "naturalHeight", { value: bmp.height });
+  Object.defineProperty(bmp, "naturalWidth", { value: ow || bmp.width });
+  Object.defineProperty(bmp, "naturalHeight", { value: oh || bmp.height });
+  Object.defineProperty(bmp, "k", { value: k }); // 縮小率（1 = そのまま）
   return bmp;
 }
 
@@ -99,13 +147,14 @@ export function sparrowSequenceOf(sprites, anim) {
 
 /** アトラスから1フレームを (x, y) に w × h で描く。rotated は 90° 回して描く */
 export function paintSparrow(ctx, sp, img, x, y, w, h) {
+  const k = img.k || 1; // 縮小デコードした画像は、切り出し座標も縮める
   if (!sp.rotated) {
-    ctx.drawImage(img, sp.x, sp.y, sp.width, sp.height, x, y, w, h);
+    ctx.drawImage(img, sp.x * k, sp.y * k, sp.width * k, sp.height * k, x, y, w, h);
     return;
   }
   ctx.save();
   ctx.translate(x, y + h);
   ctx.rotate(-Math.PI / 2);
-  ctx.drawImage(img, sp.x, sp.y, sp.width, sp.height, 0, 0, h, w);
+  ctx.drawImage(img, sp.x * k, sp.y * k, sp.width * k, sp.height * k, 0, 0, h, w);
   ctx.restore();
 }

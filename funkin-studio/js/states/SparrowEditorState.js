@@ -3,6 +3,8 @@
    ------------------------------------------------------------
    構造は AnimateEditorState と同じ（入れ物 + editor.js のロジック + template.js の HTML）。
    ============================================================ */
+import { mountModPicker } from "../ui/ModPicker.js";
+import { sparrowList } from "../ui/modLists.js";
 import { EditorState } from "./EditorState.js";
 import { template } from "./sparrow/template.js";
 import { mountSparrowEditor } from "./sparrow/editor.js";
@@ -15,6 +17,7 @@ export class SparrowEditorState extends EditorState {
 
   create() {
     this.editor = mountSparrowEditor(this);
+    mountModPicker(this, this.root.querySelector("#sparrowWorkspace .panel"), { title: "読み込み済みの mod から Sparrow を選ぶ", list: sparrowList, run: () => this.root.querySelector("#spLoad").click() });
   }
   onShow() {
     this.editor.onShow();

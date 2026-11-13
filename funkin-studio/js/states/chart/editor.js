@@ -13,6 +13,7 @@
 
    目次: 1.状態 2.データ参照 3.履歴 4.音声と読み込み 5.描画 6.操作(ポインタ) 7.パネル 8.保存 9.再生・キーボード
    ============================================================ */
+import { exportMod } from "../../services/ModExport.js";
 import { isTextEntry } from "../../ui/Viewport.js";
 import { HudPanels } from "../../ui/HudPanels.js";
 import {
@@ -1568,20 +1569,21 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     }
     return out;
   };
+  // mod の zip ごと書き出す（services/ModExport.js）。曲の JSON は data/songs/<id>/、音声は songs/<id>/
+  const songPath = (n) => `data/songs/${fileId()}/${n}`;
+  const modOut = (files) => exportMod(state.app, files, { say }).catch((e) => say("書き出しエラー: " + e.message));
   $("chtSaveChart").onclick = () => {
     ensureConsistent();
-    download(names(curVar).chart, serializeChart(chart(), pretty()));
-    say(`${names(curVar).chart} を保存しました。`);
+    modOut([{ path: songPath(names(curVar).chart), data: serializeChart(chart(), pretty()) }]);
   };
   $("chtSaveMeta").onclick = () => {
     ensureConsistent();
-    download(names(curVar).meta, serializeMetadata(meta(), pretty()));
-    say(`${names(curVar).meta} を保存しました。`);
+    modOut([{ path: songPath(names(curVar).meta), data: serializeMetadata(meta(), pretty()) }]);
   };
   $("chtSaveAllJson").onclick = () => {
-    download(`${fileId()}-json.zip`, writeZip(jsonEntries()));
-    state.app.unsaved?.clean();
-    say("全バリエーションの JSON を zip にして保存しました。");
+    const files = jsonEntries().map((e) => ({ path: songPath(e.name), data: e.data }));
+    for (const t of audio.tracks) files.push({ path: `songs/${fileId()}/${t.id}${t.ext || ".ogg"}`, data: t.bytes });
+    modOut(files).then(() => state.app.unsaved?.clean());
   };
   function saveFnfc() {
     const entries = jsonEntries();

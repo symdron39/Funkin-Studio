@@ -5,6 +5,8 @@
    persistent（隠れても破棄しない）・hud（HUD を出す）・未保存の確認は、親の EditorState から引き継いでいる。
    隠れるときは onHide、戻ってくると onShow が呼ばれる。
    ============================================================ */
+import { mountModPicker } from "../ui/ModPicker.js";
+import { animateList } from "../ui/modLists.js";
 import { EditorState } from "./EditorState.js";
 import { template } from "./animate/template.js";
 import { mountAnimateEditor } from "./animate/editor.js";
@@ -19,6 +21,7 @@ export class AnimateEditorState extends EditorState {
   create() {
     // HTML が root に入った「あと」で、ロジックを起動する
     this.editor = mountAnimateEditor(this);
+    mountModPicker(this, this.root.querySelector(".studio-file-content"), { title: "読み込み済みの mod から AnimateAtlas を選ぶ", list: animateList, run: () => this.root.querySelector("#load").click() });
     this.api = this.editor.api; // autosave など外から使うためにも公開
     mountPartsPanel(this, this.api);
   }
