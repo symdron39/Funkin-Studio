@@ -182,7 +182,7 @@ export function createPlayTest(root, d) {
     notes = d
       .getNotes()
       .filter((n) => n.t >= startMs - 1)
-      .map((n) => ({ t: n.t, l: n.l || 0, lane: n.d % 4, player: n.d < 4, hit: false, missed: false, holding: false, done: false, dropped: false }));
+      .map((n) => ({ t: n.t, k: n.k || "", l: n.l || 0, lane: n.d % 4, player: n.d < 4, hit: false, missed: false, holding: false, done: false, dropped: false }));
     speedEvents = d
       .getEvents()
       .filter((e) => e.e === "ScrollSpeed" && e.v)
@@ -213,6 +213,7 @@ export function createPlayTest(root, d) {
       if (tok !== loadToken || state !== "loading") return; // 読み込み中に閉じた / 別の開始が走った
       scene.start(startMs);
     }
+    window.__ptDebug = { get scene() { return scene; }, get rt() { return rt; } }; // 検証用（読み取り専用の覗き窓）
     startRuntime(startMs);
     d.audio.pause();
     d.audio.setRate(opts.rate);
@@ -247,11 +248,14 @@ export function createPlayTest(root, d) {
     const scripts = Object.entries(d.getScripts?.() ?? {});
     const wantScripts = opts.scripts && scripts.length;
     const style = opts.skin ? d.noteStyles.get(opts.skin) : null;
-    if (!wantScripts && !style) return; // 何も使わないなら実行環境は作らない（軽量）
+    const anyKind = notes.some((n) => n.k);
+    if (!wantScripts && !style && !anyKind) return; // 何も使わないなら実行環境は作らない（軽量）
     rt = new Runtime({ noteStyles: d.noteStyles, getOpts: () => opts, characters: d.getCharacters?.() });
     if (scene) rt.attachScene(scene);
     rt.ps.playerStrumline.noteStyle = style;
     rt.ps.opponentStrumline.noteStyle = style;
+    // 採点しないノート（non_scoreable など）は分母から外す
+    st.total = notes.filter((n) => n.player && rt.kindOf(n.k)?.scoreable !== false).length;
     if (!wantScripts) return;
     for (const [name, text] of scripts) rt.loadScript(text, name);
     const all = d
@@ -370,9 +374,42 @@ export function createPlayTest(root, d) {
   function release(lane) {
     keyDown[lane] = false;
   }
+  // ---- ノーツ種類（NoteKind）
+  const kindOf = (n) => rt?.kindOf(n.k) ?? null;
+  /** 歌うアニメ。kind の noanim なら歌わない、suffix（alt など）があれば付ける */
+  function singFor(role, n, miss = false) {
+    if (kindOf(n)?.noanim) return;
+    scene?.sing(role, n.lane, miss, kindOf(n)?.suffix || "");
+  }
+  /** 画面に近づいたノートに onNoteIncoming を 1 度だけ送り、getNotes() の対象に入れる */
+  function trackNote(n, pos) {
+    if (!rt) return;
+    if (!n.inc && n.t - pos < 2000) {
+      n.inc = true;
+      rt.noteEvent("onNoteIncoming", n);
+      rt.liveNotes.push(n.spr);
+    } else if (n.inc && n.done && !n.out) {
+      n.out = true;
+      rt.liveNotes = rt.liveNotes.filter((s) => s !== n.spr);
+    }
+  }
   function registerHit(n, diff) {
     const j = judge(diff);
     n.hit = true;
+    const kind = kindOf(n);
+    const ev = rt?.noteEvent("onNoteHit", n, { judgement: j, healthChange: 0, score: scoreNote(diff), comboCount: st.combo + 1, isComboBreak: j === "bad" || j === "shit" });
+    if (ev?.eventCanceled) {
+      // スクリプトが cancel したヒットは、採点も歌うアニメもしない（実ゲームと同じ）
+      if (n.l > 0) n.holding = true;
+      else n.done = true;
+      return;
+    }
+    if (kind?.scoreable === false) {
+      singFor("player", n);
+      if (n.l > 0) n.holding = true;
+      else n.done = true;
+      return;
+    }
     st.counts[j]++;
     st.score += scoreNote(diff);
     st.errors.push(diff);
@@ -381,7 +418,7 @@ export function createPlayTest(root, d) {
     st.maxCombo = Math.max(st.maxCombo, st.combo);
     popups.push({ text: j.toUpperCase(), sub: `${diff >= 0 ? "+" : ""}${diff.toFixed(0)}ms`, color: JUDGE_COLORS[j], at: performance.now() });
     errTicks.push({ diff, color: JUDGE_COLORS[j], at: performance.now() });
-    scene?.sing("player", n.lane);
+    singFor("player", n);
     if (n.l > 0) n.holding = true;
     else n.done = true;
     if (opts.hit) d.audio.tick(false);
@@ -430,13 +467,15 @@ export function createPlayTest(root, d) {
   function update(pos) {
     const t = eff(pos);
     for (const n of notes) {
+      trackNote(n, pos);
       if (n.done) continue;
       if (!n.player) {
         // 相手側は自動
         if (!n.hit && pos >= n.t) {
           n.hit = true;
           oppFlash[n.lane] = 1;
-          scene?.sing("opponent", n.lane);
+          rt?.noteEvent("onNoteHit", n, { judgement: "sick", healthChange: 0, score: 0, comboCount: 0, isComboBreak: false });
+          singFor("opponent", n);
           if (n.l <= 0) n.done = true;
           else n.holding = true;
         }
@@ -450,11 +489,14 @@ export function createPlayTest(root, d) {
       }
       if (!n.hit && !n.missed && t - n.t > WIN.shit) {
         n.missed = true;
-        st.counts.miss++;
-        st.combo = 0;
-        st.score += -100;
-        popups.push({ text: "MISS", sub: "", color: JUDGE_COLORS.miss, at: performance.now() });
-        scene?.sing("player", n.lane, true);
+        const ev = rt?.noteEvent("onNoteMiss", n, { healthChange: 0, score: -100, comboCount: st.combo, isComboBreak: true });
+        if (!ev?.eventCanceled && kindOf(n)?.scoreable !== false) {
+          st.counts.miss++;
+          st.combo = 0;
+          st.score += -100;
+          popups.push({ text: "MISS", sub: "", color: JUDGE_COLORS.miss, at: performance.now() });
+          singFor("player", n, true);
+        }
       }
       if (n.holding) {
         const held = opts.bot || keyDown[n.lane];
@@ -470,6 +512,7 @@ export function createPlayTest(root, d) {
           else {
             n.dropped = true;
             n.done = true;
+            rt?.noteEvent("onNoteHoldDrop", n, { healthChange: 0, score: 0, comboCount: st.combo, isComboBreak: true });
             st.drops++;
             st.combo = 0;
           }
@@ -581,12 +624,19 @@ export function createPlayTest(root, d) {
     }
     ctx.restore();
   }
+  /** kind が指定している noteStyle（絵が使えるときだけ） */
+  function kindStyle(n) {
+    const id = kindOf(n)?.noteStyleId;
+    const st2 = id ? d.noteStyles.get(id) : null;
+    return st2 && st2.usable() ? st2 : null;
+  }
   function drawSide(g, x0, notesOf, side, pos, isPlayer) {
     const { laneW, strumY, s, H } = g;
     const dir = opts.down ? -1 : 1;
     const left = x0 - 2 * laneW;
     const style = styleOf(isPlayer);
-    const sk = style && style.usable() ? style : null; // 絵が使えるスキンだけ
+    const sk0 = style && style.usable() ? style : null; // 絵が使えるスキンだけ
+    const sk = sk0;
     const k = laneW / 112; // スキンの絵は「1 レーン = 112px」基準
     // レーン
     for (let l = 0; l < 4; l++) {
@@ -604,6 +654,9 @@ export function createPlayTest(root, d) {
     const sp = speedAt(t, side) * PIXELS_PER_MS * s;
     for (const n of notesOf) {
       if (n.done && !n.holding) continue;
+      if (n.spr && !n.spr.visible) continue; // スクリプトが非表示にしたノート
+      const nsty = n.k ? kindStyle(n) : null;
+      const sk = nsty ?? sk0;
       const cx = left + (n.lane + 0.5) * laneW;
       let y = strumY + dir * (n.t - t) * sp;
       let yEnd = n.l > 0 ? strumY + dir * (n.t + n.l - t) * sp : y;

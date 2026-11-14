@@ -1444,8 +1444,9 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     const r = parseHxc(text);
     for (const e of r.events) registerEventSchema(e.id, e.title, e.fields);
     const warnings = [...r.warnings, ...r.events.flatMap((e) => e.warnings.map((w) => `${e.id}: ${w}`))];
-    scripts[name] = { text, ids: r.events.map((e) => e.id), kinds: r.noteKinds.map((k) => k.id), warn: warnings };
-    return { count: r.events.length + r.noteKinds.length, warnings };
+    const modules = [...text.matchAll(/class\s+(\w+)\s+extends\s+(?:Module|ScriptedModule)\b/g)].map((m) => m[1]); // プレイテストで実行する Module
+    scripts[name] = { text, ids: r.events.map((e) => e.id), kinds: r.noteKinds.map((k) => k.id), modules, warn: warnings };
+    return { count: r.events.length + r.noteKinds.length + modules.length, warnings };
   }
   function saveScripts() {
     try {
@@ -1465,7 +1466,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
       const label = Object.assign(document.createElement("span"), {
         className: "chtRowName",
         style: "max-width:none;flex:1",
-        textContent: `${name} → ${[...sc.ids, ...sc.kinds.map((k) => k + "(ノーツ種類)")].join(", ") || "対象なし"}`,
+        textContent: `${name} → ${[...sc.ids, ...sc.kinds.map((k) => k + "(ノーツ種類)"), ...(sc.modules ?? []).map((k) => k + "(Module)")].join(", ") || "対象なし"}`,
         title: sc.warn.join("\n") || name,
       });
       const del = Object.assign(document.createElement("button"), { type: "button", textContent: "✕", title: "外す" });
@@ -1501,9 +1502,9 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
       } else if (/\.(hxc|hx|txt)$/i.test(f.name)) texts.push([f.name, await f.text()]);
       else warns.push(`${f.name}: .hxc / .hx のファイルを選んでください`);
       for (const [name, text] of texts) {
-        if (!/extends\s+(SongEvent|ScriptedSongEvent|ScriptedNoteKind)\b/.test(text)) continue; // イベント / ノーツ種類以外のスクリプトは読み飛ばす
+        if (!/extends\s+(SongEvent|ScriptedSongEvent|ScriptedNoteKind|NoteKind|Module|ScriptedModule)\b/.test(text)) continue; // イベント / ノーツ種類 / Module 以外のスクリプトは読み飛ばす
         const r = registerScript(name, text);
-        if (r.count) found.push(`${name} → ${[...scripts[name].ids, ...scripts[name].kinds.map((k) => k + "(ノーツ種類)")].join(", ")}`);
+        if (r.count) found.push(`${name} → ${[...scripts[name].ids, ...scripts[name].kinds.map((k) => k + "(ノーツ種類)"), ...scripts[name].modules.map((k) => k + "(Module)")].join(", ")}`);
         warns.push(...r.warnings);
       }
     }

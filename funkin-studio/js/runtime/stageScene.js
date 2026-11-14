@@ -17,7 +17,7 @@ import { findSpriteAtlas, findAnimateAtlas } from "../states/stage/atlas.js";
 import { StageCharacter, atlasKindOf } from "../states/stage/stageCharacter.js";
 import { loadImage } from "../states/stage/sparrowAtlas.js";
 import { normalizeStage, isSolid, isAnimated, getScale, getScroll, parseColor, toRgbaCss, blendToCanvas, defaultCharacter } from "../states/stage/stageData.js";
-import { originOf } from "../services/ModPack.js";
+import { originOf, infoOf } from "../services/ModPack.js";
 
 export const FRAME_W = 1280,
   FRAME_H = 720;
@@ -130,6 +130,7 @@ class SceneChar {
     } else if (a.has("idle")) a.play("idle", force || !(a.name === "idle" && !a.finished));
   }
   playAnim(name, force = true) {
+    if (this.building) this.pendingAnim = [name, force]; // アトラス読み込み中に呼ばれたら、読めた直後に再生する
     if (!this.actor?.has(name)) return false;
     this.actor.play(name, force);
     this.singing = /^sing/i.test(name);
@@ -218,6 +219,8 @@ export class StageScene {
     this.zoom = 1;
     this.bop = 0; // 4 拍ごとの一時的なズーム
     this.cam = { x: FRAME_W / 2, y: FRAME_H / 2 }; // 焦点（ワールド座標）
+    this.extra = []; // スクリプトが stage.add したキャラ
+    this.charFiles = new Map();
     this.focusEvents = [];
     this.zoomEvents = [];
     this.focusTarget = { x: FRAME_W / 2, y: FRAME_H / 2 };
@@ -240,10 +243,45 @@ export class StageScene {
   // ---------------- 読み込み ----------------
   async load({ stage, characters }) {
     this.stageId = stage || "";
+    this.indexCharacters();
     await this.loadStage(stage);
     for (const role of ROLES) await this.loadChar(role, characters?.[role]);
     this.zoom = this.zoomBase;
     this.loaded = true;
+  }
+  /** mod 内の data/characters/*.json を id 別に控える（fetchCharacter を同期で呼べるように） */
+  indexCharacters() {
+    this.charFiles = new Map();
+    for (const f of this.pool) {
+      if (!/\.json$/i.test(f.name || "")) continue;
+      if (!infoOf(f).noExt.startsWith("data/characters/")) continue;
+      this.charFiles.set(String(f.name).replace(/^.*[\\/]/, "").replace(/\.json$/i, ""), f);
+    }
+  }
+  /** CharacterDataParser.fetchCharacter(id): 新しいキャラを作る（ステージには add するまで出ない）。無ければ null */
+  fetchCharacter(id) {
+    const f = this.charFiles.get(id) || this.resolveFile("character", id);
+    if (!f) {
+      this.warn(`fetchCharacter("${id}"): 読み込んだ mod にキャラクターがありません（null を返しました）`);
+      return null;
+    }
+    const c = new SceneChar("other");
+    c.id = id;
+    c.pos = [0, 0];
+    c.actor = new Actor([], () => null, null);
+    c.building = true;
+    c.built = this.buildChar(c, f, id, "bf").finally(() => {
+      c.building = false;
+      if (c.pendingAnim) c.playAnim(...c.pendingAnim);
+      c.pendingAnim = null;
+    });
+    return this.apiOf(c);
+  }
+  addExtra(c) {
+    if (c && !this.extra.includes(c)) this.extra.push(c);
+  }
+  removeExtra(c) {
+    this.extra = this.extra.filter((x) => x !== c);
   }
   async loadStage(id) {
     let doc = null;
@@ -330,12 +368,16 @@ export class StageScene {
     c.camOffsets = sd.cameraOffsets.slice();
     c.scroll = getScroll(sd);
     c.alpha = num(sd.alpha, 1);
-    const f = id ? this.resolveFile("character", id) : null;
+    const f = id ? this.charFiles.get(id) || this.resolveFile("character", id) : null;
     if (!f) {
       this.warn(id ? `キャラクター「${id}」（${key}）が読み込んだ mod の中に見つかりません。仮の枠で動かします。` : `${key} に使うキャラクターが指定されていません。`);
       c.actor = new Actor([], () => null, null);
       return;
     }
+    await this.buildChar(c, f, id, key);
+  }
+  /** character JSON とアトラスを読んで SceneChar に反映する（失敗しても仮の枠のまま動く） */
+  async buildChar(c, f, id, key = "bf") {
     try {
       const sc = new StageCharacter(key);
       if (!(await sc.setJsonFrom([f]))) throw Error("animations を持つ JSON ではありません");
@@ -390,6 +432,10 @@ export class StageScene {
     this.cam = { ...this.focusTarget };
     for (const c of Object.values(this.chars)) c.dance(true);
   }
+  focusPointOf(c) {
+    const p = c.place();
+    return { x: p.focusX, y: p.focusY };
+  }
   focusPoint(role) {
     const p = this.chars[role].place();
     return { x: p.focusX, y: p.focusY };
@@ -435,12 +481,23 @@ export class StageScene {
       }
     }
     // キャラ・prop のアニメ
-    for (const c of Object.values(this.chars)) {
+    for (const c of [...Object.values(this.chars), ...this.extra]) {
       c.actor?.update(dt);
       if (c.singing) {
         c.holdTimer += dtMs;
-        if (c.holdTimer > c.singTime * stepMs) c.dance(); // 歌い終わったら戻る
+        const lim = c.singTime * stepMs * (/miss$/.test(c.actor?.name ?? "") ? 2 : 1); // miss は 2 倍（実ソース）
+        if (c.holdTimer > lim) {
+          const base = (c.actor?.name ?? "").replace(/-hold$/, "");
+          c.holdTimer = 0;
+          if (c.actor?.has(base + "-end")) c.playAnim(base + "-end"); // -end があればそれを再生
+          else c.dance(true);
+        }
       }
+    }
+    for (const c of [...Object.values(this.chars), ...this.extra]) {
+      const a = c.actor;
+      // 終わったら「名前-hold」を続けて再生する（実ソース: BaseCharacter.onUpdate）
+      if (a?.cur && a.finished && !a.name.endsWith("-hold") && a.has(a.name + "-hold")) a.play(a.name + "-hold", true);
     }
     for (const p of this.props) p.actor?.update(dt);
     // ズーム（イベント → 4 拍ごとの揺れ）
@@ -474,10 +531,16 @@ export class StageScene {
   }
 
   // ---------------- ノートからの操作 ----------------
-  sing(role, lane, miss = false) {
+  sing(role, lane, miss = false, suffix = "") {
     const c = this.chars[role];
     if (!c) return;
-    const name = SING[lane] + (miss ? "miss" : "");
+    // V-Slice: sing{DIR}{miss}{-suffix}。無ければ後ろの -xxx を 1 つずつ外して探す（correctAnimationName）
+    let name = SING[lane] + (miss ? "miss" : "") + (suffix ? "-" + suffix : "");
+    while (name && !c.actor?.has(name)) {
+      const i = name.lastIndexOf("-");
+      if (i < 0) break;
+      name = name.slice(0, i);
+    }
     if (!c.playAnim(name) && miss) c.playAnim(SING[lane]); // miss 用が無ければ普通の sing
   }
   keepSinging(role) {
@@ -504,7 +567,7 @@ export class StageScene {
       scrollY = this.cam.y - FRAME_H / 2;
     const list = [
       ...this.props.map((p) => ({ z: p.z, ord: p.ord, prop: p })),
-      ...ROLES.map((r, i) => ({ z: this.chars[r].zIndex, ord: 1e6 + i, char: this.chars[r] })),
+      ...[...ROLES.map((r) => this.chars[r]), ...this.extra].map((c, i) => ({ z: c.zIndex, ord: 1e6 + i, char: c })),
     ].sort((a, b) => a.z - b.z || a.ord - b.ord);
     if (this.stageMissing) {
       ctx.save();
@@ -518,7 +581,7 @@ export class StageScene {
       const sf = o.char ? o.char.scroll : getScroll(o.prop.ref);
       this.world(ctx, z, scrollX, scrollY, sf);
       if (o.char) {
-        if (o.char.visible) o.char.draw(ctx, STAGE_KEY[o.char.role].toUpperCase());
+        if (o.char.visible) o.char.draw(ctx, (STAGE_KEY[o.char.role] ?? "CHAR").toUpperCase());
       } else this.drawProp(ctx, o.prop);
       ctx.restore();
     }
@@ -565,14 +628,21 @@ export class StageScene {
 
   // ---------------- スクリプトに渡す入れ物 ----------------
   /** getBoyfriend() などが返す、キャラの代役（PlayState.instance 経由で触られる主な項目） */
-  apiOf(role) {
-    this._api ??= {};
-    return (this._api[role] ??= this._makeApi(role));
+  apiOf(who) {
+    const c = typeof who === "string" ? this.chars[who] : who;
+    this._api ??= new Map();
+    if (!this._api.has(c)) this._api.set(c, this._makeApi(c));
+    return this._api.get(c);
   }
-  _makeApi(role) {
-    const c = this.chars[role],
-      scene = this;
+  _makeApi(c) {
+    const scene = this,
+      role = c.role;
     return {
+      __char: c,
+      playAnimation: (name, force = true) => void c.playAnim(String(name), !!force),
+      get isPlayer() {
+        return role === "player";
+      },
       characterId: c.id,
       characterType: role === "player" ? 0 : role === "opponent" ? 1 : 2,
       get x() {
@@ -626,9 +696,9 @@ export class StageScene {
         const p = c.place();
         return { x: p.feetX, y: p.feetY - p.h / 2 };
       },
-      getFocusPoint: () => scene.focusPoint(role),
+      getFocusPoint: () => scene.focusPointOf(c),
       get cameraFocusPoint() {
-        return scene.focusPoint(role);
+        return scene.focusPointOf(c);
       },
       getBaseScale: () => c.sc?.view?.baseScale ?? 1,
       setPosition: (x, y) => {
@@ -636,7 +706,6 @@ export class StageScene {
       },
       holdTimer: 0,
       singTimeSec: c.singTime * (this.stepMs() / 1000),
-      isPlayer: role === "player",
     };
   }
   /** ステージの代役（PlayState.instance.currentStage） */
@@ -649,6 +718,10 @@ export class StageScene {
       getBoyfriend: () => scene.apiOf("player"),
       getDad: () => scene.apiOf("opponent"),
       getGirlfriend: () => scene.apiOf("girlfriend"),
+      add: (o) => (o?.__char ? scene.addExtra(o.__char) : null),
+      remove: (o) => (o?.__char ? scene.removeExtra(o.__char) : null),
+      insert: (_i, o) => (o?.__char ? scene.addExtra(o.__char) : null),
+      refresh: () => {}, // 描画のたびに zIndex で並べ直すので何もしなくてよい
       getNamedProp: (name) => {
         const e = scene.props.find((p) => p.ref.name === name);
         return e ? { x: e.ref.position[0], y: e.ref.position[1], alpha: num(e.ref.alpha, 1), visible: true, playAnim: (n, f) => e.actor?.play(String(n), f !== false) } : null;

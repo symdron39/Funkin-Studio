@@ -250,3 +250,11 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 - `Runtime.attachScene(scene)`: `ps.getBoyfriend/getDad/getGirlfriend`, `ps.currentStage`, `currentCameraZoom`, `cameraFollowPoint` を代役として公開。
 - 未確認の近似: カメラ追従 lerp 0.04、4拍ズーム 0.015、sing→idle の戻り時刻、反転キャラのオフセット符号。
 - オプション「ステージとキャラクターを表示」（chtPlayScene）。
+
+## v3.19 スクリプトからのキャラ生成・NoteKind
+- `CharacterDataParser.fetchCharacter(id)` / `listCharacterIds()`（runtime.js `attachScene`）。mod の data/characters/*.json を id で引き、アトラスは裏で読む（読み終わるまでに呼ばれた `playAnimation` は読めた直後に再生）。見つからなければ null。
+- `PlayState.currentStage.add/remove/insert/refresh`、`PlayState.currentStage` / `getBoyfriend()` 等の静的アクセス。`method.apply(対象, [引数])` / `.call` も受け付ける（hscript.js `callMethod`）。
+- NoteKind（V-Slice 0.8.7 `NoteKindManager` 準拠）: `NoteKind` / `ScriptedNoteKind` 基底（noteKind/description/noteStyleId/params/noanim/suffix/scoreable、getNotes/getOtherNotes）、組み込み `noanim` / `non_scoreable`。そのノートの kind と全 Module に onNoteIncoming / onNoteHit / onNoteMiss / onNoteHoldDrop を送る。`event.cancel()` でヒット・ミスの標準処理を止められる。noanim で歌わない、suffix（alt など）付きの sing（無ければ `-xxx` を外して探す）、kind の noteStyleId でノートの絵を変える、scoreable=false は採点・分母から除外。
+- 継承元の組み込みメソッドを `this` なしで呼べるようにした（`getNotes()` など）。
+- 実ソースに合わせた修正: miss 後の戻りは singTime×2、`-hold` を終了後に続けて再生、`-end` があれば歌い終わりに再生。4拍ズーム(1.015倍・0.95減衰)と追従 lerp 0.04 は実ソースと一致を確認。
+- 未確認/近似: onNoteIncoming を送る距離（2000ms 先）、Module の onCreate 等の呼び出し順、キャラの反転オフセット。

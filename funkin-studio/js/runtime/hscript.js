@@ -1187,6 +1187,9 @@ export class HScript {
     if (fr.self) {
       const f = this.findMethod(fr.self.__cls, name);
       if (f) return { found: true, v: (...a) => this.invoke(f.cls, f.m, fr.self, a) };
+      // 継承元（NoteKind / Module / SongEvent）の組み込みメソッドを、this なしでも呼べるように
+      const bm = this.host.bases?.[this.rootBase(fr.self.__cls)]?.methods?.[name];
+      if (bm) return { found: true, v: bm.bind(fr.self) };
     }
     for (let c = fr.cls; c; c = this.classes.get(c.ext)) {
       if (c.staticVals?.has(name)) return { found: true, v: c.staticVals.get(name), cls: c };
@@ -1252,6 +1255,13 @@ export class HScript {
       const sm = c.statics.get(name);
       if (sm) return this.invoke(c, sm, null, args);
       throw new HScriptError(`${c.name}.${name}() は定義されていません`);
+    }
+    // 関数値の .apply / .call（method.apply(対象, [引数]) の形。対象だけ・引数だけの書き方も受け入れる）
+    if (typeof o === "function" && (name === "apply" || name === "call")) {
+      let a = args;
+      if (name === "apply") a = Array.isArray(args[1]) ? args[1] : Array.isArray(args[0]) ? args[0] : args.length ? [args[args.length - 1]] : [];
+      else a = args.slice(1);
+      return o(...a);
     }
     const fn = o[name];
     if (typeof fn === "function") return fn.apply(o, args);

@@ -421,6 +421,14 @@ export class Runtime {
     this.pos = 0;
     this.modules = new Map();
     this.eventInst = new Map(); // kind → {inst, processOld}
+    this.noteKinds = new Map(); // kind 名 → NoteKind のインスタンス（スクリプト）/ 組み込み
+    this.liveNotes = []; // いま画面にあるノート（NoteSprite の代役）。getNotes() が返す
+    // 組み込みの kind（V-Slice の NoAnimNoteKind / NonScoreableNoteKind）
+    this.noteKinds.set("noanim", { noteKind: "noanim", noanim: true, suffix: "", scoreable: true, noteStyleId: null, params: [] });
+    this.noteKinds.set("non_scoreable", {
+      noteKind: "non_scoreable", noanim: false, suffix: "", scoreable: false, noteStyleId: null, params: [],
+      native: { onNoteMiss: (ev) => { ev.note.visible = false; ev.cancel(); } },
+    });
     this.cams = { camGame: new FlxCamera("camGame"), camHUD: new FlxCamera("camHUD"), camCutscene: new FlxCamera("camCutscene") };
     this.ps = null;
     this.hs = null;
@@ -632,6 +640,27 @@ export class Runtime {
           handleEvent: noop,
         },
       },
+      NoteKind: {
+        init(inst, args) {
+          inst.noteKind = args[0] == null ? "UNKNOWN" : String(args[0]);
+          inst.description = args[1] ?? "";
+          inst.noteStyleId = args[2] ?? null;
+          inst.params = args[3] ?? [];
+          inst.noanim = !!args[4];
+          inst.suffix = args[5] ?? "";
+          inst.scoreable = true;
+          rt.noteKinds.set(inst.noteKind, inst);
+        },
+        methods: {
+          toString() {
+            return this.noteKind;
+          },
+          getNotes: (visible) => rt.liveNotes.filter((n) => n.noteData.kind === undefined || true).filter((n) => !visible || n.visible),
+          getOtherNotes: (visible) => rt.liveNotes.filter((n) => !visible || n.visible),
+          onScriptEvent: noop, onCreate: noop, onDestroy: noop, onUpdate: noop,
+          onNoteIncoming: noop, onNoteHit: noop, onNoteMiss: noop, onNoteHoldDrop: noop,
+        },
+      },
       Module: {
         init(inst, args) {
           inst.__moduleId = args[0];
@@ -647,6 +676,10 @@ export class Runtime {
     };
     bases.ScriptedSongEvent = bases.SongEvent;
     bases.ScriptedModule = bases.Module;
+    bases.ScriptedNoteKind = bases.NoteKind;
+    // getNotes / getOtherNotes は自分の kind で絞る
+    bases.NoteKind.methods.getNotes = function (v) { return rt.liveNotes.filter((n) => n.noteData.kind === this.noteKind && (!v || n.visible)); };
+    bases.NoteKind.methods.getOtherNotes = function (v) { return rt.liveNotes.filter((n) => n.noteData.kind !== this.noteKind && (!v || n.visible)); };
     this.hs = new HScript({ globals: G, bases, onStub: (p, isSet) => this.warn(isSet ? `${p}（代入）` : `${p}()`) });
   }
   log(msg) {
@@ -663,7 +696,7 @@ export class Runtime {
       const defs = this.hs.load(text, name);
       for (const c of defs) {
         const root = this.hs.rootBase(c);
-        if (root === "SongEvent" || root === "ScriptedSongEvent" || root === "Module" || root === "ScriptedModule") {
+        if (root === "SongEvent" || root === "ScriptedSongEvent" || root === "Module" || root === "ScriptedModule" || root === "NoteKind" || root === "ScriptedNoteKind") {
           try {
             this.hs.instantiate(c);
           } catch (e) {
@@ -687,12 +720,82 @@ export class Runtime {
     ps.currentStageId = scene.stageId;
     const who = { getBoyfriend: "player", getDad: "opponent", getGirlfriend: "girlfriend" };
     for (const [fn, role] of Object.entries(who)) ps[fn] = () => w(role, () => scene.apiOf(role), "Character");
+    // stage.add(x): キャラならシーンへ、それ以外（FlxSprite など）は PlayState の members へ
+    const sApi = scene.stageApi();
+    for (const m of ["add", "remove", "insert"]) {
+      const orig = sApi[m];
+      ps.currentStage[m] = (...a) => {
+        const o = a[a.length - 1];
+        if (o?.__char) return orig(...a);
+        return ps[m]?.(...a);
+      };
+    }
+    this.G.PlayState.currentStage = ps.currentStage;
+    this.G.PlayState.getBoyfriend = ps.getBoyfriend;
+    this.G.PlayState.getDad = ps.getDad;
+    this.G.PlayState.getGirlfriend = ps.getGirlfriend;
+    this.G.CharacterDataParser = withStubs(
+      {
+        fetchCharacter: (id) => scene.fetchCharacter(String(id)),
+        fetchCharacterData: (id) => (scene.charFiles.has(String(id)) ? { id: String(id) } : null),
+        listCharacterIds: () => [...scene.charFiles.keys()],
+      },
+      "CharacterDataParser",
+      (p) => this.stub(p),
+    );
     ps.currentStage.getBoyfriend = ps.getBoyfriend;
     ps.currentStage.getDad = ps.getDad;
     ps.currentStage.getGirlfriend = ps.getGirlfriend;
     Object.defineProperty(ps, "currentCameraZoom", { get: () => scene.zoom, set: (v) => (scene.zoom = Number(v)), configurable: true });
     Object.defineProperty(ps, "defaultCameraZoom", { get: () => scene.zoomBase, set: (v) => (scene.zoomBase = Number(v)), configurable: true });
     ps.cameraFollowPoint = { get x() { return scene.focusTarget.x; }, set x(v) { scene.focusTarget.x = Number(v); }, get y() { return scene.focusTarget.y; }, set y(v) { scene.focusTarget.y = Number(v); }, setPosition(x, y) { scene.focusTarget = { x: Number(x), y: Number(y) }; } };
+  }
+  /** 譜面の kind からノートの種類（無ければ null） */
+  kindOf(id) {
+    return id ? this.noteKinds.get(id) ?? null : null;
+  }
+  /** ノート 1 つ分の NoteSprite の代役。n は playtest のノート */
+  makeNoteSprite(n) {
+    const raw = {
+      noteData: {
+        kind: n.k ?? "",
+        time: n.t,
+        length: n.l,
+        data: n.player ? n.lane : n.lane + 4,
+        getDirection: () => n.lane,
+        getMustHitNote: () => n.player,
+        getStrumTime: () => n.t,
+        getLength: () => n.l,
+      },
+      kind: n.k ?? "",
+      visible: true,
+      alpha: 1,
+      x: 0,
+      y: 0,
+      scale: new Pt(1, 1),
+      flipY: false,
+      direction: n.lane,
+      updateHitbox() {},
+    };
+    n.spr = raw;
+    return withStubs(raw, "NoteSprite", (p) => this.stub(p));
+  }
+  /** ノートのイベント（onNoteIncoming / onNoteHit / onNoteMiss / onNoteHoldDrop）。そのノートの kind と全 Module に送る。返り値は event（cancel されたか分かる） */
+  noteEvent(hook, n, extra = {}) {
+    const ev = { note: n.sprW ?? (n.sprW = this.makeNoteSprite(n)), holdNote: n.sprW, eventCanceled: false, cancel() { this.eventCanceled = true; }, ...extra };
+    const kind = this.kindOf(n.k);
+    const targets = [];
+    if (kind) targets.push(kind);
+    for (const m of this.modules.values()) targets.push(m);
+    for (const inst of targets) {
+      try {
+        if (inst.native) inst.native[hook]?.(ev);
+        else if (this.hs.has(inst, hook)) this.hs.call(inst, hook, [ev]);
+      } catch (e) {
+        this.fail(`${inst.__cls?.name ?? inst.noteKind}.${hook}`, e);
+      }
+    }
+    return ev;
   }
   hasEvent(kind) {
     return this.eventInst.has(kind);
