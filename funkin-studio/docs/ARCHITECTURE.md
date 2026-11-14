@@ -258,3 +258,15 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 - 継承元の組み込みメソッドを `this` なしで呼べるようにした（`getNotes()` など）。
 - 実ソースに合わせた修正: miss 後の戻りは singTime×2、`-hold` を終了後に続けて再生、`-end` があれば歌い終わりに再生。4拍ズーム(1.015倍・0.95減衰)と追従 lerp 0.04 は実ソースと一致を確認。
 - 未確認/近似: onNoteIncoming を送る距離（2000ms 先）、Module の onCreate 等の呼び出し順、キャラの反転オフセット。
+
+## v3.20（#32–#35）
+- **playAnimation**: V-Slice の Bopper/BaseCharacter に合わせて `playAnim(name, restart, ignoreOther, reversed)`、`-alt` 落とし、未知アニメは無視、特殊アニメはビートの dance で潰さない。
+- **NoteKind スクリプト**: `scripts/notekinds/*.hxc` を mod 読み込み時に自動取り込み（Chart Editor の scripts 欄にも手動追加可）。
+- **未対応 API の実装**: `Paths.getSparrowAtlas/sound`、`FunkinSound.load/play/stop`、`HapticUtil.vibrate`（no-op）、`camGame.shake`、`Preferences.get_downscroll`、`NoteStyleRegistry.fetchDefault`、`NoteSprite.animation.addByPrefix/play`・`offset.set`・`frames`。スクリプトが絵を差し替えたノートは `drawNoteSprite` で描画。`songEnd` で `stopAll`。
+- **Note Style Editor を V-Slice 0.8.7 の配置に合わせ直し**（`runtime/noteStyle.js` 冒頭コメント参照）:
+  受け皿 = 左上 (lane*112−28.6+off.x, off.y)・大きさは atlas 最初のフレーム×scale / ノーツ中心 x = lane*112+50（note の offsets は無効）/ ホールドの offsets は引き算 / スプラッシュ・カバーは offsets×scale。アニメ個別 offsets は本編で読まれないので編集不可。strumline 既定位置: 上スクロール y=24、下は H−高さ−24−offsets.y。
+  エディタは既定で内蔵 funkin を読み込み、ドラッグの移動量も上記の符号・scale で offsets に変換する。
+
+## v3.20.1（バグ修正）
+- ホールド画像の列順を修正: 8 列は「1の胴体・1の終端・2の胴体・2の終端…」。胴体 = 列 lane*2、終端 = lane*2+1（SustainTrail.hx の uv と同じ）。
+- プレイテスト/ステージの AnimateAtlas（キャラ・アニメ付き prop）は、タイムラインの原点を基準フレームに固定して描く。フレームごとに枠の左上へ寄せていたため、動くたびに位置が跳ねていた。

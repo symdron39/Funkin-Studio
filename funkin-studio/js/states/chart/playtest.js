@@ -11,6 +11,7 @@
    ============================================================ */
 import { Runtime } from "../../runtime/runtime.js";
 import { openModZip } from "../../services/ModPack.js";
+import { drawNoteSprite } from "../../runtime/noteStyle.js";
 import { StageScene } from "../../runtime/stageScene.js";
 const PIXELS_PER_MS = 0.45;
 const WIN = { sick: 45, good: 90, bad: 135, shit: 160 };
@@ -272,6 +273,8 @@ export function createPlayTest(root, d) {
   function scriptReport() {
     if (!rt && !scene) return "";
     const lines = [];
+    const unknown = [...new Set(notes.filter((n) => n.k && !rt?.kindOf(n.k)).map((n) => n.k))];
+    if (unknown.length) lines.push("ℹ 譜面で使われている kind のスクリプトが読み込まれていません（見た目・動作は普通のノートになります）: " + unknown.join(", "));
     if (scene?.warnings.length) lines.push("ℹ ステージ・キャラクター:\n  " + scene.warnings.join("\n  "));
     if (rt?.errors.length) lines.push("⚠ スクリプトのエラー:\n  " + rt.errors.join("\n  "));
     if (rt?.warnings.size) lines.push("ℹ 未対応のAPI（呼ばれたが再現していないもの）:\n  " + [...rt.warnings].slice(0, 12).join("\n  ") + (rt.warnings.size > 12 ? `\n  …ほか ${rt.warnings.size - 12} 件` : ""));
@@ -386,6 +389,7 @@ export function createPlayTest(root, d) {
     if (!rt) return;
     if (!n.inc && n.t - pos < 2000) {
       n.inc = true;
+      n.baseScale = (kindStyle(n) ?? styleOf(n.player))?.getNoteScale?.() ?? 1;
       rt.noteEvent("onNoteIncoming", n);
       rt.liveNotes.push(n.spr);
     } else if (n.inc && n.done && !n.out) {
@@ -638,6 +642,9 @@ export function createPlayTest(root, d) {
     const sk0 = style && style.usable() ? style : null; // 絵が使えるスキンだけ
     const sk = sk0;
     const k = laneW / 112; // スキンの絵は「1 レーン = 112px」基準
+    // V-Slice の strumline の左上（画面）。標準スキンの受け皿の中心が strumY に来るよう、縦だけ合わせる
+    const ox = left,
+      oy = strumY - 57 * k;
     // レーン
     for (let l = 0; l < 4; l++) {
       const cx = left + (l + 0.5) * laneW;
@@ -647,7 +654,7 @@ export function createPlayTest(root, d) {
         ctx.fillRect(cx - laneW / 2, 0, laneW, H);
       }
       const mode = fl > 0.05 ? "confirm" : isPlayer && keyDown[l] ? "press" : "static";
-      if (!(sk && sk.drawStrum(ctx, l, mode, 1 - fl, cx, strumY, k))) drawArrow(cx, strumY, laneW * 0.85, l, fl > 0.05 ? NOTE_COLORS[l] : "rgba(255,255,255,.45)", 1, fl > 0.05);
+      if (!(sk && sk.drawStrum(ctx, l, mode, 1 - fl, ox, oy, k))) drawArrow(cx, strumY, laneW * 0.85, l, fl > 0.05 ? NOTE_COLORS[l] : "rgba(255,255,255,.45)", 1, fl > 0.05);
       if (fl > 0) (isPlayer ? flash : oppFlash)[l] = Math.max(0, fl - 0.08);
     }
     const t = isPlayer ? eff(pos) : pos;
@@ -666,7 +673,7 @@ export function createPlayTest(root, d) {
       const col = NOTE_COLORS[n.lane];
       if (n.l > 0) {
         const al = missed || n.dropped ? 0.25 : n.holding ? 0.95 : 0.7;
-        if (!(sk && sk.drawHold(ctx, n.lane, cx, y, yEnd, k, al))) {
+        if (!(sk && sk.drawHold(ctx, n.lane, ox, y - oy, yEnd - oy, k, al))) {
           const bw = laneW * 0.28;
           ctx.globalAlpha = al;
           ctx.fillStyle = col;
@@ -676,7 +683,7 @@ export function createPlayTest(root, d) {
           ctx.globalAlpha = 1;
         }
       }
-      if (!n.holding && !(sk && sk.drawNote(ctx, n.lane, cx, y, k, missed ? 0.3 : 1))) drawArrow(cx, y, laneW * 0.85, n.lane, col, missed ? 0.3 : 1);
+      if (!n.holding && !(n.spr?.ov?.cur && drawNoteSprite(ctx, n.spr, sk ? ox + sk.noteCenter(n.lane)[0] * k : cx, sk ? oy + sk.noteCenter(n.lane)[1] * k + (y - strumY) : y, k, missed ? 0.3 : 1)) && !(sk && sk.drawNote(ctx, n.lane, ox, oy, y - strumY, k, missed ? 0.3 : 1))) drawArrow(cx, y, laneW * 0.85, n.lane, col, missed ? 0.3 : 1);
     }
   }
   /** HUD（レーン・ノーツ・判定表示など）。ctx は呼び出し側が切り替えている */

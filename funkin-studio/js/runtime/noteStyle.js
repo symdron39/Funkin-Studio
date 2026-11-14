@@ -12,6 +12,8 @@ import { FUNKIN_JSON, FUNKIN_PNG, FUNKIN_XML } from "./builtinFunkin.js";
 import { infoOfPath, normAsset, scorePath, assetNote, openModZip } from "../services/ModPack.js";
 
 const DIRS = ["left", "down", "up", "right"];
+const STRUM_INIT = -28.6; // Strumline.INITIAL_OFFSET = -0.275 * 104
+const NUDGE = 2; // Strumline の NUDGE
 /**
  * prefix のフレーム列。"purple" のように短い prefix だと、"purple hold piece0000" のような別の絵まで前方一致してしまう。
  * 「prefix の直後が数字だけ」のフレームがあれば、それだけを使う（ノーツの頭を、ホールドの破片と取り違えない）。
@@ -113,18 +115,50 @@ export class NoteStyle {
     return !!(this.atlasOf("note") && this.noteData("left"));
   }
 
-  /** ノーツの頭を中心 (cx, cy) に描く。k = レーン幅 / 112。描けたら true */
-  drawNote(ctx, lane, cx, cy, k, alpha = 1) {
+  // ======== V-Slice 0.8.7 と同じ置き方 ========
+  // 座標は strumline の左上 = (0,0)、単位はゲーム上の px（描くときに k = レーン幅/112 を掛ける）。y は下向き。
+  //   受け皿（StrumlineNote）: 左上 = (lane*112 − 28.6 + offsets.x, offsets.y)、大きさ = atlas の最初のフレーム × scale
+  //   ノーツ（NoteSprite）   : 中心 x = lane*112 + 52 − 2、上端 y = 28.6 + (流れた距離)。offsets（note）は 0.8.7 では使われない
+  //   ホールド（SustainTrail）: 中心 x = lane*112 + 52 − offsets.x、頭の y = 28.6 + 52 − offsets.y + 流れた距離（offsets は引き算）
+  //   スプラッシュ           : 左上 = (lane*112 − 28.6 + off.x*scale, 28.6 + off.y*scale)。絵は 0.3 * 幅 ずれる（NoteSplash.hx の offset）
+  //   ホールドカバー         : 中心 x = lane*112 + 52 + off.x*scale − 12、上端 y = −28.6 + 52 + off.y*scale − 96
+  // どれも anim ごとの offsets（data.xxx.offsets）は読まれない。
+  /** atlas の最初のフレームの大きさ（Flixel の sprite.width / height の元） */
+  frame0Size(key) {
+    const a = this.atlasOf(key);
+    if (!a) return null;
+    const f = a.sprites?.[0];
+    if (f) return { w: f.frameWidth || f.width, h: f.frameHeight || f.height };
+    return a.img ? { w: a.img.width, h: a.img.height } : null;
+  }
+  /** 受け皿の中心（strumline 基準の px） */
+  strumCenter(lane) {
+    const f = this.frame0Size("noteStrumline"),
+      s = this.getStrumlineScale(),
+      o = this.getStrumlineOffsets();
+    if (!f) return [lane * 112 + 52, 52];
+    return [lane * 112 + STRUM_INIT + o[0] + (f.w * s) / 2, o[1] + (f.h * s) / 2];
+  }
+  /** ノーツ頭の中心（流れた距離 = 0 のとき） */
+  noteCenter(lane) {
+    const nd = this.noteData(DIRS[lane]);
+    const fr = nd ? this.framesOf("note", nd.prefix)?.[0] : null;
+    const s = this.getNoteScale();
+    const h = fr ? fr.frameHeight || fr.height : 154;
+    return [lane * 112 + 52 - NUDGE, -STRUM_INIT + (h * s) / 2];
+  }
+  /** ノーツの頭を描く。(ox, oy) = strumline の左上（画面）、dy = 流れた距離（画面 px）。k = レーン幅 / 112。描けたら true */
+  drawNote(ctx, lane, ox, oy, dy, k, alpha = 1) {
     const a = this.atlasOf("note");
     const nd = this.noteData(DIRS[lane]);
     if (!a || !nd) return false;
     const fr = this.framesOf("note", nd.prefix)?.[0];
     if (!fr) return false;
-    const sc = this.getNoteScale() * k;
-    return this._blit(ctx, a, fr, cx, cy, sc, alpha, nd.flipX, nd.flipY, this.getNoteOffsets(), k);
+    const [cx, cy] = this.noteCenter(lane);
+    return this._blit(ctx, a, fr, ox + cx * k, oy + cy * k + dy, this.getNoteScale() * k, alpha, nd.flipX, nd.flipY);
   }
   /** ストラム（受け皿）。mode = static / press / confirm。t = アニメの経過 0..1 */
-  drawStrum(ctx, lane, mode, t, cx, cy, k, alpha = 1) {
+  drawStrum(ctx, lane, mode, t, ox, oy, k, alpha = 1) {
     const a = this.atlasOf("noteStrumline");
     if (!a) return false;
     let sd = this.strumData(DIRS[lane], { static: "Static", press: "Press", confirm: "Confirm" }[mode]) ?? this.strumData(DIRS[lane], "Static");
@@ -132,14 +166,42 @@ export class NoteStyle {
     const frs = this.framesOf("noteStrumline", sd.prefix);
     if (!frs?.length) return false;
     const fr = frs[Math.min(frs.length - 1, Math.floor(Math.max(0, Math.min(0.999, t)) * frs.length))];
-    return this._blit(ctx, a, fr, cx, cy, this.getStrumlineScale() * k, alpha, sd.flipX, sd.flipY, this.getStrumlineOffsets(), k);
+    const [cx, cy] = this.strumCenter(lane);
+    return this._blit(ctx, a, fr, ox + cx * k, oy + cy * k, this.getStrumlineScale() * k, alpha, sd.flipX, sd.flipY);
   }
-  _blit(ctx, a, fr, cx, cy, sc, alpha, flipX, flipY, offs, k) {
+  /** スプラッシュ 1 枚。fr = フレーム、(ox, oy) = strumline の左上 */
+  drawSplash(ctx, lane, fr, ox, oy, k, alpha = 1) {
+    const a = this.atlasOf("noteSplash");
+    if (!a || !fr) return false;
+    const def = this.asset("noteSplash"),
+      s = def?.scale ?? 1,
+      o = def?.offsets ?? [0, 0];
+    const f0 = a.sprites?.[0] ?? fr;
+    const fw = f0.frameWidth || f0.width,
+      fh = f0.frameHeight || f0.height;
+    // sprite 左上 → 0.3 * 大きさ ずらし、scale は中心まわり
+    const x = lane * 112 + STRUM_INIT + o[0] * s,
+      y = -STRUM_INIT + o[1] * s;
+    const cx = x - 0.3 * fw * s + (fw * s) / 2,
+      cy = y - 0.3 * fh * s + (fh * s) / 2;
+    return this._blit(ctx, a, fr, ox + cx * k, oy + cy * k, s * k, alpha * (def?.alpha ?? 1));
+  }
+  /** ホールドカバー 1 枚（lane の assetPath の画像）。part のフレーム fr */
+  drawCover(ctx, lane, atlas, fr, ox, oy, k, alpha = 1) {
+    if (!atlas || !fr) return false;
+    const def = this.asset("holdNoteCover"),
+      s = def?.scale ?? 1,
+      o = def?.offsets ?? [0, 0];
+    const fh = fr.frameHeight || fr.height;
+    const cx = lane * 112 + 52 + o[0] * s - 12,
+      cy = STRUM_INIT + 52 + o[1] * s - 96 + (fh * s) / 2;
+    return this._blit(ctx, atlas, fr, ox + cx * k, oy + cy * k, s * k, alpha * (def?.alpha ?? 1));
+  }
+  _blit(ctx, a, fr, cx, cy, sc, alpha, flipX, flipY) {
     const fw = fr.frameWidth || fr.width,
       fh = fr.frameHeight || fr.height;
-    // offsets はグループ全体の「ずらし」（ゲーム上のピクセル）。レーン幅に合わせた縮尺 k を掛けて足す
-    const left = cx - (fw * sc) / 2 + -(fr.frameX || 0) * sc + (offs?.[0] || 0) * k;
-    const top = cy - (fh * sc) / 2 + (-(fr.frameY || 0) * sc) + (offs?.[1] || 0) * k;
+    const left = cx - (fw * sc) / 2 - (fr.frameX || 0) * sc;
+    const top = cy - (fh * sc) / 2 - (fr.frameY || 0) * sc;
     ctx.save();
     ctx.globalAlpha *= alpha;
     if (a.def?.isPixel) ctx.imageSmoothingEnabled = false;
@@ -150,23 +212,25 @@ export class NoteStyle {
     }
     paintSparrow(ctx, fr, a.img, left, top, fr.width * sc, fr.height * sc);
     ctx.restore();
-    return true;
+    return { x0: cx - (fw * sc) / 2, y0: cy - (fh * sc) / 2, x1: cx + (fw * sc) / 2, y1: cy + (fh * sc) / 2 }; // 描いた枠（truthy）
   }
   /**
-   * ホールドの胴体と終端。画像は 8 列（レーン 0-3 = 胴体、4-7 = 終端）の 1 枚絵。
-   * x = レーン中心、yHead = 頭側の y、yTail = 尻尾側の y（downscroll でも「頭 → 尻尾」の向き）。
+   * ホールドの胴体と終端。画像は 8 列（レーンごとに「胴体, 終端」の順: 0,1 = 左、2,3 = 下…）の 1 枚絵。
+   * ox = strumline 左上の x、yHead = strumline 左上の y + 流れた距離（画面 px）。
+   * （旧: x = レーン中心）yHead = 頭側の y、yTail = 尻尾側の y（downscroll でも「頭 → 尻尾」の向き）。
    */
-  drawHold(ctx, lane, cx, yHead, yTail, k, alpha = 1) {
+  drawHold(ctx, lane, ox, yHead, yTail, k, alpha = 1) {
     const a = this.atlasOf("holdNote");
     if (!a || a.sprites) return false; // Sparrow ではなく 1 枚絵の想定
     const img = a.img;
     const cw = img.width / 8,
       ih = img.height;
     const sc = this.fetchHoldNoteScale() * k;
-    const off = this.getHoldNoteOffsets(); // グループ全体のずらし（ゲーム上の px）
-    cx += off[0] * k;
-    yHead += off[1] * k;
-    yTail += off[1] * k;
+    const off = this.getHoldNoteOffsets(); // V-Slice では「引き算」（正の値 = 左・上へ）
+    const cx = ox + (lane * 112 + 52 - off[0]) * k;
+    const dy = (-STRUM_INIT + 52 - off[1]) * k;
+    yHead += dy;
+    yTail += dy;
     const w = cw * sc;
     const dir = yTail >= yHead ? 1 : -1;
     const top = Math.min(yHead, yTail),
@@ -183,7 +247,7 @@ export class NoteStyle {
     ctx.rect(x, dir > 0 ? top : top + capH, w, bodyLen);
     ctx.clip();
     const tile = ih * sc;
-    for (let y = dir > 0 ? top : top + capH; y < (dir > 0 ? top + bodyLen : top + len); y += tile) ctx.drawImage(img, cw * lane, 0, cw, ih, x, y, w, tile);
+    for (let y = dir > 0 ? top : top + capH; y < (dir > 0 ? top + bodyLen : top + len); y += tile) ctx.drawImage(img, cw * lane * 2, 0, cw, ih, x, y, w, tile);
     ctx.restore();
     // 終端
     ctx.save();
@@ -194,7 +258,7 @@ export class NoteStyle {
       ctx.translate(0, -(top + capH / 2));
     }
     const ey = dir > 0 ? top + len - capH : top;
-    ctx.drawImage(img, cw * (lane + 4), 0, cw, ih * (capH / (ih * sc)), x, dir > 0 ? ey : top, w, capH);
+    ctx.drawImage(img, cw * (lane * 2 + 1), 0, cw, ih * (capH / (ih * sc)), x, dir > 0 ? ey : top, w, capH);
     ctx.restore();
     return true;
   }
@@ -314,4 +378,38 @@ function pickByPath(map, assetPath, origin) {
   }
   if (best && ties > 1) assetNote(`ノートスキンの画像「${assetPath}」に合うファイルが複数あります。${best.key} を使いました（違う場合は、使いたい mod の分だけ読み込み直してください）`);
   return best;
+}
+
+/**
+ * スクリプトが絵（frames / animation）を差し替えたノートを描く。
+ * 位置は V-Slice の NoteSprite と同じく「頭の中心 (cx, cy)」基準、offset は frame のずらし（ゲーム上の px）。
+ * 描けたら true。絵がまだ読み込み中・アニメ未選択なら false（呼び出し側は既定の絵を描く）
+ */
+export function drawNoteSprite(ctx, spr, cx, cy, k, alpha = 1) {
+  const ov = spr?.ov,
+    at = ov?.atlas;
+  if (!at || !at.ready || !at.sprites || !ov.cur) return false;
+  const frs = (ov._fc ??= new Map()).get(ov.cur.prefix) ?? (ov._fc.set(ov.cur.prefix, framesByPrefix(at.sprites, ov.cur.prefix)), ov._fc.get(ov.cur.prefix));
+  if (!frs?.length) return false;
+  const i = Math.floor(((performance.now() - ov.t0) / 1000) * ov.cur.fps);
+  const fr = frs[ov.cur.loop ? ((i % frs.length) + frs.length) % frs.length : Math.min(frs.length - 1, Math.max(0, i))];
+  const sx = (spr.scale?.x ?? 1) * k,
+    sy = (spr.scale?.y ?? 1) * k;
+  const fw = fr.frameWidth || fr.width,
+    fh = fr.frameHeight || fr.height;
+  const o = spr.offset ?? { x: NaN, y: NaN };
+  const ox = Number.isFinite(o.x) ? o.x : 0,
+    oy = Number.isFinite(o.y) ? o.y : 0;
+  const left = cx - (fw * sx) / 2 - (fr.frameX || 0) * sx - ox * k;
+  const top = cy - (fh * sy) / 2 - (fr.frameY || 0) * sy - oy * k;
+  ctx.save();
+  ctx.globalAlpha *= alpha * (Number.isFinite(spr.alpha) ? spr.alpha : 1);
+  if (spr.antialiasing === false) ctx.imageSmoothingEnabled = false;
+  ctx.translate(cx, cy);
+  if (spr.angle) ctx.rotate((spr.angle * Math.PI) / 180);
+  ctx.scale(spr.flipX ? -1 : 1, spr.flipY ? -1 : 1);
+  ctx.translate(-cx, -cy);
+  paintSparrow(ctx, fr, at.img, left, top, fr.width * sx, fr.height * sy);
+  ctx.restore();
+  return true;
 }

@@ -53,12 +53,17 @@ export const template = `
               <label class="chtFileBtn">Inst を選ぶ<input id="chtInst" type="file" hidden /></label>
               <label class="chtFileBtn">Voices を追加<input id="chtVoices" type="file" multiple hidden /></label>
             </div>
-            <h3>イベントのスクリプト（HScript）</h3>
-            <label>.hxc / .hx を読み込む（複数可・modの zip も可）
-              <input id="chtScripts" type="file" multiple />
-            </label>
+            <h3>スクリプト（HScript）</h3>
+            <p class="tiny">対応: SongEvent（イベント）/ NoteKind（ノートの kind）/ Module。読み込み方は 3 つ:<br />
+              ① ホーム画面で mod の zip / フォルダを読み込む → mod 内の .hxc を<strong>自動で取り込みます</strong>（名前の頭に mod: が付きます）<br />
+              ② ここでファイル（複数可・zip も可）またはフォルダを選ぶ<br />
+              ③ NoteKind は、ノートの「kind」欄にスクリプトの kind 名（例: bull）を入れると使われます（プレイテストで動きます）</p>
+            <div class="row">
+              <label class="chtFileBtn">ファイルを選ぶ<input id="chtScripts" type="file" multiple hidden /></label>
+              <label class="chtFileBtn">フォルダを選ぶ<input id="chtScriptDir" type="file" webkitdirectory multiple hidden /></label>
+            </div>
             <div id="chtScriptList" class="chtTable"></div>
-            <p class="tiny">SongEvent を継承したクラスから、イベントの ID・名前・項目を読み取って、イベントの種類に追加します（スクリプトは実行しません）。読み込んだものはこのブラウザに記憶されます。</p>
+            <p class="tiny">SongEvent / NoteKind は、ID・名前・項目を読み取って種類に追加します。実行はプレイテストのときだけです。読み込んだもの（②）はこのブラウザに記憶されます。</p>
             <h3>個別に保存（いまのバリエーション）</h3>
             <div class="row">
               <button id="chtSaveChart" type="button">chart → mod zip</button>

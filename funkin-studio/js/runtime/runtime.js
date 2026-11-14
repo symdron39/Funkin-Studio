@@ -11,6 +11,7 @@
    ============================================================ */
 import { HScript, HMap, makeStub } from "./hscript.js";
 import { GLPost, GLSL_GRAYSCALE } from "./glpost.js";
+import { loadImage, parseSparrowXml } from "../states/stage/sparrowAtlas.js";
 
 const LAYER_MAX_W = 1280; // フィルターを掛けるカメラの絵の最大幅(px)
 export const GAME_W = 1280,
@@ -306,6 +307,26 @@ export class FlxCamera {
     this.width = GAME_W;
     this.height = GAME_H;
     this.layer = null; // フィルター用のオフスクリーン
+    this.shakeFx = null;
+  }
+  /** FlxCamera.shake(intensity, duration, onComplete, force, axes)。intensity = 画面の幅（高さ）に対する割合 */
+  shake(intensity = 0.05, duration = 0.5, onComplete = null, force = true) {
+    if (!force && this.shakeFx) return;
+    this.shakeFx = { intensity: Number(intensity), duration: Math.max(0.001, Number(duration)), t0: performance.now(), onComplete };
+  }
+  /** いまの揺れ（画面 px）。終わったら onComplete を呼んで null */
+  shakeOffset(W, H) {
+    const s = this.shakeFx;
+    if (!s) return null;
+    const el = (performance.now() - s.t0) / 1000;
+    if (el >= s.duration) {
+      this.shakeFx = null;
+      try {
+        s.onComplete?.();
+      } catch {}
+      return null;
+    }
+    return [(Math.random() * 2 - 1) * s.intensity * W, (Math.random() * 2 - 1) * s.intensity * H];
   }
 }
 export class FlxCamFilter {
@@ -418,6 +439,9 @@ export class Runtime {
     this.errors = []; // スクリプトの実行エラー
     this.tweens = new TweenManager();
     this.postUpdate = [];
+    this.timers = new Set();
+    this.atlases = new Map();
+    this.sounds = new Set();
     this.pos = 0;
     this.modules = new Map();
     this.eventInst = new Map(); // kind → {inst, processOld}
@@ -518,13 +542,78 @@ export class Runtime {
           get downscroll() {
             return !!rt.opts.getOpts?.().down;
           },
+          get_downscroll: () => !!rt.opts.getOpts?.().down,
         },
         "Preferences",
         stub,
       ),
       Save: { instance: withStubs({ modOptions: { get: () => null, set() {} } }, "Save.instance", stub) },
       ModuleHandler: { getModule: (id) => rt.modules.get(id) ?? null },
-      Paths: withStubs({ font: (f) => f }, "Paths", stub),
+      Paths: withStubs(
+        {
+          font: (f) => f,
+          image: (p) => String(p),
+          sound: (p) => String(p), // 実際の読み込みは FunkinSound.load が行う
+          music: (p) => String(p),
+          getSparrowAtlas: (p) => rt.loadAtlas(String(p)),
+        },
+        "Paths",
+        stub,
+      ),
+      FunkinSound: withStubs(
+        {
+          load: (p, volume = 1, looped = false, _autoDestroy = false, autoPlay = false) => rt.makeSound(String(p), volume, looped, autoPlay),
+          playOnce: (p, volume = 1) => rt.makeSound(String(p), volume, false, true),
+        },
+        "FunkinSound",
+        stub,
+      ),
+      // 端末の振動。プレイテスト（PC）では何もしない
+      HapticUtil: withStubs({ vibrate() {}, vibrateByPattern() {}, stop() {} }, "HapticUtil", stub),
+      FlxTimer: class {
+        constructor() {
+          this.active = false;
+          this.finished = false;
+          this.elapsedLoops = 0;
+          this.time = 0;
+          this.loops = 1;
+          this.t = 0;
+        }
+        start(time = 1, cb = null, loops = 1) {
+          Object.assign(this, { time: Number(time), cb, loops: Number(loops), t: 0, elapsedLoops: 0, active: true, finished: false });
+          rt.timers.add(this);
+          return this;
+        }
+        cancel() {
+          this.active = false;
+          rt.timers.delete(this);
+        }
+        get loopsLeft() {
+          return this.loops - this.elapsedLoops;
+        }
+        get timeLeft() {
+          return this.time - this.t;
+        }
+        step(dt) {
+          if (!this.active) return;
+          this.t += dt;
+          while (this.active && this.t >= this.time) {
+            this.t -= this.time;
+            this.elapsedLoops++;
+            try {
+              this.cb?.(this);
+            } catch (e) {
+              rt.fail("FlxTimer", e);
+            }
+            if (this.loops > 0 && this.elapsedLoops >= this.loops) {
+              this.active = false;
+              this.finished = true;
+              rt.timers.delete(this);
+            }
+            if (this.time <= 0) break;
+          }
+        }
+      },
       Assets: { exists: () => false },
       // ---- 表示物
       FlxSprite,
@@ -578,7 +667,8 @@ export class Runtime {
       // ---- ノートスキン
       NoteStyleRegistry: {
         instance: {
-          fetchEntry: (id) => ns?.get(id) ?? null,
+          fetchEntry: (id) => (ns?.get(id) ? rt.styleApi(ns.get(id)) : null),
+          fetchDefault: () => (ns?.get("funkin") ? rt.styleApi(ns.get("funkin")) : null),
           listEntryIds: () => ns?.ids() ?? [],
         },
       },
@@ -750,12 +840,151 @@ export class Runtime {
     Object.defineProperty(ps, "defaultCameraZoom", { get: () => scene.zoomBase, set: (v) => (scene.zoomBase = Number(v)), configurable: true });
     ps.cameraFollowPoint = { get x() { return scene.focusTarget.x; }, set x(v) { scene.focusTarget.x = Number(v); }, get y() { return scene.focusTarget.y; }, set y(v) { scene.focusTarget.y = Number(v); }, setPosition(x, y) { scene.focusTarget = { x: Number(x), y: Number(y) }; } };
   }
+  /** Paths.getSparrowAtlas(path): すぐ返し、絵と XML は裏で読む（ready になるまで描かれない） */
+  loadAtlas(path) {
+    const key = path.replace(/^[^:]*:/, "").replace(/\.(png|xml)$/i, "");
+    if (this.atlases.has(key)) return this.atlases.get(key);
+    const at = { path: key, ready: false, failed: false, img: null, sprites: null, __atlas: true };
+    this.atlases.set(key, at);
+    const res = this.scene?.o.resolve,
+      origin = this.scene?.o.origin;
+    const png = res?.("image", key, { origin, quiet: true }),
+      xml = res?.("xml", key, { origin, quiet: true });
+    if (!png || !xml) {
+      at.failed = true;
+      this.warn(`Paths.getSparrowAtlas("${path}"): 読み込んだ mod に ${!png ? "画像(PNG)" : "XML"} が見つかりません`);
+      return at;
+    }
+    (async () => {
+      try {
+        at.img = await loadImage(png);
+        at.sprites = parseSparrowXml((await xml.text()).replace(/^\uFEFF/, ""));
+        at.ready = true;
+      } catch (e) {
+        at.failed = true;
+        this.warn(`Paths.getSparrowAtlas("${path}"): 読み込みに失敗しました（${e.message}）`);
+      }
+    })();
+    return at;
+  }
+  /** FunkinSound.load(path, volume, looped, autoDestroy, autoPlay) の代役（WebAudio。mod の sounds/ から探す） */
+  makeSound(path, volume = 1, looped = false, autoPlay = false) {
+    const rt = this;
+    const s = {
+      volume: Number(volume),
+      looped: !!looped,
+      playing: false,
+      _want: false,
+      _buf: null,
+      _src: null,
+      onComplete: null,
+      play(forceRestart = false) {
+        if (this.playing && !forceRestart) return this;
+        this._want = true;
+        this._start();
+        return this;
+      },
+      _start() {
+        if (!this._buf || !this._want) return;
+        try {
+          this._src?.stop();
+        } catch {}
+        const ctx = (rt.actx ??= new (window.AudioContext || window.webkitAudioContext)());
+        const src = ctx.createBufferSource(),
+          gain = ctx.createGain();
+        src.buffer = this._buf;
+        src.loop = this.looped;
+        gain.gain.value = this.volume;
+        src.connect(gain).connect(ctx.destination);
+        src.onended = () => {
+          if (this._src === src) {
+            this.playing = false;
+            this._want = false;
+            try {
+              this.onComplete?.();
+            } catch {}
+          }
+        };
+        src.start();
+        this._src = src;
+        this._gain = gain;
+        this.playing = true;
+      },
+      stop() {
+        this._want = false;
+        this.playing = false;
+        try {
+          const src = this._src;
+          this._src = null;
+          src?.stop();
+        } catch {}
+        return this;
+      },
+      pause() {
+        return this.stop();
+      },
+      resume() {
+        return this.play();
+      },
+      destroy() {
+        this.stop();
+        rt.sounds.delete(this);
+      },
+      fadeOut() {
+        return this.stop();
+      },
+    };
+    this.sounds.add(s);
+    const f = this.scene?.o.resolve?.("sound", path, { origin: this.scene.o.origin, quiet: true });
+    if (!f) this.warn(`FunkinSound.load("${path}"): 読み込んだ mod に音声が見つかりません（ベースゲームの音は含まれません）`);
+    else
+      (async () => {
+        try {
+          const buf = f.arrayBuffer ? await f.arrayBuffer() : await (await f.blob()).arrayBuffer();
+          const ctx = (this.actx ??= new (window.AudioContext || window.webkitAudioContext)());
+          s._buf = await ctx.decodeAudioData(buf);
+          s._start();
+        } catch (e) {
+          this.warn(`FunkinSound.load("${path}"): 音声を読み込めません（${e.message}）`);
+        }
+      })();
+    if (autoPlay) s.play();
+    return s;
+  }
+  /** NoteStyle の代役（スクリプトが fetchDefault() などで受け取る） */
+  styleApi(st) {
+    return withStubs(
+      {
+        id: st.id,
+        getName: () => st.data?.name ?? st.id,
+        getAuthor: () => st.data?.author ?? "",
+        getFallbackID: () => st.data?.fallback ?? null,
+        getNoteScale: () => st.getNoteScale(),
+        getNoteOffsets: () => st.getNoteOffsets(),
+        getHoldNoteOffsets: () => st.getHoldNoteOffsets(),
+        getStrumlineOffsets: () => st.getStrumlineOffsets(),
+        getStrumlineScale: () => st.getStrumlineScale(),
+        fetchHoldNoteScale: () => st.fetchHoldNoteScale(),
+        getNoteAssetPath: () => st.data?.assets?.note?.assetPath ?? null,
+        getStrumlineAssetPath: () => st.data?.assets?.noteStrumline?.assetPath ?? null,
+        getHoldNoteAssetPath: () => st.data?.assets?.holdNote?.assetPath ?? null,
+        toString: () => st.id,
+      },
+      "NoteStyle",
+      (p) => this.stub(p),
+    );
+  }
+  /** 止める（曲が終わった・閉じたとき）: 鳴っている音とタイマーを片づける */
+  stopAll() {
+    for (const s of [...this.sounds]) s.stop();
+    this.timers.clear();
+  }
   /** 譜面の kind からノートの種類（無ければ null） */
   kindOf(id) {
     return id ? this.noteKinds.get(id) ?? null : null;
   }
   /** ノート 1 つ分の NoteSprite の代役。n は playtest のノート */
-  makeNoteSprite(n) {
+  makeNoteSprite(n, baseScale = 1) {
     const raw = {
       noteData: {
         kind: n.k ?? "",
@@ -776,13 +1005,39 @@ export class Runtime {
       flipY: false,
       direction: n.lane,
       updateHitbox() {},
+      flipX: false,
+      angle: 0,
+      antialiasing: true,
+      offset: new Pt(NaN, NaN), // NaN = 既定の位置（スクリプトが set すると、その値）
+      ov: { atlas: null, anims: new Map(), cur: null, t0: 0, baseScale: baseScale },
+    };
+    raw.scale = new Pt(baseScale, baseScale);
+    Object.defineProperty(raw, "frames", { get: () => raw.ov.atlas, set: (v) => (raw.ov.atlas = v), enumerable: true });
+    // FlxAnimationController の必要な分だけ（スクリプトがノートの絵を差し替えるのに使う）
+    raw.animation = {
+      addByPrefix: (name, prefix, fps = 24, loop = false, fx = false, fy = false) => (raw.ov.anims.set(String(name), { prefix: String(prefix), fps: Number(fps) || 24, loop: !!loop, fx, fy }), true),
+      add: (name, _idx, fps = 24, loop = false) => (raw.ov.anims.set(String(name), { prefix: String(name), fps: Number(fps) || 24, loop: !!loop }), true),
+      play: (name, force = false) => {
+        const a = raw.ov.anims.get(String(name));
+        if (!a) return;
+        if (raw.ov.cur !== a || force) {
+          raw.ov.cur = a;
+          raw.ov.t0 = performance.now();
+        }
+      },
+      get name() {
+        return [...raw.ov.anims].find(([, a]) => a === raw.ov.cur)?.[0] ?? "";
+      },
+      get finished() {
+        return false;
+      },
     };
     n.spr = raw;
     return withStubs(raw, "NoteSprite", (p) => this.stub(p));
   }
   /** ノートのイベント（onNoteIncoming / onNoteHit / onNoteMiss / onNoteHoldDrop）。そのノートの kind と全 Module に送る。返り値は event（cancel されたか分かる） */
   noteEvent(hook, n, extra = {}) {
-    const ev = { note: n.sprW ?? (n.sprW = this.makeNoteSprite(n)), holdNote: n.sprW, eventCanceled: false, cancel() { this.eventCanceled = true; }, ...extra };
+    const ev = { note: n.sprW ?? (n.sprW = this.makeNoteSprite(n, n.baseScale ?? 1)), holdNote: n.sprW, eventCanceled: false, cancel() { this.eventCanceled = true; }, ...extra };
     const kind = this.kindOf(n.k);
     const targets = [];
     if (kind) targets.push(kind);
@@ -850,6 +1105,7 @@ export class Runtime {
   update(dt, pos) {
     this.pos = pos;
     this.tweens.update(dt);
+    for (const t of [...this.timers]) t.step(dt);
     for (const f of this.postUpdate.slice()) {
       try {
         f();
@@ -869,6 +1125,7 @@ export class Runtime {
   /** 終了・やり直し時の後始末通知 */
   songEnd() {
     this.broadcast("onSongEnd", {});
+    this.stopAll();
   }
 
   // ---------------------------------------------------------------- 描画
@@ -905,6 +1162,11 @@ export class Runtime {
         const q = Math.min(1, LAYER_MAX_W / Math.max(1, W * dpr)); // 高解像度の画面ではフィルター用の絵を縮小（GPU への転送量を減らす）
         ctx.setTransform(dpr * q, 0, 0, dpr * q, 0, 0);
       }
+      const shk = cam.shakeOffset(W, H);
+      if (shk) {
+        ctx.save();
+        ctx.translate(shk[0], shk[1]);
+      }
       draw.begin?.(cam.name, ctx);
       // 基本の絵 → スクリプトの表示物
       let drawn = false;
@@ -925,6 +1187,7 @@ export class Runtime {
       }
       ctx.restore();
       draw.end?.(cam.name, ctx);
+      if (shk) ctx.restore();
       if (shaders.length) {
         let src = ctx.canvas;
         for (const sh of shaders) {

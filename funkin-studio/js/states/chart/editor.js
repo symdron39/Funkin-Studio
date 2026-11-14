@@ -1450,7 +1450,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
   }
   function saveScripts() {
     try {
-      localStorage.setItem(SCRIPT_LS, JSON.stringify(Object.fromEntries(Object.entries(scripts).map(([k, v]) => [k, v.text]))));
+      localStorage.setItem(SCRIPT_LS, JSON.stringify(Object.fromEntries(Object.entries(scripts).filter(([, v]) => !v.fromMod).map(([k, v]) => [k, v.text]))));
     } catch {}
   }
   try {
@@ -1486,6 +1486,39 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     refreshEdit();
     redraw();
   }
+  $("chtScriptDir").onchange = (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    return $("chtScripts").onchange({ target: { files, value: "" } });
+  };
+  /** 読み込み済みの mod（Workspace）にある .hxc / .hx を、イベント・ノーツ種類・Module として取り込む */
+  const SCRIPT_CLS = /extends\s+(SongEvent|ScriptedSongEvent|ScriptedNoteKind|NoteKind|Module|ScriptedModule)\b/;
+  async function importWorkspaceScripts() {
+    const ws = state.app.workspace;
+    if (!ws?.files?.length) return;
+    const names = [];
+    for (const f of ws.files) {
+      if (!/\.(hxc|hx)$/i.test(f.name || "")) continue;
+      const name = "mod:" + String(f.name).replace(/^.*[\\/]/, "");
+      if (scripts[name]?.fromMod === f) continue;
+      let text;
+      try {
+        text = (await f.text()).replace(/^\uFEFF/, "");
+      } catch {
+        continue;
+      }
+      if (!SCRIPT_CLS.test(text)) continue;
+      if (!registerScript(name, text).count) continue;
+      scripts[name].fromMod = f;
+      names.push(name);
+    }
+    if (names.length) {
+      refreshAfterScripts();
+      say(`mod からスクリプトを取り込みました（${names.length} 件）:\n${names.map((n) => `${n} → ${[...scripts[n].ids, ...scripts[n].kinds.map((k) => k + "(ノーツ種類)"), ...scripts[n].modules.map((k) => k + "(Module)")].join(", ")}`).join("\n")}`);
+    }
+  }
+  state.addDisposer(state.app.events.on("workspace:changed", importWorkspaceScripts));
+  importWorkspaceScripts();
   $("chtScripts").onchange = async (e) => {
     const files = [...e.target.files];
     e.target.value = "";

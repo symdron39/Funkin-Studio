@@ -49,12 +49,13 @@ class Actor {
   animOf(name) {
     return this.anims.find((a) => a.name === name) || null;
   }
-  play(name, force = true) {
+  play(name, force = true, reversed = false) {
     const a = this.animOf(name);
     if (!a) return false;
-    if (!force && this.cur === a && !this.finished) return true;
+    if (!force && this.cur === a && !this.finished) return true; // 再生中の同じアニメは、restart でなければそのまま
     this.cur = a;
     this.t = 0;
+    this.rev = !!reversed;
     return true;
   }
   get name() {
@@ -82,7 +83,8 @@ class Actor {
     const seq = v.atlas.frames(a, { indexOnly: v.indexOnly });
     if (!seq.length) return null;
     const n = Math.floor(this.t * (num(a.frameRate, 24) || 24));
-    return seq[a.looped ? n % seq.length : Math.min(n, seq.length - 1)] ?? seq[0];
+    const i = a.looped ? n % seq.length : Math.min(n, seq.length - 1);
+    return seq[this.rev ? seq.length - 1 - i : i] ?? seq[0];
   }
   get offsets() {
     const o = this.cur?.offsets;
@@ -99,7 +101,8 @@ class SceneChar {
     this.sc = null; // StageCharacter（基準フレーム・位置計算）
     this.actor = null;
     this.holdTimer = 0; // sing してからの ms
-    this.singing = false;
+    this.canPlayOther = true;
+    this.ignoreExclusion = [];
     this.missing = true;
     this.pos = [0, 0];
     this.zIndex = 0;
@@ -119,22 +122,61 @@ class SceneChar {
   get hasDanceLR() {
     return !!this.actor?.has("danceLeft");
   }
+  /** sing で始まり -end で終わらないアニメの最中（実ソース BaseCharacter.isSinging） */
+  get isSinging() {
+    const n = this.actor?.name ?? "";
+    return n.startsWith("sing") && !n.endsWith("-end");
+  }
+  get singing() {
+    return this.isSinging;
+  }
+  /** Bopper.dance + BaseCharacter.dance。force=false のときは、歌っている間・特別なアニメが終わるまでは踊らない */
   dance(force = false) {
     const a = this.actor;
-    this.singing = false;
-    this.holdTimer = 0;
     if (!a) return;
-    if (this.hasDanceLR) {
-      a.danceLeft = !a.danceLeft;
-      a.play(a.danceLeft ? "danceLeft" : "danceRight", true);
-    } else if (a.has("idle")) a.play("idle", force || !(a.name === "idle" && !a.finished));
+    if (!force) {
+      if (this.isSinging) return;
+      const n = a.name;
+      if (!n.startsWith("dance") && !n.startsWith("idle") && !a.finished) return;
+    }
+    if (a.has("danceLeft")) {
+      a.hasDanced = !!a.hasDanced;
+      this.playRaw(a.hasDanced ? "danceRight" : "danceLeft", false);
+      a.hasDanced = !a.hasDanced;
+    } else this.playRaw("idle", false);
   }
-  playAnim(name, force = true) {
-    if (this.building) this.pendingAnim = [name, force]; // アトラス読み込み中に呼ばれたら、読めた直後に再生する
-    if (!this.actor?.has(name)) return false;
-    this.actor.play(name, force);
-    this.singing = /^sing/i.test(name);
-    if (this.singing) this.holdTimer = 0;
+  /** 制限なしで再生（dance 用。無いアニメは -xxx を外して探す） */
+  playRaw(name, restart) {
+    const cn = this.correct(name);
+    if (cn) this.actor.play(cn, restart);
+  }
+  /** correctAnimationName: 無ければ後ろの -xxx を 1 つずつ外して探す。最後まで無ければ null */
+  correct(name) {
+    const a = this.actor;
+    while (name) {
+      if (a?.has(name)) return name;
+      const i = name.lastIndexOf("-");
+      if (i < 0) return null;
+      name = name.slice(0, i);
+    }
+    return null;
+  }
+  /** playAnimation(name, restart=false, ignoreOther=false, reversed=false)（実ソース Bopper.playAnimation） */
+  playAnim(name, restart = false, ignoreOther = false, reversed = false) {
+    if (this.building) this.pendingAnim = [name, restart, ignoreOther, reversed]; // アトラス読み込み中に呼ばれたら、読めた直後に再生する
+    const a = this.actor;
+    if (!a) return false;
+    if (this.canPlayOther === false) {
+      const same = a.name === name && restart;
+      if (!same) {
+        const ex = this.ignoreExclusion ?? [];
+        if (!ex.length || !ex.some((e) => name.startsWith(e))) return false; // ignoreOther 中は他のアニメを受け付けない
+      }
+    }
+    const cn = this.correct(name);
+    if (!cn) return false;
+    a.play(cn, restart, reversed);
+    if (ignoreOther) this.canPlayOther = false;
     return true;
   }
   /** 足元・枠の大きさ・カメラ焦点。実キャラが無いときは仮の寸法 */
@@ -178,7 +220,8 @@ class SceneChar {
       ctx.scale(pl.k, pl.k);
       ctx.imageSmoothingEnabled = !this.json?.isPixel;
       if (pl.flip) ctx.scale(-1, 1);
-      f.draw(ctx, -v.refW / 2, -v.refH, v.frame, v.stageMatrix);
+      // AnimateAtlas は「タイムラインの原点」を固定して描く（フレームごとに枠の左上へ寄せると、動くたびに絵が跳ねる）。基準枠は先頭フレーム
+      f.draw(ctx, -v.refW / 2, -v.refH, v.frame, f.sp ? v.stageMatrix : true);
     } else {
       placeholder(ctx, -pl.w / 2, -pl.h, pl.w, pl.h, `${label}（${this.id || "?"} は未読み込み）`, PLACEHOLDER_COLOR[this.role]);
     }
@@ -427,6 +470,7 @@ export class StageScene {
     this.tweenZoom = null;
     this.bop = 0;
     this.lastBeat = -99;
+    this.lastStep = undefined;
     this.focusTarget = this.focusPoint("opponent");
     this.advanceEvents(startMs, true);
     this.cam = { ...this.focusTarget };
@@ -472,6 +516,18 @@ export class StageScene {
     this.advanceEvents(pos);
     const tm = this.o.timing?.();
     const stepMs = this.stepMs();
+    // ステップごとのダンス（Bopper.onStepHit: step % (danceEvery × 4) == 0）
+    if (tm && pos >= -4000) {
+      const step = Math.floor(tm.msToStep(pos));
+      if (this.lastStep !== undefined && step > this.lastStep && step - this.lastStep <= 8) {
+        for (let s2 = this.lastStep + 1; s2 <= step; s2++)
+          for (const c of [...Object.values(this.chars), ...this.extra]) {
+            const ev = c.danceEvery;
+            if (ev > 0 && s2 % (ev * 4) === 0) c.dance(false);
+          }
+      }
+      this.lastStep = step;
+    }
     // 拍
     if (tm && pos >= -4000) {
       const beat = Math.floor(tm.msToStep(pos) / 4);
@@ -480,24 +536,24 @@ export class StageScene {
         this.lastBeat = beat;
       }
     }
-    // キャラ・prop のアニメ
-    for (const c of [...Object.values(this.chars), ...this.extra]) {
-      c.actor?.update(dt);
-      if (c.singing) {
-        c.holdTimer += dtMs;
-        const lim = c.singTime * stepMs * (/miss$/.test(c.actor?.name ?? "") ? 2 : 1); // miss は 2 倍（実ソース）
-        if (c.holdTimer > lim) {
-          const base = (c.actor?.name ?? "").replace(/-hold$/, "");
-          c.holdTimer = 0;
-          if (c.actor?.has(base + "-end")) c.playAnim(base + "-end"); // -end があればそれを再生
-          else c.dance(true);
-        }
-      }
-    }
+    // キャラ・prop のアニメ（BaseCharacter.onUpdate 相当）
     for (const c of [...Object.values(this.chars), ...this.extra]) {
       const a = c.actor;
-      // 終わったら「名前-hold」を続けて再生する（実ソース: BaseCharacter.onUpdate）
-      if (a?.cur && a.finished && !a.name.endsWith("-hold") && a.has(a.name + "-hold")) a.play(a.name + "-hold", true);
+      if (!a) continue;
+      a.update(dt);
+      if (c.canPlayOther === false && a.finished) c.canPlayOther = true;
+      // 終わったら「名前-hold」を続けて再生する
+      if (a.cur && a.finished && !a.name.endsWith("-hold") && a.has(a.name + "-hold")) a.play(a.name + "-hold", false);
+      if (c.isSinging) {
+        c.holdTimer += dtMs;
+        const lim = c.singTime * stepMs * (/miss$/.test(a.name) ? 2 : 1); // miss は 2 倍（実ソース）
+        if (c.holdTimer > lim) {
+          const base = a.name.replace(/-hold$/, "");
+          c.holdTimer = 0;
+          if (a.has(base + "-end")) a.play(base + "-end", false);
+          else c.dance(true);
+        }
+      } else c.holdTimer = 0;
     }
     for (const p of this.props) p.actor?.update(dt);
     // ズーム（イベント → 4 拍ごとの揺れ）
@@ -514,10 +570,6 @@ export class StageScene {
     this.cam.y += (this.focusTarget.y - this.cam.y) * a;
   }
   onBeat(beat) {
-    for (const c of Object.values(this.chars)) {
-      const every = c.role === "girlfriend" ? Math.max(1, c.danceEvery) : Math.max(1, c.danceEvery);
-      if (beat % every === 0 && !c.singing) c.dance();
-    }
     for (const p of this.props) {
       if (p.actor && p.danceEvery > 0 && beat % p.danceEvery === 0) {
         const a = p.actor;
@@ -541,7 +593,8 @@ export class StageScene {
       if (i < 0) break;
       name = name.slice(0, i);
     }
-    if (!c.playAnim(name) && miss) c.playAnim(SING[lane]); // miss 用が無ければ普通の sing
+    if (!c.playAnim(name, true) && miss) c.playAnim(SING[lane], true); // miss 用が無ければ普通の sing
+    c.holdTimer = 0;
   }
   keepSinging(role) {
     const c = this.chars[role];
@@ -622,7 +675,7 @@ export class StageScene {
       ctx.scale(Math.abs(sx), Math.abs(sy));
       const tint = p.color ? parseColor(p.color) : null;
       const white = !tint || (tint.r === 255 && tint.g === 255 && tint.b === 255);
-      f.draw(ctx, -e.refFrame.w / 2, -e.refFrame.h / 2, e.refFrame, e.stageMatrix, e.refFrame.sp && !white ? tint : undefined);
+      f.draw(ctx, -e.refFrame.w / 2, -e.refFrame.h / 2, e.refFrame, f.sp ? e.stageMatrix : true, e.refFrame.sp && !white ? tint : undefined);
     } else placeholder(ctx, -ex / 2, -eh / 2, ex, eh, `未読込: ${p.name || p.assetPath}`);
   }
 
@@ -639,7 +692,6 @@ export class StageScene {
       role = c.role;
     return {
       __char: c,
-      playAnimation: (name, force = true) => void c.playAnim(String(name), !!force),
       get isPlayer() {
         return role === "player";
       },
@@ -678,6 +730,8 @@ export class StageScene {
       exists: true,
       alive: true,
       animation: {
+        // FlxAnimationController.play(name, force, reversed, frame): 制限なしで直接再生
+        play: (name, force = false, reversed = false) => void c.actor?.play(c.correct(String(name)) ?? String(name), !!force, !!reversed),
         get name() {
           return c.actor?.name ?? "";
         },
@@ -688,7 +742,30 @@ export class StageScene {
           return c.actor?.finished ?? true;
         },
       },
-      playAnim: (name, force = true) => void c.playAnim(String(name), !!force),
+      // Bopper.playAnimation(name, restart=false, ignoreOther=false, reversed=false)
+      playAnimation: (name, restart = false, ignoreOther = false, reversed = false) => void c.playAnim(String(name), !!restart, !!ignoreOther, !!reversed),
+      playAnim: (name, restart = false, ignoreOther = false, reversed = false) => void c.playAnim(String(name), !!restart, !!ignoreOther, !!reversed),
+      isAnimationFinished: () => c.actor?.finished ?? true,
+      isSinging: () => c.isSinging,
+      forceAnimationForDuration: (name, duration) => {
+        // その間は他のアニメを受け付けない（実ソース forceAnimationForDuration）
+        c.playAnim(String(name), true, true);
+        c.canPlayOther = false;
+        clearTimeout(c._forceT);
+        c._forceT = setTimeout(() => (c.canPlayOther = true), Number(duration) * 1000);
+      },
+      get canPlayOtherAnims() { return c.canPlayOther; },
+      set canPlayOtherAnims(v) { c.canPlayOther = !!v; },
+      get ignoreExclusionPref() { return c.ignoreExclusion; },
+      set ignoreExclusionPref(v) { c.ignoreExclusion = Array.isArray(v) ? v : []; },
+      get danceEvery() { return c.danceEvery; },
+      set danceEvery(v) { c.json = { ...(c.json ?? {}), danceEvery: Number(v) }; },
+      get singTimeSteps() { return c.singTime; },
+      set singTimeSteps(v) { c.json = { ...(c.json ?? {}), singTime: Number(v) }; },
+      get holdTimer() { return c.holdTimer / 1000; },
+      set holdTimer(v) { c.holdTimer = Number(v) * 1000; },
+      get shouldBop() { return c.shouldBop !== false; },
+      set shouldBop(v) { c.shouldBop = !!v; },
       dance: (force) => c.dance(!!force),
       getCurrentAnimation: () => c.actor?.name ?? "",
       hasAnimation: (n) => !!c.actor?.has(n),
@@ -704,7 +781,6 @@ export class StageScene {
       setPosition: (x, y) => {
         c.pos = [Number(x), Number(y)];
       },
-      holdTimer: 0,
       singTimeSec: c.singTime * (this.stepMs() / 1000),
     };
   }
