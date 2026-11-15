@@ -1401,6 +1401,20 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     } else if (f.type === "bool") {
       el = Object.assign(document.createElement("input"), { type: "checkbox", checked: !!cur });
       el.onchange = () => ((ev.v[f.name] = el.checked), commit());
+    } else if (f.type === "params") {
+      // CustomEvent の params: [{ name, value }] ⇔ 「名前=値」の行
+      el = Object.assign(document.createElement("textarea"), { rows: 3, value: (Array.isArray(cur) ? cur : []).map((p) => `${p.name}=${p.value}`).join("\n") });
+      el.onchange = () => {
+        ev.v[f.name] = el.value
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .map((l) => {
+            const i = l.indexOf("=");
+            return i < 0 ? { name: l, value: "" } : { name: l.slice(0, i).trim(), value: l.slice(i + 1).trim() };
+          });
+        commit();
+      };
     } else if (f.type === "string") {
       el = Object.assign(document.createElement("input"), { type: "text", value: cur });
       el.onchange = () => ((ev.v[f.name] = el.value), commit());

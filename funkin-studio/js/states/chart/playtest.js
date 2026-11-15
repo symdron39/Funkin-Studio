@@ -9,7 +9,8 @@
    ・ホールドは押し続ける必要がある（終わる 160ms 前までに離すとドロップ）。相手側ノーツは自動で叩かれる。
    ・スマホは画面タップ（プレイヤー側の4レーン）で叩ける。
    ============================================================ */
-import { Runtime } from "../../runtime/runtime.js";
+import { Runtime, easeByName } from "../../runtime/runtime.js";
+import { ScrollVelocityTimeline, VisualClock } from "../../runtime/scrollVelocity.js";
 import { openModZip } from "../../services/ModPack.js";
 import { drawNoteSprite } from "../../runtime/noteStyle.js";
 import { StageScene } from "../../runtime/stageScene.js";
@@ -187,7 +188,20 @@ export function createPlayTest(root, d) {
     speedEvents = d
       .getEvents()
       .filter((e) => e.e === "ScrollSpeed" && e.v)
-      .map((e) => ({ t: e.t, scroll: Number(e.v.scroll ?? 1), dur: Math.max(0, timing.stepToMs(timing.msToStep(e.t) + Number(e.v.duration ?? 4)) - e.t), abs: !!e.v.absolute, who: e.v.strumline ?? "both" }))
+      .map((e) => {
+        const fn = easeByName(e.v.ease ?? "linear", e.v.easeDir ?? "In");
+        // INSTANT は duration を無視して即座に切り替える（ScrollSpeedEvent）
+        const dur = fn === null ? 0 : Math.max(0, timing.stepToMs(timing.msToStep(e.t) + Number(e.v.duration ?? 4)) - e.t);
+        return { t: e.t, scroll: Number(e.v.scroll ?? 1), dur, abs: !!e.v.absolute, who: e.v.strumline ?? "both", fn: typeof fn === "function" ? fn : (x) => x, start: e.v.useStart ? Number(e.v.startScroll ?? 1) : null };
+      })
+      .sort((a, b) => a.t - b.t);
+    // ScrollVelocity（0.9）: ノーツを描く基準の時刻を曲の時刻からずらす。RenderDistance（0.9）: ノーツが出てくる距離
+    const evAll = d.getEvents();
+    const stepMsAt = (t) => timing.stepToMs(timing.msToStep(t) + 1) - timing.stepToMs(timing.msToStep(t));
+    vclock = { player: new VisualClock(new ScrollVelocityTimeline(evAll, "player", stepMsAt)), opponent: new VisualClock(new ScrollVelocityTimeline(evAll, "opponent", stepMsAt)) };
+    renderEvents = evAll
+      .filter((e) => e.e === "RenderDistance")
+      .map((e) => ({ t: e.t, dist: Number(e.v?.distance ?? 1000), useDefault: !!e.v?.useDefault, who: e.v?.strumline ?? "both" }))
       .sort((a, b) => a.t - b.t);
     const players = notes.filter((n) => n.player);
     st = {
@@ -261,7 +275,7 @@ export function createPlayTest(root, d) {
     for (const [name, text] of scripts) rt.loadScript(text, name);
     const all = d
       .getEvents()
-      .filter((e) => rt.hasEvent(e.e))
+      .filter((e) => e.e === "CustomEvent" || rt.hasEvent(e.e))
       .sort((a, b) => a.t - b.t);
     rt.songLoaded(all);
     rt.fireOld(all, startMs);
@@ -338,6 +352,19 @@ export function createPlayTest(root, d) {
   };
 
   // ---------------- 速度（ScrollSpeed イベント込み） ----------------
+  let vclock = null,
+    renderEvents = [];
+  /** ノーツが出てくる距離(ms)。RenderDistance イベントが無ければ 画面の高さ ÷ 0.45 ÷ min(速度, 1)（Strumline.renderDistanceMs） */
+  function renderDistance(side, t) {
+    let custom = null;
+    for (const e of renderEvents) {
+      if (e.t > t) break;
+      if (e.who === "both" || e.who === side) custom = e.useDefault ? null : e.dist;
+    }
+    if (custom != null) return custom;
+    const sp = speedAt(t, side);
+    return 720 / PIXELS_PER_MS / (sp < 1 ? sp : 1);
+  }
   function speedAt(t, side) {
     const base = d.getBaseSpeed() * opts.speedMul;
     let cur = base;
@@ -347,7 +374,9 @@ export function createPlayTest(root, d) {
       const target = ev.abs ? ev.scroll : base * ev.scroll;
       if (ev.dur <= 0 || t >= ev.t + ev.dur) cur = target;
       else {
-        cur += (target - cur) * ((t - ev.t) / ev.dur);
+        // useStart: 開始値から動かす（無ければ今の値から）
+        const from = ev.start == null ? cur : ev.abs ? ev.start : base * ev.start;
+        cur = from + (target - from) * ev.fn((t - ev.t) / ev.dur);
         break;
       }
     }
@@ -387,7 +416,7 @@ export function createPlayTest(root, d) {
   /** 画面に近づいたノートに onNoteIncoming を 1 度だけ送り、getNotes() の対象に入れる */
   function trackNote(n, pos) {
     if (!rt) return;
-    if (!n.inc && n.t - pos < 2000) {
+    if (!n.inc && n.t - pos < renderDistance(n.player ? "player" : "opponent", pos)) {
       n.inc = true;
       n.baseScale = (kindStyle(n) ?? styleOf(n.player))?.getNoteScale?.() ?? 1;
       rt.noteEvent("onNoteIncoming", n);
@@ -658,15 +687,17 @@ export function createPlayTest(root, d) {
       if (fl > 0) (isPlayer ? flash : oppFlash)[l] = Math.max(0, fl - 0.08);
     }
     const t = isPlayer ? eff(pos) : pos;
-    const sp = speedAt(t, side) * PIXELS_PER_MS * s;
+    const scrollSpeed = speedAt(t, side);
+    const sp = scrollSpeed * PIXELS_PER_MS * s;
+    const vt = vclock ? vclock[side].update(t, scrollSpeed) : t; // ScrollVelocity で、ノーツを描く基準の時刻がずれる
     for (const n of notesOf) {
       if (n.done && !n.holding) continue;
       if (n.spr && !n.spr.visible) continue; // スクリプトが非表示にしたノート
       const nsty = n.k ? kindStyle(n) : null;
       const sk = nsty ?? sk0;
       const cx = left + (n.lane + 0.5) * laneW;
-      let y = strumY + dir * (n.t - t) * sp;
-      let yEnd = n.l > 0 ? strumY + dir * (n.t + n.l - t) * sp : y;
+      let y = strumY + dir * (n.t - vt) * sp;
+      let yEnd = n.l > 0 ? strumY + dir * (n.t + n.l - vt) * sp : y;
       if (n.holding) y = strumY;
       if (Math.max(y, yEnd) < -laneW || Math.min(y, yEnd) > H + laneW) continue;
       const missed = n.missed;

@@ -9,7 +9,7 @@
    ============================================================ */
 import { GENERATED_BY } from "../../core/appInfo.js";
 
-export const METADATA_VERSION = "2.2.4";
+export const METADATA_VERSION = "2.2.8";
 export const CHART_VERSION = "2.0.0";
 export const STRUMLINE_SIZE = 4;
 export const STEPS_PER_BEAT = 4;
@@ -63,6 +63,48 @@ export const EVENT_SCHEMAS = {
       easeDirField,
       { name: "strumline", title: "Target Strumline", type: "enum", def: "both", group: "advanced", options: [["Both", "both"], ["Player", "player"], ["Opponent", "opponent"]] },
       { name: "absolute", title: "Absolute", type: "bool", def: false, group: "advanced" },
+      { name: "useStart", title: "Use Start Scroll", type: "bool", def: false, group: "advanced" },
+      { name: "startScroll", title: "Start Scroll", type: "float", def: 1, min: 0.1, step: 0.1, group: "advanced", units: "x" },
+    ],
+  },
+  // ---- 0.9 で追加されたイベント ----
+  ScrollVelocity: {
+    title: "Scroll Velocity",
+    fields: [
+      { name: "velocity", title: "Velocity", type: "float", def: 1, min: -10, step: 0.1, units: "x" },
+      { name: "duration", title: "Duration", type: "float", def: 4, min: 0, step: 0.5, units: "steps" },
+      easeField("linear", false),
+      easeDirField,
+      { name: "useStart", title: "Use Start Velocity", type: "bool", def: false, group: "advanced" },
+      { name: "startVelocity", title: "Start Velocity", type: "float", def: 1, min: -10, step: 0.1, group: "advanced", units: "x" },
+      { name: "strumline", title: "Target Strumline", type: "enum", def: "both", group: "advanced", options: [["Both", "both"], ["Player", "player"], ["Opponent", "opponent"]] },
+    ],
+  },
+  RenderDistance: {
+    title: "Render Distance",
+    fields: [
+      { name: "distance", title: "Distance", type: "float", def: 1000, min: 0, step: 50, units: "ms" },
+      { name: "useDefault", title: "Use Default", type: "bool", def: false },
+      { name: "strumline", title: "Target Strumline", type: "enum", def: "both", options: [["Both", "both"], ["Player", "player"], ["Opponent", "opponent"]] },
+    ],
+  },
+  BopCameraOnce: {
+    title: "Bop Camera Once",
+    fields: [
+      { name: "camGame", title: "Game Intensity", type: "float", def: 1, min: 0, step: 0.1, units: "x" },
+      { name: "camHUD", title: "HUD Intensity", type: "float", def: 1, min: 0, step: 0.1, units: "x" },
+    ],
+  },
+  CustomEvent: {
+    title: "Custom Event",
+    fields: [
+      { name: "name", title: "Name", type: "string", def: "" },
+      { name: "offset", title: "Activation Offset", type: "float", def: 0, step: 1, units: "ms" },
+      { name: "duration", title: "Duration", type: "float", def: 0, min: 0, step: 0.5, units: "steps" },
+      { name: "ease", title: "Easing Type", type: "enum", def: "linear", options: EASES.filter((e) => e !== "INSTANT" && e !== "CLASSIC").map((v) => [v, v]) },
+      { name: "easeDir", title: "Easing Direction", type: "enum", def: "InOut", options: EASE_DIRS.map((v) => [v === "InOut" ? "In/Out" : v, v]) },
+      // params: [{ name, value }]。画面では「名前=値」を 1 行ずつ書く
+      { name: "params", title: "Params（名前=値 を 1 行ずつ）", type: "params", def: [] },
     ],
   },
   SetCameraBop: {

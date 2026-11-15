@@ -270,3 +270,10 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 ## v3.20.1（バグ修正）
 - ホールド画像の列順を修正: 8 列は「1の胴体・1の終端・2の胴体・2の終端…」。胴体 = 列 lane*2、終端 = lane*2+1（SustainTrail.hx の uv と同じ）。
 - プレイテスト/ステージの AnimateAtlas（キャラ・アニメ付き prop）は、タイムラインの原点を基準フレームに固定して描く。フレームごとに枠の左上へ寄せていたため、動くたびに位置が跳ねていた。
+
+## v3.21 — Public Playtest (0.9 preview) 対応
+- ModPack: アンカーに `gameplay` / `ui` を追加。`gameplay/{characters,stages,notestyles}/<id>/<id>.json`（新配置）と `data/<dir>/<id>.json`（従来）の両方を `listData` / `resolveAsset` が解決する。
+- ease: `INSTANT`（即座に移動）を FocusCamera / ZoomCamera / ScrollSpeed で実装。`easeByName()` が INSTANT のとき null を返し、各所で瞬時に適用。
+- スクリプト側の `x/y/getMidPoint/feetPosition` は V-Slice と同じくグローバルオフセット込みで返す（見た目の `place()` は元から V-Slice 式）。
+- 新イベント: ScrollVelocity（runtime/scrollVelocity.js の ScrollVelocityTimeline / VisualClock）、RenderDistance、BopCameraOnce、CustomEvent（Runtime.startCustom/updateCustom → `onCustomEvent`。継続は StageScene の timing で step→ms 変換）。
+- 譜面メタデータ版 2.2.8。ScrollSpeed に useStart/startScroll。

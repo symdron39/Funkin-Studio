@@ -18,6 +18,7 @@ import { StageCharacter, atlasKindOf } from "../states/stage/stageCharacter.js";
 import { loadImage } from "../states/stage/sparrowAtlas.js";
 import { normalizeStage, isSolid, isAnimated, getScale, getScroll, parseColor, toRgbaCss, blendToCanvas, defaultCharacter } from "../states/stage/stageData.js";
 import { originOf, infoOf } from "../services/ModPack.js";
+import { easeByName } from "./runtime.js";
 
 export const FRAME_W = 1280,
   FRAME_H = 720;
@@ -180,7 +181,16 @@ class SceneChar {
     return true;
   }
   /** 足元・枠の大きさ・カメラ焦点。実キャラが無いときは仮の寸法 */
+  /** unplaced（ステージ未配置）のキャラは、左上 (0,0) になる足元の位置に直す */
+  materialize() {
+    if (!this.unplaced || !this.sc?.view) return;
+    this.unplaced = false;
+    const v = this.sc.view,
+      k = v.baseScale * (Number(this.scaleStage) || 1);
+    this.pos = [(v.refW * k) / 2 - v.global[0], v.refH * k - v.global[1]];
+  }
   place() {
+    this.materialize();
     const sc = { position: this.pos, scale: this.scaleStage, cameraOffsets: this.camOffsets };
     if (this.sc?.view) {
       const v = this.sc.view,
@@ -266,6 +276,8 @@ export class StageScene {
     this.charFiles = new Map();
     this.focusEvents = [];
     this.zoomEvents = [];
+    this.bopEvents = [];
+    this.bi = 0;
     this.focusTarget = { x: FRAME_W / 2, y: FRAME_H / 2 };
     this.tweenZoom = null;
     this.lastBeat = -99;
@@ -311,6 +323,7 @@ export class StageScene {
     const c = new SceneChar("other");
     c.id = id;
     c.pos = [0, 0];
+    c.unplaced = true; // ステージに置かれていないキャラは、スプライトの左上が (0, 0)（スクリプトが x / y を決めるまで）
     c.actor = new Actor([], () => null, null);
     c.building = true;
     c.built = this.buildChar(c, f, id, "bf").finally(() => {
@@ -464,10 +477,13 @@ export class StageScene {
     const evs = this.o.events?.() ?? [];
     this.focusEvents = evs.filter((e) => e.e === "FocusCamera").sort((a, b) => a.t - b.t);
     this.zoomEvents = evs.filter((e) => e.e === "ZoomCamera").sort((a, b) => a.t - b.t);
+    this.bopEvents = evs.filter((e) => e.e === "BopCameraOnce").sort((a, b) => a.t - b.t);
+    this.bi = 0;
     this.fi = 0;
     this.zi = 0;
     this.zoom = this.zoomBase;
     this.tweenZoom = null;
+    this.tweenCam = null;
     this.bop = 0;
     this.lastBeat = -99;
     this.lastStep = undefined;
@@ -488,22 +504,38 @@ export class StageScene {
   advanceEvents(pos, snap = false) {
     const stepMs = this.stepMs();
     while (this.fi < this.focusEvents.length && this.focusEvents[this.fi].t <= pos) {
-      const v = this.focusEvents[this.fi++].v ?? {};
+      const e = this.focusEvents[this.fi++],
+        v = e.v ?? {};
       const ch = Number(v.char ?? 0),
         ox = num(v.x, 0),
         oy = num(v.y, 0);
       const base = ch === -1 ? { x: 0, y: 0 } : this.focusPoint(ROLES[ch] ?? "player");
-      this.focusTarget = { x: base.x + ox, y: base.y + oy };
+      const target = { x: base.x + ox, y: base.y + oy };
+      // FocusCameraSongEvent: CLASSIC = 追従点を置くだけ（lerp で追う）/ INSTANT = 即座に移動 / それ以外 = ease で動かし、終わったら追従に戻る
+      const fn = easeByName(v.ease ?? "CLASSIC", v.easeDir ?? "In"); // FocusCamera は ease 未指定なら CLASSIC
+      const dur = Math.max(0, num(v.duration, 4)) * stepMs;
+      this.focusTarget = target;
+      if (fn === "classic") this.tweenCam = null;
+      else if (fn === null || snap || dur <= 0 || pos - e.t >= dur) {
+        this.cam = { ...target };
+        this.tweenCam = null;
+      } else this.tweenCam = { from: { ...this.cam }, to: target, t0: e.t, dur, fn };
+    }
+    // BopCameraOnce（0.9）: 拍と関係なく、カメラを 1 回だけ弾ませる（強さ 1 = 通常の 1.015 倍）
+    while (this.bi < this.bopEvents.length && this.bopEvents[this.bi].t <= pos) {
+      const e = this.bopEvents[this.bi++];
+      if (!snap) this.bop += (1.015 * num(e.v?.camGame, 1) - 1) * this.zoomBase;
     }
     while (this.zi < this.zoomEvents.length && this.zoomEvents[this.zi].t <= pos) {
       const e = this.zoomEvents[this.zi++],
         v = e.v ?? {};
       const target = String(v.mode || "direct").toLowerCase() === "stage" ? num(v.zoom, 1) * this.zoomBase : num(v.zoom, 1);
       const dur = Math.max(0, num(v.duration, 4)) * stepMs;
-      if (snap || dur <= 0 || pos - e.t >= dur) {
+      const fn = easeByName(v.ease ?? "linear", v.easeDir ?? "In");
+      if (fn === null || fn === "classic" || snap || dur <= 0 || pos - e.t >= dur) {
         this.zoom = target;
         this.tweenZoom = null;
-      } else this.tweenZoom = { from: this.zoom, to: target, t0: e.t, dur, linear: /linear/i.test(String(v.ease || "")) };
+      } else this.tweenZoom = { from: this.zoom, to: target, t0: e.t, dur, fn };
     }
   }
   stepMs() {
@@ -560,14 +592,26 @@ export class StageScene {
     if (this.tweenZoom) {
       const z = this.tweenZoom,
         r = Math.min(1, (pos - z.t0) / z.dur);
-      this.zoom = z.from + (z.to - z.from) * (z.linear ? r : smooth(r));
+      this.zoom = z.from + (z.to - z.from) * z.fn(r);
       if (r >= 1) this.tweenZoom = null;
     }
     this.bop *= Math.pow(0.95, dt * 60);
     // カメラ追従（lerp 0.04 を 60fps 基準に補正）
-    const a = 1 - Math.pow(1 - 0.04, Math.min(dt, 0.1) * 60);
-    this.cam.x += (this.focusTarget.x - this.cam.x) * a;
-    this.cam.y += (this.focusTarget.y - this.cam.y) * a;
+    if (this.tweenCam) {
+      // ease 付きの移動: 追従を止めて動かし、終わったら追従点に合わせる（resetCamera）
+      const tw = this.tweenCam,
+        r = Math.min(1, (pos - tw.t0) / tw.dur),
+        f = tw.fn(r);
+      this.cam = { x: tw.from.x + (tw.to.x - tw.from.x) * f, y: tw.from.y + (tw.to.y - tw.from.y) * f };
+      if (r >= 1) {
+        this.cam = { ...tw.to };
+        this.tweenCam = null;
+      }
+    } else {
+      const a = 1 - Math.pow(1 - 0.04, Math.min(dt, 0.1) * 60);
+      this.cam.x += (this.focusTarget.x - this.cam.x) * a;
+      this.cam.y += (this.focusTarget.y - this.cam.y) * a;
+    }
   }
   onBeat(beat) {
     for (const p of this.props) {
@@ -690,6 +734,12 @@ export class StageScene {
   _makeApi(c) {
     const scene = this,
       role = c.role;
+    // 見た目の大きさ（hitbox）と全体 offsets
+    const geo = () => {
+      c.materialize();
+      const p = c.place();
+      return { W: p.w, H: p.h, g: c.sc?.view?.global ?? [0, 0] };
+    };
     return {
       __char: c,
       get isPlayer() {
@@ -697,17 +747,46 @@ export class StageScene {
       },
       characterId: c.id,
       characterType: role === "player" ? 0 : role === "opponent" ? 1 : 2,
+      // V-Slice の x / y は「スプライトの左上」。ステージの位置（足元）= x + width/2 − 全体 offsets（BaseCharacter.setScale: x = feet − origin + globalOffsets）
       get x() {
-        return c.pos[0];
+        const q = geo();
+        return c.pos[0] + q.g[0] - q.W / 2;
       },
       set x(v) {
-        c.pos[0] = Number(v);
+        const q = geo();
+        c.pos[0] = Number(v) - q.g[0] + q.W / 2;
       },
       get y() {
-        return c.pos[1];
+        const q = geo();
+        return c.pos[1] + q.g[1] - q.H;
       },
       set y(v) {
-        c.pos[1] = Number(v);
+        const q = geo();
+        c.pos[1] = Number(v) - q.g[1] + q.H;
+      },
+      get width() {
+        return geo().W;
+      },
+      get height() {
+        return geo().H;
+      },
+      get globalOffsets() {
+        return [...geo().g];
+      },
+      get characterOrigin() {
+        const q = geo();
+        return { x: q.W / 2, y: q.H };
+      },
+      get feetPosition() {
+        const q = geo();
+        return { x: c.pos[0] + q.g[0], y: c.pos[1] + q.g[1] };
+      },
+      get cornerPosition() {
+        return { x: this.x, y: this.y };
+      },
+      set cornerPosition(v) {
+        this.x = v.x;
+        this.y = v.y;
       },
       get alpha() {
         return c.alpha;
@@ -769,9 +848,10 @@ export class StageScene {
       dance: (force) => c.dance(!!force),
       getCurrentAnimation: () => c.actor?.name ?? "",
       hasAnimation: (n) => !!c.actor?.has(n),
+      // FlxSprite.getMidpoint = x + width/2, y + height/2（アニメの offsets は含まない）
       getMidPoint: () => {
-        const p = c.place();
-        return { x: p.feetX, y: p.feetY - p.h / 2 };
+        const q = geo();
+        return { x: c.pos[0] + q.g[0], y: c.pos[1] + q.g[1] - q.H / 2 };
       },
       getFocusPoint: () => scene.focusPointOf(c),
       get cameraFocusPoint() {
@@ -779,7 +859,8 @@ export class StageScene {
       },
       getBaseScale: () => c.sc?.view?.baseScale ?? 1,
       setPosition: (x, y) => {
-        c.pos = [Number(x), Number(y)];
+        const q = geo();
+        c.pos = [Number(x) - q.g[0] + q.W / 2, Number(y) - q.g[1] + q.H];
       },
       singTimeSec: c.singTime * (this.stepMs() / 1000),
     };

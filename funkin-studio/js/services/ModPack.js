@@ -14,7 +14,7 @@
 import { openZipLazy } from "../states/chart/zip.js";
 
 /** FNF の mod / assets 直下に来るフォルダ名。この名前が最初に出てきた所を「ルート」とみなす */
-const ANCHORS = new Set(["images", "data", "scripts", "sounds", "music", "songs", "shaders", "fonts", "videos", "preload", "shared"]);
+const ANCHORS = new Set(["images", "data", "scripts", "sounds", "music", "songs", "shaders", "fonts", "videos", "preload", "shared", "gameplay", "ui"]);
 
 const splitPath = (p) => String(p || "").replace(/\\/g, "/").split("/").filter(Boolean);
 export const relPathOf = (f) => f.webkitRelativePath || f.name;
@@ -159,7 +159,12 @@ export function listData(pool, dir) {
   for (const f of pool) {
     if (!/\.json$/i.test(f.name)) continue;
     const info = infoOf(f);
-    const m = info.noExt.match(new RegExp(`^data/${dir}/(.+)$`));
+    // 0.8: data/<dir>/<id>.json　0.9(Great Sorting): gameplay/<dir>/<id>/<id>.json
+    let m = info.noExt.match(new RegExp(`^data/${dir}/(.+)$`));
+    if (!m) {
+      const n = info.noExt.match(new RegExp(`^gameplay/${dir}/([^/]+)/([^/]+)$`));
+      if (n && n[1] === n[2]) m = n;
+    }
     if (m) out.push({ id: m[1], file: f, origin: info.origin });
   }
   return out.sort((a, b) => a.id.localeCompare(b.id));
@@ -171,7 +176,7 @@ export function summarize(pool) {
     const r = infoOf(f).noExt.split("/")[0];
     if (r === "images") c.images++;
     else if (r === "scripts") c.scripts++;
-    else if (r === "data") c.data++;
+    else if (r === "data" || r === "gameplay" || r === "ui") c.data++;
     else c.other++;
   }
   return {
@@ -186,6 +191,7 @@ export function summarize(pool) {
 // ---------------------------------------------------------------- 種類別の解決（image / sound / music / song / icon / character / stage …）
 /** 種類ごとの「ルートのフォルダ」と拡張子。assetPath はその直下からの相対（V-Slice と同じ指定）で渡す */
 const AUDIO = /\.(ogg|mp3|wav|flac)$/i;
+const NEW_LAYOUT = { character: "characters", stage: "stages", notestyle: "notestyles" };
 const KINDS = {
   image: { dir: "images", ext: /\.png$/i },
   xml: { dir: "images", ext: /\.(xml|txt)$/i },
@@ -207,7 +213,22 @@ export function resolveAsset(pool, kind, assetPath, opts = {}) {
   const k = KINDS[kind];
   if (!k) throw new Error(`未対応の種類: ${kind}`);
   const dirPrefix = k.dir;
-  const ranked = rankFiles(pool, assetPath, k.ext, { dirPrefix, origin: opts.origin });
+  let ranked = rankFiles(pool, assetPath, k.ext, { dirPrefix, origin: opts.origin });
+  // 0.9 の新配置 gameplay/<dir>/<id>/<id>.json も完全一致として扱う
+  const nd = NEW_LAYOUT[kind];
+  if (nd) {
+    const id = normAsset(assetPath);
+    const exact = `gameplay/${nd}/${id}/${id}`;
+    for (const f of pool) {
+      if (!k.ext.test(f.name)) continue;
+      const info = infoOf(f);
+      if (info.noExt !== exact) continue;
+      const sc = 100 + (opts.origin !== undefined && info.origin === opts.origin ? 25 : 0);
+      ranked = ranked.filter((r) => r.f !== f);
+      ranked.push({ f, score: sc, info });
+    }
+    ranked.sort((a, b) => b.score - a.score);
+  }
   if (!ranked.length) return null;
   const ties = topTies(ranked);
   if (ties.length > 1 && !opts.quiet) assetNote(`${kind}「${assetPath}」に合うファイルが複数あります: ${ties.map((t) => t.info.origin + "/" + t.info.noExt).join(" , ")}（先頭を使います）`);

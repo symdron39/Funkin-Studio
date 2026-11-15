@@ -69,6 +69,19 @@ export const FlxEase = {
   smootherStepInOut: smootherInOut,
 };
 
+/**
+ * 譜面イベントの ease / easeDir → イージング関数（SongEvent の `$ease$easeDir`）。
+ * "INSTANT" は null（= 即座・duration 無視）、"CLASSIC" は "classic"、不正な名前は linear を返す。
+ * ease が quadIn のように方向込みのとき、または linear のときは easeDir を付けない（EASE_TYPE_DIR_REGEX）。
+ */
+export function easeByName(ease = "linear", dir = "In") {
+  ease = String(ease ?? "linear");
+  if (ease === "INSTANT") return null;
+  if (ease === "CLASSIC") return "classic";
+  if (/(In|Out|InOut)$/i.test(ease) || ease === "linear") dir = "";
+  return FlxEase[ease + dir] ?? FlxEase.linear;
+}
+
 // ---------------------------------------------------------------- 色（Flixel の FlxColor は Int の ARGB）
 const NAMED = { BLACK: 0xff000000, WHITE: 0xffffffff, GRAY: 0xff808080, GREEN: 0xff008000, LIME: 0xff00ff00, YELLOW: 0xffffff00, ORANGE: 0xffffa500, RED: 0xffff0000, PURPLE: 0xff800080, BLUE: 0xff0000ff, BROWN: 0xff8b4513, PINK: 0xffffc0cb, MAGENTA: 0xffff00ff, CYAN: 0xff00ffff, TRANSPARENT: 0x00000000 };
 const u32 = (n) => n >>> 0;
@@ -1088,6 +1101,7 @@ export class Runtime {
   }
   /** イベントを 1 つ実行する */
   fire(e) {
+    if (e.e === "CustomEvent") return this.startCustom(e);
     const rec = this.eventInst.get(e.e);
     if (!rec) return false;
     try {
@@ -1097,6 +1111,45 @@ export class Runtime {
     }
     return true;
   }
+  // ---- CustomEvent（0.9）: 名前つきの進行イベント。Module / SongEvent の onCustomEvent(event) に 0→1 の進み具合を渡す ----
+  startCustom(e) {
+    const v = e.v ?? {};
+    const steps = Math.max(0, Number(v.duration ?? 0));
+    const tm = this.scene?.o?.timing?.();
+    const startMs = e.t + Number(v.offset ?? 0);
+    const endMs = steps > 0 && tm ? tm.stepToMs(tm.msToStep(startMs) + steps) : startMs;
+    (this.customActive ??= []).push({ e, v, startMs, endMs, started: false });
+    return true;
+  }
+  /** 毎フレーム: 動いている CustomEvent に進み具合を送る */
+  updateCustom(pos) {
+    if (!this.customActive?.length) return;
+    for (const a of [...this.customActive]) {
+      if (pos < a.startMs) continue;
+      const dur = a.endMs - a.startMs;
+      const progress = dur > 0 ? Math.min(1, (pos - a.startMs) / dur) : 1;
+      const fn = easeByName(a.v.ease ?? "linear", a.v.easeDir ?? "InOut");
+      const f = typeof fn === "function" ? fn : (x) => x;
+      const last = progress >= 1;
+      const ev = {
+        eventData: this.eventData(a.e),
+        name: String(a.v.name ?? ""),
+        progress,
+        eased: f(progress),
+        elapsedMs: Math.max(0, Math.min(dur, pos - a.startMs)),
+        durationMs: dur,
+        isFirst: !a.started,
+        isLast: last,
+        isReplay: false,
+        ease: (x) => f(Math.min(1, Math.max(0, x))),
+        eventCanceled: false,
+        cancel() {},
+      };
+      a.started = true;
+      this.broadcast("onCustomEvent", ev);
+      if (last) this.customActive = this.customActive.filter((x) => x !== a);
+    }
+  }
   /** 途中から始めるとき: processOldEvents のイベントを、始める位置より前の分だけ順に実行する */
   fireOld(events, startMs) {
     for (const e of events) if (e.t < startMs && this.eventInst.get(e.e)?.processOld) this.fire(e);
@@ -1105,6 +1158,7 @@ export class Runtime {
   update(dt, pos) {
     this.pos = pos;
     this.tweens.update(dt);
+    this.updateCustom(pos);
     for (const t of [...this.timers]) t.step(dt);
     for (const f of this.postUpdate.slice()) {
       try {
