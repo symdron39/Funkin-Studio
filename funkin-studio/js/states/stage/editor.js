@@ -19,6 +19,7 @@
          9.ステージ全体・ファイル 10.ビューとキーボード
    ============================================================ */
 import { exportMod } from "../../services/ModExport.js";
+import { registryPath } from "../../services/ModPack.js";
 import { Viewport, isTextEntry } from "../../ui/Viewport.js";
 import { HudPanels } from "../../ui/HudPanels.js";
 import { defaultStage, normalizeStage, newProp, newRect, serializeStage, clone, round3, CHAR_IDS, CHAR_LABEL, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas } from "./stageData.js";
@@ -1441,7 +1442,7 @@ export function mountStageEditor(state) {
   function save() {
     const file = stageFileId || (doc.name || "stage").trim().replace(/[^\w\-.]+/g, "_").replace(/^_+|_+$/g, "") || "stage";
     // mod の zip ごと書き出す（元の mod + これまでに編集したもの）。ステージ JSON は data/stages/ に置く
-    exportMod(state.app, [{ path: `data/stages/${file}.json`, data: serializeStage(doc, !$("stgCompact").checked) }], { origin: stageOrigin, say })
+    exportMod(state.app, [{ path: registryPath(state.app.workspace?.files, "stages", file), data: serializeStage(doc, !$("stgCompact").checked) }], { origin: stageOrigin, say })
       .then(() => state.app.unsaved?.clean())
       .catch((e) => say("書き出しエラー: " + e.message));
   }

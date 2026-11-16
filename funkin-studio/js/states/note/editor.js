@@ -14,6 +14,7 @@ import { NoteStyleSet, NoteStyle, framesByPrefix } from "../../runtime/noteStyle
 import { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } from "../stage/sparrowAtlas.js";
 import { infoOf } from "../../services/ModPack.js";
 import { exportMod } from "../../services/ModExport.js";
+import { registryPath } from "../../services/ModPack.js";
 
 const DIRS = ["left", "down", "up", "right"];
 const LANE = 112; // 1 レーンの幅（V-Slice の Strumline.NOTE_SPACING）
@@ -319,7 +320,7 @@ export function mountNoteEditor(state) {
   };
   $("nteSave").onclick = () => {
     const id = docId.replace(/[^\w\-.]+/g, "_") || "notestyle";
-    exportMod(state.app, [{ path: `data/notestyles/${id}.json`, data: JSON.stringify(doc, null, $("nteCompact").checked ? 2 : 0) }], { origin: docOrigin || undefined, say })
+    exportMod(state.app, [{ path: registryPath(state.app.workspace?.files, "notestyles", id), data: JSON.stringify(doc, null, $("nteCompact").checked ? 2 : 0) }], { origin: docOrigin || undefined, say })
       .then(() => state.app.unsaved?.clean())
       .catch((e) => say("書き出しエラー: " + e.message));
   };

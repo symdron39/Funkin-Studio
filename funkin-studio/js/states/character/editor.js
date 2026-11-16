@@ -32,6 +32,7 @@
          5.描画 6.読み込みとアニメの追加・改名・削除 7.再生操作 8.オフセットの編集と書き出し 9.ビューと Hud の操作
    ============================================================ */
 import { exportMod } from "../../services/ModExport.js";
+import { registryPath } from "../../services/ModPack.js";
 import { Viewport, isTextEntry } from "../../ui/Viewport.js";
 import { HudPanels } from "../../ui/HudPanels.js";
 import { parsePackerText } from "../stage/sparrowAtlas.js";
@@ -1126,7 +1127,7 @@ export function mountCharacterEditor(state) {
     const after = new TextEncoder().encode(json).length;
     // mod の zip ごと書き出す。キャラ JSON は data/characters/<id>.json（読み込んだ名前があればそれ、なければ name から）
     const cid = (loadedName || doc.name || "character").toString().replace(/\.json$/i, "").trim().replace(/[^\w\-.]+/g, "_").replace(/^_+|_+$/g, "") || "character";
-    exportMod(state.app, [{ path: `data/characters/${cid}.json`, data: json }], { origin: charOrigin || undefined, say }).catch((e) => say("書き出しエラー: " + e.message));
+    exportMod(state.app, [{ path: registryPath(state.app.workspace?.files, "characters", cid), data: json }], { origin: charOrigin || undefined, say }).catch((e) => say("書き出しエラー: " + e.message));
     say(
       "character.json を保存しました。" +
         (compact

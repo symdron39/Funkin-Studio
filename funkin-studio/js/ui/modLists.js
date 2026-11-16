@@ -36,20 +36,21 @@ export function animateList(ws) {
 export function characterList(ws) {
   return ws.summary().characters.map((c) => ({ label: c.id + (c.origin ? `（${c.origin}）` : ""), files: { offCharacter: c.file } }));
 }
-/** Chart: data/songs/<id>/<id>-metadata*.json + chart json + songs/<id>/ の音声 */
+/** Chart: 0.8 = data/songs/<id>/ の JSON + songs/<id>/ の音声 / 0.9 = gameplay/songs/<id>/ に JSON も音声も一緒 */
 export function songList(ws) {
   const out = [];
   for (const m of ws.files) {
     const mi = infoOf(m);
-    const mm = mi.noExt.match(/^data\/songs\/([^/]+)\/([^/]+)-metadata(-.+)?$/);
+    const mm = mi.noExt.match(/^(data|gameplay)\/songs\/([^/]+)\/([^/]+)-metadata(-.+)?$/);
     if (!mm || !/\.json$/i.test(m.name)) continue;
-    const id = mm[1];
-    const base = `data/songs/${id}/`;
-    const group = ws.files.filter((f) => /\.json$/i.test(f.name) && infoOf(f).origin === mi.origin && infoOf(f).noExt.startsWith(base) && /-(metadata|chart)/.test(infoOf(f).noExt));
-    const audio = ws.files.filter((f) => /\.(ogg|mp3|wav)$/i.test(f.name) && infoOf(f).origin === mi.origin && infoOf(f).noExt.startsWith(`songs/${id}/`));
+    const id = mm[2];
+    const base = `${mm[1]}/songs/${id}/`;
+    const audioBase = mm[1] === "gameplay" ? base : `songs/${id}/`;
+    const group = ws.files.filter((f) => /\.json$/i.test(f.name) && infoOf(f).origin === mi.origin && infoOf(f).noExt.startsWith(base) && /^[^/]+-(metadata|chart)/.test(infoOf(f).noExt.slice(base.length)));
+    const audio = ws.files.filter((f) => /\.(ogg|mp3|wav)$/i.test(f.name) && infoOf(f).origin === mi.origin && infoOf(f).noExt.startsWith(audioBase) && infoOf(f).noExt.slice(audioBase.length).indexOf("/") < 0);
     const inst = audio.filter((f) => /^inst/i.test(f.name)).slice(0, 1);
     const voices = audio.filter((f) => /^voices/i.test(f.name));
-    out.push({ label: id + (mi.origin ? `（${mi.origin}）` : ""), files: { chtOpen: group, ...(inst.length ? { chtInst: inst } : {}), ...(voices.length ? { chtVoices: voices } : {}) } });
+    out.push({ label: id + (mi.origin ? `（${mi.origin}）` : "") + (mm[1] === "gameplay" ? " [0.9]" : ""), files: { chtOpen: group, ...(inst.length ? { chtInst: inst } : {}), ...(voices.length ? { chtVoices: voices } : {}) } });
   }
   const seen = new Set();
   return out.filter((o) => !seen.has(o.label) && seen.add(o.label)).sort((a, b) => a.label.localeCompare(b.label));

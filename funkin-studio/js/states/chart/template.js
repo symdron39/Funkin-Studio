@@ -70,6 +70,7 @@ export const template = `
               <button id="chtSaveMeta" type="button">metadata.json</button>
               <button id="chtSaveAllJson" type="button" title="全バリエーションの JSON と音声を、mod の zip にまとめて書き出す">mod zip（全部）</button>
             </div>
+            <div class="row"><label>mod の配置 <select id="chtLayout"><option value="auto">自動（読み込んだ mod に合わせる）</option><option value="0.8">0.8（data/songs + songs）</option><option value="0.9">0.9（gameplay/songs/&lt;id&gt;）</option></select></label></div>
             <div class="row"><label><input id="chtCompact" type="checkbox" /> 1行の軽量JSONで保存</label></div>
             <label>songId（ファイル名に使う）<input id="chtSongId" type="text" placeholder="例: bopeebo" /></label>
             <div id="chtStatus" class="tiny"></div>

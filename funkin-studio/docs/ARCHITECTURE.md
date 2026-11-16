@@ -277,3 +277,7 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 - スクリプト側の `x/y/getMidPoint/feetPosition` は V-Slice と同じくグローバルオフセット込みで返す（見た目の `place()` は元から V-Slice 式）。
 - 新イベント: ScrollVelocity（runtime/scrollVelocity.js の ScrollVelocityTimeline / VisualClock）、RenderDistance、BopCameraOnce、CustomEvent（Runtime.startCustom/updateCustom → `onCustomEvent`。継続は StageScene の timing で step→ms 変換）。
 - 譜面メタデータ版 2.2.8。ScrollSpeed に useStart/startScroll。
+
+### v3.22 — 0.9 の曲・書き出し配置
+- 曲: 0.9 は `gameplay/songs/<id>/` に metadata / chart / Inst / Voices / 字幕をまとめる。`ui/modLists.songList` は 0.8（data/songs + songs）と 0.9 の両方を拾い、`resolveAsset("song")` も `gameplay/songs/<id>/…` を完全一致で解決。
+- 書き出し: `ModPack.detectLayout(pool)`（gameplay/ があれば 0.9）・`songDirOf` / `songAudioDirOf` / `registryPath`。Chart Editor には配置の選択（自動 / 0.8 / 0.9）を追加。Stage / Character / Note Style も自動判定で `gameplay/<dir>/<id>/<id>.json` か `data/<dir>/<id>.json` に出す。

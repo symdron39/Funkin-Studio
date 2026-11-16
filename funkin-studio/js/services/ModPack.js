@@ -192,6 +192,19 @@ export function summarize(pool) {
 /** 種類ごとの「ルートのフォルダ」と拡張子。assetPath はその直下からの相対（V-Slice と同じ指定）で渡す */
 const AUDIO = /\.(ogg|mp3|wav|flac)$/i;
 const NEW_LAYOUT = { character: "characters", stage: "stages", notestyle: "notestyles" };
+/** 0.9: 曲の JSON・音声・字幕などは gameplay/songs/<id>/ に全部置く */
+export const songDirOf = (layout, id) => (layout === "0.9" ? `gameplay/songs/${id}` : `data/songs/${id}`);
+export const songAudioDirOf = (layout, id) => (layout === "0.9" ? `gameplay/songs/${id}` : `songs/${id}`);
+/** stages / characters / notestyles の JSON の書き出し先。0.9: gameplay/<dir>/<id>/<id>.json / 0.8: data/<dir>/<id>.json */
+export function registryPath(pool, dir, id, layout) {
+  const L = layout === "0.8" || layout === "0.9" ? layout : detectLayout(pool ?? []);
+  return L === "0.9" ? `gameplay/${dir}/${id}/${id}.json` : `data/${dir}/${id}.json`;
+}
+/** pool の中身から mod の配置を推測する: gameplay/ があれば 0.9、無ければ 0.8 */
+export function detectLayout(pool) {
+  for (const f of pool) if (/^gameplay\//.test(infoOf(f).noExt)) return "0.9";
+  return "0.8";
+}
 const KINDS = {
   image: { dir: "images", ext: /\.png$/i },
   xml: { dir: "images", ext: /\.(xml|txt)$/i },
@@ -216,9 +229,9 @@ export function resolveAsset(pool, kind, assetPath, opts = {}) {
   let ranked = rankFiles(pool, assetPath, k.ext, { dirPrefix, origin: opts.origin });
   // 0.9 の新配置 gameplay/<dir>/<id>/<id>.json も完全一致として扱う
   const nd = NEW_LAYOUT[kind];
-  if (nd) {
+  if (nd || kind === "song") {
     const id = normAsset(assetPath);
-    const exact = `gameplay/${nd}/${id}/${id}`;
+    const exact = kind === "song" ? `gameplay/songs/${id}` : `gameplay/${nd}/${id}/${id}`;
     for (const f of pool) {
       if (!k.ext.test(f.name)) continue;
       const info = infoOf(f);

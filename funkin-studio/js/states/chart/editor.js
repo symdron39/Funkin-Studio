@@ -14,6 +14,7 @@
    目次: 1.状態 2.データ参照 3.履歴 4.音声と読み込み 5.描画 6.操作(ポインタ) 7.パネル 8.保存 9.再生・キーボード
    ============================================================ */
 import { exportMod } from "../../services/ModExport.js";
+import { detectLayout, songDirOf, songAudioDirOf } from "../../services/ModPack.js";
 import { isTextEntry } from "../../ui/Viewport.js";
 import { HudPanels } from "../../ui/HudPanels.js";
 import {
@@ -1617,8 +1618,12 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     }
     return out;
   };
-  // mod の zip ごと書き出す（services/ModExport.js）。曲の JSON は data/songs/<id>/、音声は songs/<id>/
-  const songPath = (n) => `data/songs/${fileId()}/${n}`;
+  // mod の zip ごと書き出す（services/ModExport.js）。0.8: JSON は data/songs/<id>/・音声は songs/<id>/ / 0.9: gameplay/songs/<id>/ にまとめる
+  const modLayout = () => {
+    const v = $("chtLayout")?.value;
+    return v === "0.8" || v === "0.9" ? v : detectLayout(state.app.workspace?.files ?? []);
+  };
+  const songPath = (n) => `${songDirOf(modLayout(), fileId())}/${n}`;
   const modOut = (files) => exportMod(state.app, files, { say }).catch((e) => say("書き出しエラー: " + e.message));
   $("chtSaveChart").onclick = () => {
     ensureConsistent();
@@ -1630,7 +1635,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
   };
   $("chtSaveAllJson").onclick = () => {
     const files = jsonEntries().map((e) => ({ path: songPath(e.name), data: e.data }));
-    for (const t of audio.tracks) files.push({ path: `songs/${fileId()}/${t.id}${t.ext || ".ogg"}`, data: t.bytes });
+    for (const t of audio.tracks) files.push({ path: `${songAudioDirOf(modLayout(), fileId())}/${t.id}${t.ext || ".ogg"}`, data: t.bytes });
     modOut(files).then(() => state.app.unsaved?.clean());
   };
   function saveFnfc() {
