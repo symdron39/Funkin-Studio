@@ -8,7 +8,7 @@
    ・軽量化: 画像は ImageBitmap（デコード済み）で保持し、フレーム検索は prefix ごとにキャッシュする。
    ============================================================ */
 import { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } from "../states/stage/sparrowAtlas.js";
-import { FUNKIN_JSON, FUNKIN_PNG, FUNKIN_XML } from "./builtinFunkin.js";
+import { noteStyle as noteStyleFromRemote } from "../services/FunkinAssets.js";
 import { infoOfPath, normAsset, scorePath, assetNote, openModZip } from "../services/ModPack.js";
 
 const DIRS = ["left", "down", "up", "right"];
@@ -286,22 +286,36 @@ export class NoteStyleSet {
     return [...this.styles.keys()];
   }
   /**
-   * 内蔵の標準 noteStyle（"funkin"）を登録する。すでにあれば（mod の funkin.json など）何もしない。
-   * 画像のキーは images/<名前>、origin は "builtin:funkin"（funkin のスタイル自身が使う）
+   * 標準の noteStyle（"funkin" / "pixel"）を登録する。すでにあれば（mod の funkin.json など）何もしない。
+   * まず本体アセット（FunkinCrew/Funkin.assets）から JSON と画像を取ってくる。取れなければ false を返し、描画側は矢印を描く（ページに本体の画像は内蔵しない）。画像のキーは images/…（ルート以降のパス）、origin は "builtin:<id>"
    */
-  async loadBuiltin(id) {
-    if (id !== "funkin" || this.raw.has(id)) return false;
-    const data = JSON.parse(JSON.stringify(FUNKIN_JSON));
-    this.raw.set(id, data);
-    this.origins.set(id, "builtin:funkin");
-    for (const [name, b64] of Object.entries(FUNKIN_PNG)) {
-      const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-      this.images.set("images/" + baseName(name), { img: await loadImage(new Blob([bin], { type: "image/png" })), origin: "builtin:funkin" });
+  loadBuiltin(id) {
+    if (this.raw.has(id)) return Promise.resolve(false);
+    this._loading ??= new Map();
+    let p = this._loading.get(id);
+    if (!p) this._loading.set(id, (p = this._loadBuiltin(id).finally(() => this._loading.delete(id))));
+    return p;
+  }
+  async _loadBuiltin(id) {
+    if (this.raw.has(id)) return false;
+    try {
+      const r = await noteStyleFromRemote(id);
+      if (r) {
+        const origin = "builtin:" + id;
+        this.raw.set(id, r.json);
+        this.origins.set(id, origin);
+        for (const im of r.images) this.images.set(im.key, { img: await loadImage(await im.file.blob()), origin });
+        for (const x of r.xmls) this.xmls.set(x.key, { sprites: parseSparrowXml(await x.file.text()), origin });
+        this.styles.set(id, new NoteStyle(this, id, r.json));
+        this.version++;
+        return true;
+      }
+    } catch (e) {
+      this.raw.delete(id);
+      this.origins.delete(id);
+      console.warn(`標準ノートスタイル「${id}」を funkin.assets から取得できませんでした:`, e);
     }
-    for (const [name, txt] of Object.entries(FUNKIN_XML)) this.xmls.set("images/" + baseName(name), { sprites: parseSparrowXml(txt), origin: "builtin:funkin" });
-    this.styles.set(id, new NoteStyle(this, id, data));
-    this.version++;
-    return true;
+    return false; // 取れなかったとき（オフラインなど）は、呼び出し側が従来の矢印の絵を使う
   }
   get(id) {
     return this.styles.get(id) ?? null;

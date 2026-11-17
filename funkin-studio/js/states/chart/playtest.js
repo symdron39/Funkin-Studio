@@ -13,13 +13,14 @@ import { Runtime, easeByName } from "../../runtime/runtime.js";
 import { ScrollVelocityTimeline, VisualClock } from "../../runtime/scrollVelocity.js";
 import { openModZip } from "../../services/ModPack.js";
 import { drawNoteSprite } from "../../runtime/noteStyle.js";
+import { has as hasRemote } from "../../services/FunkinAssets.js";
 import { StageScene } from "../../runtime/stageScene.js";
 const PIXELS_PER_MS = 0.45;
 const WIN = { sick: 45, good: 90, bad: 135, shit: 160 };
 const NOTE_COLORS = ["#c24b99", "#00ffff", "#12fa05", "#f9393f"];
 const JUDGE_COLORS = { sick: "#7fe8ff", good: "#8dff8d", bad: "#ffd36b", shit: "#ff8f6b", miss: "#ff5577" };
 const LS_KEY = "funkinStudio.chart.playtest";
-const DEFAULTS = { startFrom: "playhead", speedMul: 1, down: false, showOpp: true, bot: false, hit: true, offset: 0, rate: 1, skin: "", scripts: true, scene: true, keys: ["KeyD", "KeyF", "KeyJ", "KeyK"] };
+const DEFAULTS = { startFrom: "playhead", speedMul: 1, down: false, showOpp: true, bot: false, hit: true, offset: 0, rate: 1, skin: "funkin", scripts: true, scene: true, keys: ["KeyD", "KeyF", "KeyJ", "KeyK"] };
 
 const scoreNote = (ms) => {
   const a = Math.abs(ms);
@@ -58,6 +59,7 @@ export function createPlayTest(root, d) {
   try {
     opts = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(LS_KEY) || "{}") };
     if (!Array.isArray(opts.keys) || opts.keys.length !== 4) opts.keys = DEFAULTS.keys.slice();
+    if (opts.skin === "") opts.skin = "funkin"; // 以前の既定（矢印）→ 標準のノートスタイル。矢印にしたいときは「標準の矢印」を選ぶ
   } catch {}
   const save = () => {
     try {
@@ -93,12 +95,24 @@ export function createPlayTest(root, d) {
     scene: $("chtPlayScene"),
   };
   const keyEls = [0, 1, 2, 3].map((i) => $("chtPlayKey" + i));
+  const ARROW = "__arrow"; // スキンを使わず矢印を描く
+  const skinStyle = () => (opts.skin && opts.skin !== ARROW ? d.noteStyles.get(opts.skin) : null);
+  /** 標準の noteStyle（funkin）が無ければ、本体アセット（funkin.assets）から取ってくる。取れなければ内蔵のものを使う */
+  async function ensureDefaultSkin() {
+    try {
+      if (!d.noteStyles.get("funkin")) await d.noteStyles.loadBuiltin("funkin");
+    } catch (e) {
+      $("chtPlaySkinInfo").textContent = `標準ノートスタイルを取得できませんでした: ${e.message}`;
+    }
+    fillSkins();
+    if (opts.skin === "funkin") optEls.skin.value = "funkin";
+  }
   function fillSkins() {
     const sel = optEls.skin;
     sel.textContent = "";
-    sel.append(new Option("標準の矢印（スキンなし）", ""));
+    sel.append(new Option("矢印（スキンなし）", ARROW));
     for (const id of d.noteStyles.ids()) sel.append(new Option(id, id));
-    if (![...sel.options].some((o) => o.value === opts.skin)) opts.skin = "";
+    if (opts.skin !== "funkin" && ![...sel.options].some((o) => o.value === opts.skin)) opts.skin = d.noteStyles.get("funkin") ? "funkin" : ARROW;
   }
   function fillOpts() {
     fillSkins();
@@ -144,6 +158,7 @@ export function createPlayTest(root, d) {
 
   // ---------------- 開く・閉じる ----------------
   function open(playheadMs) {
+    ensureDefaultSkin();
     playhead = playheadMs;
     wrap.hidden = false;
     state = "menu";
@@ -178,6 +193,7 @@ export function createPlayTest(root, d) {
 
   // ---------------- 開始 ----------------
   async function begin() {
+    await ensureDefaultSkin();
     readOpts();
     const startMs = opts.startFrom === "playhead" ? playhead : 0;
     const timing = d.getTiming();
@@ -246,6 +262,9 @@ export function createPlayTest(root, d) {
       origin: ws?.defaultOrigin?.(),
       timing: () => d.getTiming(),
       events: () => d.getEvents(),
+      ensure: (spec) => ws?.ensureRemote?.(spec),
+      ensureCharacter: (id) => ws?.ensureRemote?.({ characters: [id] }),
+      hasRemote: (kind, id) => hasRemote(kind, id),
     });
     try {
       await sc.load({ stage: d.getStage?.() ?? "", characters: d.getCharacters?.() });
@@ -262,7 +281,7 @@ export function createPlayTest(root, d) {
     evIdx = 0;
     const scripts = Object.entries(d.getScripts?.() ?? {});
     const wantScripts = opts.scripts && scripts.length;
-    const style = opts.skin ? d.noteStyles.get(opts.skin) : null;
+    const style = skinStyle();
     const anyKind = notes.some((n) => n.k);
     if (!wantScripts && !style && !anyKind) return; // 何も使わないなら実行環境は作らない（軽量）
     rt = new Runtime({ noteStyles: d.noteStyles, getOpts: () => opts, characters: d.getCharacters?.() });
@@ -283,7 +302,7 @@ export function createPlayTest(root, d) {
     rt.broadcast("onSongStart", {});
     lastFrameAt = performance.now();
   }
-  const styleOf = (isPlayer) => (rt ? (isPlayer ? rt.ps.playerStrumline.noteStyle : rt.ps.opponentStrumline.noteStyle) : opts.skin ? d.noteStyles.get(opts.skin) : null);
+  const styleOf = (isPlayer) => (rt ? (isPlayer ? rt.ps.playerStrumline.noteStyle : rt.ps.opponentStrumline.noteStyle) : skinStyle());
   function scriptReport() {
     if (!rt && !scene) return "";
     const lines = [];

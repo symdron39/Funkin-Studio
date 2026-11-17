@@ -9,6 +9,7 @@
    ・toFile(f)    … 既存の <input type=file> ベースの処理へ渡すための、通常の File への変換
    ・atlasFor(assetPath, origin) … キャラ/prop 用の { png, def, anim } を探す
    ============================================================ */
+import { ensureFor, ORIGIN as REMOTE_ORIGIN } from "./FunkinAssets.js";
 import { openModZip, summarize, resolveAsset, infoOf, normAsset, relPathOf } from "./ModPack.js";
 
 export class Workspace {
@@ -23,6 +24,7 @@ export class Workspace {
   /** 小文字にした origin から、元の大文字小文字のままのフォルダ名を返す（書き出し先を元の mod と同じ綴りにするため） */
   rawOrigin(lower) {
     if (!lower) return lower ?? "";
+    if (lower === REMOTE_ORIGIN || lower.startsWith(REMOTE_ORIGIN + "/")) return this.rawOrigin(this.defaultOrigin()); // 本体アセット由来のものを書き出すときは、編集中の mod のフォルダに
     for (const f of this.files) {
       const i = infoOf(f);
       if (i.origin === lower) return relPathOf(f).replace(/\\/g, "/").split("/").filter(Boolean).slice(0, i.originLen).join("/");
@@ -33,6 +35,7 @@ export class Workspace {
   defaultOrigin() {
     const c = new Map();
     for (const f of this.files) {
+      if (f.remote) continue; // funkin.assets から取得したものは、mod のフォルダに数えない
       const o = infoOf(f).origin;
       c.set(o, (c.get(o) || 0) + 1);
     }
@@ -42,7 +45,7 @@ export class Workspace {
     return this.files.length;
   }
   summary() {
-    return summarize(this.files);
+    return summarize(this.files.filter((f) => !f.remote));
   }
   add(files, label) {
     let n = 0;
@@ -67,6 +70,13 @@ export class Workspace {
     this.outputs.clear();
     this.outputOrigins.clear();
     this.app.events.emit("workspace:changed", { added: 0, cleared: true });
+  }
+  /**
+   * mod に無いキャラ / ステージ（とその画像）を、本体アセット（FunkinCrew/Funkin.assets）から足す。
+   * spec: { stage, characters: {…} | [id…] } → { added, errors }。mod にあるものは触らない
+   */
+  ensureRemote(spec) {
+    return ensureFor(this, spec);
   }
   /** 種類と assetPath から 1 つ選ぶ（ModPack.resolveAsset と同じ） */
   resolve(kind, assetPath, opts) {

@@ -7,6 +7,7 @@
      ② create() でボタンを配線する
    ============================================================ */
 import { getIncludeOriginal, setIncludeOriginal } from "../services/ModExport.js";
+import { isEnabled as isRemoteOn, setEnabled as setRemoteOn, refreshIndex } from "../services/FunkinAssets.js";
 import { State } from "../core/State.js";
 
 export class HomeState extends State {
@@ -38,6 +39,7 @@ export class HomeState extends State {
             <label class="fileBtn stgDesktopOnly">フォルダ（PC）<input id="homeModDir" type="file" webkitdirectory multiple hidden /></label>
             <button id="homeModClear" type="button">空にする</button>
           </div>
+          <label class="tiny" title="読み込んだ mod に無いキャラ・ステージ・ノートスタイル（と画像）を、FunkinCrew/Funkin.assets（GitHub）から必要な分だけ取得します。取得したものは書き出す zip には含めません"><input id="homeRemote" type="checkbox" /> mod に無い本体アセットを GitHub（Funkin.assets）から取得する</label>
           <label class="tiny"><input id="homeModWhole" type="checkbox" /> 書き出し時に、読み込んだ元の mod 全体も zip に含める</label>
           <p id="homeModInfo" class="tiny">まだ読み込んでいません。</p>
         </div>
@@ -77,6 +79,9 @@ export class HomeState extends State {
       render();
     };
     this._render = render;
+    refreshIndex(); // 本体アセットの一覧を新しくする（1 日 1 回。失敗しても同梱の一覧で動く）
+    q("#homeRemote").checked = isRemoteOn();
+    q("#homeRemote").onchange = (e) => setRemoteOn(e.target.checked);
     q("#homeModWhole").checked = getIncludeOriginal();
     q("#homeModWhole").onchange = (e) => setIncludeOriginal(e.target.checked);
     q("#homeModClear").onclick = () => ws.clear();

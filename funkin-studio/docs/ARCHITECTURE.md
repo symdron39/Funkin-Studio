@@ -281,3 +281,13 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 ### v3.22 — 0.9 の曲・書き出し配置
 - 曲: 0.9 は `gameplay/songs/<id>/` に metadata / chart / Inst / Voices / 字幕をまとめる。`ui/modLists.songList` は 0.8（data/songs + songs）と 0.9 の両方を拾い、`resolveAsset("song")` も `gameplay/songs/<id>/…` を完全一致で解決。
 - 書き出し: `ModPack.detectLayout(pool)`（gameplay/ があれば 0.9）・`songDirOf` / `songAudioDirOf` / `registryPath`。Chart Editor には配置の選択（自動 / 0.8 / 0.9）を追加。Stage / Character / Note Style も自動判定で `gameplay/<dir>/<id>/<id>.json` か `data/<dir>/<id>.json` に出す。
+
+### v3.23 — 本体アセット（FunkinCrew/Funkin.assets）を GitHub から取得
+- `services/FunkinAssets.js`: `RemoteFile`（LazyZipFile と同じ使い方。中身は読まれたとき raw.githubusercontent.com から取得・キャッシュ）、同梱のパス一覧 `funkinAssetsIndex.js`（画像は入れない）+ ツリー API での更新（1 日 1 回）、`ensureCharacter / ensureStage / ensureAtlas / ensureFor`、`noteStyle(id)`。
+- 方針: mod に同じものがあれば mod が先。無いものだけ、必要な分（JSON と、それが使うアトラス）を Workspace に origin `funkin.assets` で足す。`defaultOrigin` / `summary` / 書き出し先には数えない。
+- StageScene.load が `o.ensure()` を呼ぶ（ステージ・キャラ・props 画像）。スクリプトの `fetchCharacter(id)` も本体のキャラを取得して組み立てる。
+- NoteStyleSet.loadBuiltin は本体から JSON+画像を取得（取れなければ内蔵の funkin）。プレイテストの既定ノートスタイルは `funkin`（矢印は「矢印（スキンなし）」）。
+- ホーム画面にオン/オフ。テスト・ミラー用: `globalThis.__FUNKIN_ASSETS = { raw, tree }`。素材は © The Funkin' Crew Inc.（書き出す zip には含めない）。
+
+### v3.23.1 — 本体画像の内蔵を廃止
+- `runtime/builtinFunkin.js`（内蔵の標準 noteStyle・約 2.5MB）を削除。取れなかったとき（オフライン等）は従来どおり、ノートは矢印、キャラ/ステージは点線の仮の枠で動く（警告に理由が出る）。

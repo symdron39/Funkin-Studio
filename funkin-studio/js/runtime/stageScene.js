@@ -298,6 +298,16 @@ export class StageScene {
   // ---------------- 読み込み ----------------
   async load({ stage, characters }) {
     this.stageId = stage || "";
+    // mod に無いキャラ / ステージ / 画像は、本体アセット（funkin.assets）から必要な分だけ取ってくる
+    if (this.o.ensure) {
+      try {
+        const r = await this.o.ensure({ stage, characters });
+        for (const e of r?.errors ?? []) this.warn(`funkin.assets から取得できませんでした: ${e}`);
+        if (r?.added) this.warn(`ℹ funkin.assets（本体アセット）から ${r.added} 個のファイルを取得して使っています（mod に無かったもの）`);
+      } catch (e) {
+        this.warn(`funkin.assets から取得できませんでした: ${e.message}`);
+      }
+    }
     this.indexCharacters();
     await this.loadStage(stage);
     for (const role of ROLES) await this.loadChar(role, characters?.[role]);
@@ -310,12 +320,16 @@ export class StageScene {
     for (const f of this.pool) {
       if (!/\.json$/i.test(f.name || "")) continue;
       if (!infoOf(f).noExt.startsWith("data/characters/")) continue;
-      this.charFiles.set(String(f.name).replace(/^.*[\\/]/, "").replace(/\.json$/i, ""), f);
+      const nm = String(f.name).replace(/^.*[\\/]/, "").replace(/\.json$/i, "");
+      const had = this.charFiles.get(nm);
+      if (had && !had.remote) continue; // mod のキャラが先（本体アセットから取ったものは、mod に無いときだけ）
+      this.charFiles.set(nm, f);
     }
   }
   /** CharacterDataParser.fetchCharacter(id): 新しいキャラを作る（ステージには add するまで出ない）。無ければ null */
   fetchCharacter(id) {
-    const f = this.charFiles.get(id) || this.resolveFile("character", id);
+    let f = this.charFiles.get(id) || this.resolveFile("character", id);
+    if (!f && this.o.ensureCharacter && this.o.hasRemote?.("character", id)) return this.fetchRemoteCharacter(id); // 本体にあるキャラ: 取得してから作る
     if (!f) {
       this.warn(`fetchCharacter("${id}"): 読み込んだ mod にキャラクターがありません（null を返しました）`);
       return null;
@@ -331,6 +345,29 @@ export class StageScene {
       if (c.pendingAnim) c.playAnim(...c.pendingAnim);
       c.pendingAnim = null;
     });
+    return this.apiOf(c);
+  }
+  /** スクリプトが fetchCharacter した id が mod に無く本体アセットにあるとき: 取得が済んでから組み立てる（その間は仮の枠） */
+  fetchRemoteCharacter(id) {
+    const c = new SceneChar("other");
+    c.id = id;
+    c.pos = [0, 0];
+    c.unplaced = true;
+    c.actor = new Actor([], () => null, null);
+    c.building = true;
+    c.built = (async () => {
+      await this.o.ensureCharacter(id);
+      this.indexCharacters();
+      const f = this.charFiles.get(id) || this.resolveFile("character", id);
+      if (!f) throw Error("本体アセットに見つかりません");
+      await this.buildChar(c, f, id, "bf");
+    })()
+      .catch((e) => this.warn(`fetchCharacter("${id}"): ${e.message}`))
+      .finally(() => {
+        c.building = false;
+        if (c.pendingAnim) c.playAnim(...c.pendingAnim);
+        c.pendingAnim = null;
+      });
     return this.apiOf(c);
   }
   addExtra(c) {
