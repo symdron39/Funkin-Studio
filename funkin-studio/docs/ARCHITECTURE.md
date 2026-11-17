@@ -291,3 +291,7 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 
 ### v3.23.1 — 本体画像の内蔵を廃止
 - `runtime/builtinFunkin.js`（内蔵の標準 noteStyle・約 2.5MB）を削除。取れなかったとき（オフライン等）は従来どおり、ノートは矢印、キャラ/ステージは点線の仮の枠で動く（警告に理由が出る）。
+
+### v3.23.2 — プレイテストのロングノーツ（ダウンスクロール / 相手側）
+- `NoteStyle.drawHold` の yHead / yTail は「strumline 左上の y + 流れた距離」。playtest は `y - oy`（= 距離 + 57k）を渡していて、受け皿が画面上端付近にあるアップスクロールでだけ偶然合っていた → `oy + (y - strumY)` に修正（ダウンスクロールで胴体が受け皿から大きく離れていた）。
+- 相手側のロングノーツは、終わっても `holding` が true のまま残り、受け皿の位置に描かれ続けていた → 終了時に `holding = false`。

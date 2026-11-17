@@ -20152,7 +20152,10 @@ function createPlayTest(root, d) {
           else n.holding = true;
         }
         if (n.holding) scene?.keepSinging("opponent");
-        if (n.holding && pos >= n.t + n.l) n.done = true;
+        if (n.holding && pos >= n.t + n.l) {
+          n.done = true;
+          n.holding = false;
+        }
         continue;
       }
       if (opts.bot && !n.hit && !n.missed && t >= n.t) {
@@ -20343,7 +20346,7 @@ function createPlayTest(root, d) {
       const col = NOTE_COLORS[n.lane];
       if (n.l > 0) {
         const al = missed || n.dropped ? 0.25 : n.holding ? 0.95 : 0.7;
-        if (!(sk && sk.drawHold(ctx, n.lane, ox, y - oy, yEnd - oy, k, al))) {
+        if (!(sk && sk.drawHold(ctx, n.lane, ox, oy + (y - strumY), oy + (yEnd - strumY), k, al))) {
           const bw = laneW * 0.28;
           ctx.globalAlpha = al;
           ctx.fillStyle = col;
