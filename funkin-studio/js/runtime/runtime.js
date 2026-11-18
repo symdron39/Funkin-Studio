@@ -9,8 +9,10 @@
    ・軽量化: ・描画は 1280×720 の仮想座標を縮尺する 2D キャンバス描画  ・シェーダーを持つカメラだけ WebGL を通す
      ・画面外 / alpha 0 のものは描かない  ・Tween は 1 本のリストを 1 回なめるだけ
    ============================================================ */
+import { findSound } from "../services/FunkinAssets.js";
 import { HScript, HMap, makeStub } from "./hscript.js";
 import { GLPost, GLSL_GRAYSCALE } from "./glpost.js";
+import { FlxRuntimeShader, shaderInit, shaderMethods, makeAdjustColorShader } from "./shader.js";
 import { loadImage, parseSparrowXml } from "../states/stage/sparrowAtlas.js";
 
 const LAYER_MAX_W = 1280; // フィルターを掛けるカメラの絵の最大幅(px)
@@ -150,6 +152,18 @@ class FlxObject extends FlxBasic {
     this.antialiasing = true;
     this.width = 0;
     this.height = 0;
+    this.velocity = new Pt(0, 0);
+    this.acceleration = new Pt(0, 0);
+  }
+  /** velocity / acceleration の積分（ランタイムが毎フレーム、表示中の物に呼ぶ） */
+  move(dt) {
+    const v = this.velocity,
+      a = this.acceleration;
+    if (!v || !a || (!v.x && !v.y && !a.x && !a.y)) return;
+    v.x += a.x * dt;
+    v.y += a.y * dt;
+    this.x += v.x * dt;
+    this.y += v.y * dt;
   }
   screenCenter(axes = "xy") {
     if (axes === "x" || axes === "xy") this.x = (GAME_W - this.width) / 2;
@@ -188,7 +202,9 @@ export class FlxSprite extends FlxObject {
     this.height = this.fh * Math.abs(this.scale.y);
     this.hb = true;
   }
-  loadGraphic() {} // 画像の読み込みは未対応（スタブ扱い）
+  loadGraphic() {
+    return this; // 画像の読み込みは未対応（チェーンできるよう自分を返す）
+  }
   draw(ctx) {
     if (!this.fw || !this.fh) return;
     const sx = Math.abs(this.scale.x),
@@ -327,6 +343,47 @@ export class FlxCamera {
     if (!force && this.shakeFx) return;
     this.shakeFx = { intensity: Number(intensity), duration: Math.max(0.001, Number(duration)), t0: performance.now(), onComplete };
   }
+  /** FlxCamera.fade(color, duration, fadeIn, onComplete, force)。fadeIn=true は「色 → 透明」 */
+  fade(color = 0xff000000, duration = 1, fadeIn = false, onComplete = null, force = false) {
+    if (!force && this.fadeFx) return;
+    this.fadeFx = { color, duration: Math.max(0.001, Number(duration)), fadeIn: !!fadeIn, t0: performance.now(), onComplete };
+  }
+  /** FlxCamera.flash(color, duration, onComplete, force)。色から透明へ */
+  flash(color = 0xffffffff, duration = 1, onComplete = null, force = false) {
+    if (!force && this.flashFx) return;
+    this.flashFx = { color, duration: Math.max(0.001, Number(duration)), t0: performance.now(), onComplete };
+  }
+  stopFX() {
+    this.fadeFx = this.flashFx = this.shakeFx = null;
+  }
+  /** フェード / フラッシュの重ね色（CSS の色と alpha の配列）。無ければ null */
+  overlays() {
+    const out = [];
+    const css = (c) => {
+      const n = Number(c) >>> 0;
+      return [`rgb(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255})`, (n >>> 24) / 255 || 1];
+    };
+    for (const key of ["fadeFx", "flashFx"]) {
+      const f = this[key];
+      if (!f) continue;
+      const t = (performance.now() - f.t0) / 1000 / f.duration;
+      if (t >= 1 && !f.done) {
+        f.done = true;
+        try {
+          f.onComplete?.();
+        } catch {}
+      }
+      const u = Math.min(1, t);
+      const toClear = key === "flashFx" || f.fadeIn; // 色 → 透明（終わったら消える）。フェードアウトは終わっても色が残る
+      if (t >= 1 && toClear) {
+        if (this[key] === f) this[key] = null;
+        continue;
+      }
+      const [col, a0] = css(f.color);
+      out.push([col, (toClear ? 1 - u : u) * a0]);
+    }
+    return out;
+  }
   /** いまの揺れ（画面 px）。終わったら onComplete を呼んで null */
   shakeOffset(W, H) {
     const s = this.shakeFx;
@@ -457,6 +514,7 @@ export class Runtime {
     this.sounds = new Set();
     this.pos = 0;
     this.modules = new Map();
+    this.stages = []; // いまのステージ用のステージスクリプト（extends Stage）のインスタンス
     this.eventInst = new Map(); // kind → {inst, processOld}
     this.noteKinds = new Map(); // kind 名 → NoteKind のインスタンス（スクリプト）/ 組み込み
     this.liveNotes = []; // いま画面にあるノート（NoteSprite の代役）。getNotes() が返す
@@ -503,6 +561,7 @@ export class Runtime {
       isMinimalMode: false,
       playerStrumline: strumline("PlayState.playerStrumline"),
       opponentStrumline: strumline("PlayState.opponentStrumline"),
+      currentSong: { id: this.opts.songId ?? "", songName: this.opts.songId ?? "" },
       currentChart: { scrollSpeed: 1, characters: this.opts.characters ?? { player: "bf", girlfriend: "gf", opponent: "dad" } },
       add(o) {
         if (o && !this.members.includes(o)) this.members.push(o);
@@ -530,9 +589,15 @@ export class Runtime {
           height: GAME_H,
           elapsed: 1 / 60,
           signals: { postUpdate: { add: (f) => rt.postUpdate.push(f), remove: (f) => (rt.postUpdate = rt.postUpdate.filter((x) => x !== f)) }, preUpdate: { add() {}, remove() {} } },
-          random: { int: (a = 0, b = 1) => a + Math.floor(Math.random() * (b - a + 1)), float: (a = 0, b = 1) => a + Math.random() * (b - a) },
+          random: {
+            int: (a = 0, b = 1) => a + Math.floor(Math.random() * (b - a + 1)),
+            float: (a = 0, b = 1) => a + Math.random() * (b - a),
+            bool: (chance = 50) => Math.random() * 100 < chance,
+            sign: (chance = 50) => (Math.random() * 100 < chance ? 1 : -1),
+          },
           camera: this.cams.camGame,
           cameras: { list: Object.values(this.cams) },
+          sound: { list: { add: (x) => x, remove: (x) => x }, music: null, muted: false, volume: 1 },
         },
         "FlxG",
         stub,
@@ -543,7 +608,23 @@ export class Runtime {
             get songPosition() {
               return rt.pos;
             },
-            bpm: 100,
+            get bpm() {
+              const t = rt.scene?.o?.timing?.();
+              return t ? 60000 / (t.stepToMs(4) - t.stepToMs(0) || 600) : 100;
+            },
+            get beatLengthMs() {
+              const t = rt.scene?.o?.timing?.();
+              return t ? t.stepToMs(rt.lastStep + 4 || 4) - t.stepToMs(rt.lastStep || 0) : 600;
+            },
+            get stepLengthMs() {
+              return this.beatLengthMs / 4;
+            },
+            get currentStep() {
+              return rt.lastStep ?? 0;
+            },
+            get currentBeat() {
+              return Math.floor((rt.lastStep ?? 0) / 4);
+            },
           },
           "Conductor.instance",
           stub,
@@ -566,6 +647,7 @@ export class Runtime {
         {
           font: (f) => f,
           image: (p) => String(p),
+          frag: (p) => String(p), // .frag の中身は Assets.getText が名前で探す
           sound: (p) => String(p), // 実際の読み込みは FunkinSound.load が行う
           music: (p) => String(p),
           getSparrowAtlas: (p) => rt.loadAtlas(String(p)),
@@ -627,7 +709,18 @@ export class Runtime {
           }
         }
       },
-      Assets: { exists: () => false },
+      Assets: {
+        cacheSound: () => {},
+        cacheFlxGraphic: () => {},
+        exists: (p) => rt.fragText(p) != null,
+        getText: (p) => rt.fragText(p) ?? "",
+      },
+      FlxRuntimeShader,
+      AdjustColorShader: (() => {
+        const C = makeAdjustColorShader((k) => rt.fragText(k));
+        Object.assign(C.prototype, shaderMethods);
+        return C;
+      })(),
       // ---- 表示物
       FlxSprite,
       FlxText,
@@ -657,8 +750,13 @@ export class Runtime {
               for (const k of Object.keys(props)) obj[k] = from[k] + (props[k] - from[k]) * e;
             },
           });
+          tw.target = obj;
           rt.tweens.list.push(tw);
           return tw;
+        },
+        cancelTweensOf(obj, fields) {
+          const l = rt.tweens.list;
+          for (let i = l.length - 1; i >= 0; i--) if (l[i].target === obj) l.splice(i, 1);
         },
         num(a, b, duration, o = {}, fn) {
           const tw = new Tween(rt.tweens, {
@@ -777,6 +875,37 @@ export class Runtime {
         },
       },
     };
+    // ステージスクリプト（class X extends Stage { function new() { super('stageId'); } }）。いま読み込んでいるステージの id と同じものだけ動かす
+    const stageNoop = () => null;
+    bases.Stage = {
+      init(inst, args) {
+        inst.stageId = String(args[0] ?? "");
+        inst.stageName = inst.stageId;
+        if (rt.scene && rt.scene.stageId.toLowerCase() === inst.stageId.toLowerCase()) rt.stages.push(inst);
+      },
+      methods: {
+        buildStage: stageNoop, // 本物は JSON から props を作る処理。こちらではシーンが先に作ってあるので何もしない
+        fetchAssetPaths: () => [],
+        getNamedProp(name) {
+          return rt.scene?.propApi(String(name)) ?? null;
+        },
+        getBoyfriend: () => rt.ps.getBoyfriend?.() ?? null,
+        getDad: () => rt.ps.getDad?.() ?? null,
+        getGirlfriend: () => rt.ps.getGirlfriend?.() ?? null,
+        add: (o) => rt.ps.currentStage?.add?.(o),
+        remove: (o) => rt.ps.currentStage?.remove?.(o),
+        insert: (i, o) => rt.ps.currentStage?.insert?.(i, o),
+        refresh: stageNoop,
+        onScriptEvent: stageNoop, onCreate: stageNoop, onDestroy: stageNoop, onUpdate: stageNoop,
+        onBeatHit: stageNoop, onStepHit: stageNoop, onSongStart: stageNoop, onSongEnd: stageNoop, onSongRetry: stageNoop,
+        onCountdownStart: stageNoop, onCountdownStep: stageNoop, onCountdownEnd: stageNoop, onPause: stageNoop, onResume: stageNoop,
+        onNoteIncoming: stageNoop, onNoteHit: stageNoop, onNoteMiss: stageNoop, onNoteHoldDrop: stageNoop,
+        onGameOver: stageNoop, onSongLoaded: stageNoop, onSongEvent: stageNoop,
+      },
+    };
+    // script class の extends FlxRuntimeShader（BuildingEffectShader など）
+    bases.FlxRuntimeShader = { init: (inst, args) => shaderInit(inst, args[0]), methods: shaderMethods };
+    bases.ScriptedStage = bases.Stage;
     bases.ScriptedSongEvent = bases.SongEvent;
     bases.ScriptedModule = bases.Module;
     bases.ScriptedNoteKind = bases.NoteKind;
@@ -784,6 +913,15 @@ export class Runtime {
     bases.NoteKind.methods.getNotes = function (v) { return rt.liveNotes.filter((n) => n.noteData.kind === this.noteKind && (!v || n.visible)); };
     bases.NoteKind.methods.getOtherNotes = function (v) { return rt.liveNotes.filter((n) => n.noteData.kind !== this.noteKind && (!v || n.visible)); };
     this.hs = new HScript({ globals: G, bases, onStub: (p, isSet) => this.warn(isSet ? `${p}（代入）` : `${p}()`) });
+  }
+  /** Assets.getText(Paths.frag('名前')): 名前（フォルダ・拡張子・大文字小文字・- _ のちがいは無視）で .frag のテキストを返す */
+  fragText(p) {
+    const k = String(p ?? "").replace(/^.*[\\/]/, "").replace(/\.frag$/i, "").toLowerCase().replace(/[-_ ]/g, "");
+    return this.frags?.[k] ?? null;
+  }
+  /** .frag のテキストを登録（キーは名前をそろえたもの）。mod のもの・本体（funkin.assets）のもの */
+  setFrags(map) {
+    this.frags = { ...(this.frags ?? {}), ...map };
   }
   log(msg) {
     this.logs.push(msg);
@@ -799,7 +937,7 @@ export class Runtime {
       const defs = this.hs.load(text, name);
       for (const c of defs) {
         const root = this.hs.rootBase(c);
-        if (root === "SongEvent" || root === "ScriptedSongEvent" || root === "Module" || root === "ScriptedModule" || root === "NoteKind" || root === "ScriptedNoteKind") {
+        if (root === "SongEvent" || root === "ScriptedSongEvent" || root === "Stage" || root === "ScriptedStage" || root === "Module" || root === "ScriptedModule" || root === "NoteKind" || root === "ScriptedNoteKind") {
           try {
             this.hs.instantiate(c);
           } catch (e) {
@@ -948,8 +1086,9 @@ export class Runtime {
       },
     };
     this.sounds.add(s);
-    const f = this.scene?.o.resolve?.("sound", path, { origin: this.scene.o.origin, quiet: true });
-    if (!f) this.warn(`FunkinSound.load("${path}"): 読み込んだ mod に音声が見つかりません（ベースゲームの音は含まれません）`);
+    let f = this.scene?.o.resolve?.("sound", path, { origin: this.scene.o.origin, quiet: true });
+    if (!f) f = findSound(path); // mod に無ければ funkin.assets の本体の音
+    if (!f) this.warn(`FunkinSound.load("${path}"): 読み込んだ mod に音声が見つかりません（funkin.assets にもありません）`);
     else
       (async () => {
         try {
@@ -1089,7 +1228,7 @@ export class Runtime {
     };
   }
   broadcast(hook, ev = {}) {
-    const all = [...this.eventInst.values()].map((x) => x.inst).concat([...this.modules.values()]);
+    const all = [...this.eventInst.values()].map((x) => x.inst).concat([...this.modules.values()], this.stages);
     for (const inst of all) {
       if (!this.hs.has(inst, hook)) continue;
       try {
@@ -1155,9 +1294,36 @@ export class Runtime {
     for (const e of events) if (e.t < startMs && this.eventInst.get(e.e)?.processOld) this.fire(e);
   }
   /** 毎フレーム: dt = 経過秒、pos = 曲の位置(ms) */
+  /** ステージスクリプトを動かし始める（buildStage → onCreate）。スクリプトを全部読み込み、シーンをつないだあとに 1 回 */
+  startStages() {
+    for (const inst of this.stages) {
+      for (const hook of ["buildStage", "onCreate"]) {
+        try {
+          this.hs.call(inst, hook, hook === "onCreate" ? [{}] : []);
+        } catch (e) {
+          this.fail(`ステージ「${inst.stageId}」.${hook}`, e);
+        }
+      }
+    }
+  }
   update(dt, pos) {
     this.pos = pos;
     this.tweens.update(dt);
+    for (const o of this.ps.members) o?.move?.(dt);
+    // onUpdate（秒）と、ステップ / ビートの変わり目（onStepHit / onBeatHit）。ステージスクリプトやモジュールが受け取る
+    if (this.stages.length || this.modules.size) {
+      this.broadcast("onUpdate", { elapsed: dt, cancel() {}, eventCanceled: false });
+      const tm = this.scene?.o?.timing?.();
+      if (tm && pos >= 0) {
+        const step = Math.floor(tm.msToStep(pos));
+        if (this.lastStep === undefined || step < this.lastStep) this.lastStep = step;
+        while (this.lastStep < step) {
+          this.lastStep++;
+          this.broadcast("onStepHit", { step: this.lastStep });
+          if (this.lastStep % 4 === 0) this.broadcast("onBeatHit", { beat: this.lastStep / 4 });
+        }
+      }
+    }
     this.updateCustom(pos);
     for (const t of [...this.timers]) t.step(dt);
     for (const f of this.postUpdate.slice()) {
@@ -1242,6 +1408,14 @@ export class Runtime {
       ctx.restore();
       draw.end?.(cam.name, ctx);
       if (shk) ctx.restore();
+      for (const [col, a] of cam.overlays()) {
+        if (a <= 0.002) continue;
+        ctx.save();
+        ctx.globalAlpha = a;
+        ctx.fillStyle = col;
+        ctx.fillRect(ox, oy, GAME_W * k, GAME_H * k);
+        ctx.restore();
+      }
       if (shaders.length) {
         let src = ctx.canvas;
         for (const sh of shaders) {

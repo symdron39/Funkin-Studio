@@ -1,0 +1,86 @@
+/* Funkin' Studio | FNF Theme（V-Slice のエディタ風: 暗いグレー + 黄色の強調 + VCR フォント）
+   Customize the variables below. Loaded after the base/layout CSS. */
+:root {
+  color-scheme: dark;
+  --bg: #181818;
+  --panel: #262626;
+  --line: #4d4d4d;
+  --txt: #f4f4f4;
+  --muted: #b5b5b5;
+  --accent: #ffd93d;
+  --studio-button: #303030;
+  --studio-button-hover: #444444;
+  --studio-important: #d6336c;
+  --studio-important-hover: #e8457c;
+  --studio-important-shadow: #8a1f48;
+  --studio-canvas: #d8dce2;
+}
+body { background: var(--bg); color: var(--txt); }
+.panel { background: var(--panel); border-color: var(--line); box-shadow: 0 2px 8px rgba(0,0,0,.4); }
+h1,h2,h3 { color: var(--txt); }
+small,.tiny,label,#status,.studio-section-note { color: var(--muted); }
+input,select,textarea,button { color: var(--txt); background: #303030; border-color: #5c5c5c; }
+input::placeholder,textarea::placeholder { color: #9a9a9a; }
+button { background: var(--studio-button); color: #fff; transition: background-color .12s ease,border-color .12s ease; }
+button:hover:not(:disabled) { background: var(--studio-button-hover); border-color: #ffd93d; }
+button:active:not(:disabled) { background: #1a1a1a; }
+button:disabled { opacity: .52; cursor: not-allowed; }
+button.primary,.primary,.studio-button { background: var(--studio-important); color: #fff; border-color: #a82557; box-shadow: 0 1px 0 var(--studio-important-shadow); border-radius: 4px; font-weight: 700; }
+button.primary:hover:not(:disabled),.primary:hover:not(:disabled),.studio-button:hover:not(:disabled) { background: var(--studio-important-hover); color: #fff; border-color: #ff7aa8; }
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible { outline: 3px solid #ffd93d; outline-offset: 2px; }
+.item.active { background: #4a4a4a; color: #fff; }
+.item:hover { background: #3b3b3b; color: #fff; }
+.sprite-tile,.spTile { background: #303030; border-color: var(--line); color: var(--txt); }
+.sprite-tile.selected,.spTile.active { background: #4a4a4a; border-color: #ffd93d; }
+.sprite-tile canvas { background: var(--studio-canvas); }
+#studioHud { background: rgba(20,20,20,.98); border-color: var(--line); box-shadow: 0 2px 12px rgba(0,0,0,.5); }
+#langMenu { background: var(--panel); border-color: var(--line); }
+#studioHome,#funkinWelcome,#renderWelcome { background: #181818; }
+#studioHome .welcome-inner,#funkinWelcome .welcome-inner,#renderWelcome .welcome-inner { background: #262626; border: 1px solid var(--line); border-radius: 4px; padding: clamp(20px,4vw,34px); box-shadow: 0 14px 34px rgba(0,0,0,.5); }
+#studioHome .welcome-inner { max-width: 730px; }
+#studioHome h1 { font-size: clamp(24px,4vw,32px); letter-spacing: -.025em; }
+.render-choice { background: var(--studio-important); border: 1px solid #a82557; border-radius: 4px; min-height: 112px; gap: 9px; box-shadow: 0 1px 0 var(--studio-important-shadow); }
+.render-choice:hover:not(:disabled) { background: var(--studio-important-hover); border-color: #ff7aa8; }
+.render-choice strong { color: #fff; }
+.render-choice small { color: #ffd1e0; }
+.studio-files,.studio-display-options,.studio-inspector-group { background: #1f1f1f; border-color: var(--line); }
+.studio-files > summary,.studio-display-options > summary,.studio-inspector-group > summary { background: #303030; color: var(--txt); }
+.studio-files[open] > summary,.studio-inspector-group[open] > summary { border-color: var(--line); }
+.studio-canvas-wrap { background: var(--studio-canvas); border: 1px solid #6a6a6a; }
+/* Canvas backgrounds affect preview only, not exported artwork. */
+#stage,#spCanvas,#symCanvas,#offCanvas { background: var(--studio-canvas) !important; background-image: none !important; border: 1px solid #6a6a6a; }
+#animateWorkspace,#sparrowWorkspace,#offsetWorkspace { gap: 16px; }
+#layers { background: #1f1f1f; border-color: var(--line); }
+#timeline { accent-color: #ffd93d; }
+@media (max-width: 800px) {
+  #animateWorkspace,#sparrowWorkspace,#offsetWorkspace { gap: 10px; }
+  #studioHome .welcome-inner { max-height: 90dvh; overflow: auto; }
+}
+@media (max-width: 520px) {
+  #studioHome,#funkinWelcome,#renderWelcome { padding: 12px; }
+  #studioHome .welcome-inner,#funkinWelcome .welcome-inner,#renderWelcome .welcome-inner { padding: 20px; }
+  .render-choice { min-height: 90px; }
+  #studioHud button { min-height: 36px; }
+}
+
+/* ---------- フォント: 英数字は VCR OSD Mono（funkin.assets から services/uiFont.js が読み込む）、日本語は端末の等幅フォント ---------- */
+:root {
+  --font-ui: "FNF VCR", "VCR OSD Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Noto Sans Mono CJK JP", "Osaka-Mono", "BIZ UDGothic", "MS Gothic", monospace;
+}
+html, body, button, input, select, textarea, summary { font-family: var(--font-ui); }
+body { font-size: 14px; letter-spacing: 0; }
+h1, h2, h3, button, .render-choice strong, #studioHud { font-weight: 700; }
+h1 { text-transform: none; }
+/* ---------- 形: 角を立てる・影はぼかさずに落とす（FNF のメニューの雰囲気） ---------- */
+.panel, #studioHud, #langMenu, .studio-files, .studio-display-options, .studio-inspector-group, #layers { border-radius: 2px; }
+button, input, select, textarea { border-radius: 2px; border-width: 1px; }
+button:not(:disabled):active { transform: translateY(1px); }
+button.primary, .primary, .studio-button, .render-choice { box-shadow: 0 2px 0 var(--studio-important-shadow); }
+.panel { box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.45); }
+h2 { color: var(--accent); text-transform: uppercase; letter-spacing: 0.04em; }
+.fnfTitle h2.fnfTitleText { margin: 0; padding: 0; font-size: 13px; text-transform: none; letter-spacing: 0; }
+#timeline, input[type="range"], input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+::selection { background: var(--accent); color: #111; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #555; border-radius: 0; }
+::-webkit-scrollbar-track { background: #1a1a1a; }

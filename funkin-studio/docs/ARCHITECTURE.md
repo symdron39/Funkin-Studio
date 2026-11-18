@@ -295,3 +295,31 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 ### v3.23.2 — プレイテストのロングノーツ（ダウンスクロール / 相手側）
 - `NoteStyle.drawHold` の yHead / yTail は「strumline 左上の y + 流れた距離」。playtest は `y - oy`（= 距離 + 57k）を渡していて、受け皿が画面上端付近にあるアップスクロールでだけ偶然合っていた → `oy + (y - strumY)` に修正（ダウンスクロールで胴体が受け皿から大きく離れていた）。
 - 相手側のロングノーツは、終わっても `holding` が true のまま残り、受け皿の位置に描かれ続けていた → 終了時に `holding = false`。
+
+### v3.24 — 毎回取得 / ブランチ切替 / ステージスクリプトとシェーダー
+- 本体アセットは保存しない。プレイテスト開始のたびに `FunkinAssets.reset(ws)`（取得バイト列を破棄・Workspace の remote ファイルを `dropRemote()`）→ `refreshIndex()` → `noteStyles.dropBuiltin()` で作り直す。取得は `Promise.all` で並列（`ensureFor` / `ensureStage` / `ensureCharacter`）。`cache: "no-store"`。
+- ブランチ: `BRANCHES` = `main`（0.8 配置）/ `preview/public-playtest`（0.9 配置）。ホームの `#homeBranch`。配置ごとにパス規則が違う（`rp()` で preload/shared を外す）。ツリー API のブランチ名は `encodeURIComponent`。
+- ステージスクリプト: `stageScripts(id)` が main の .hxc と、そこから（推移的に）クラス名で参照されている props / シェーダー .hxc、`Paths.frag()` の .frag だけを取得。補助が取れなくても他は動かす。Runtime は `bases.Stage / ScriptedStage / FlxRuntimeShader` を持ち、`startStages()` と onUpdate / onStepHit / onBeatHit を呼ぶ。
+- シェーダー: `runtime/shader.js`（FlxRuntimeShader の代役）＋ `runtime/glpost.js`（OpenFL の .frag を WebGL2 に翻訳、prop ごとに適用）。
+- 効果音: `FunkinAssets.findSound(name)`（`sounds/*.ogg` を索引に追加）。`Runtime.makeSound` は mod に無ければ本体から取る。0.9 はリポジトリパスそのまま。
+- 未対応: HScript の getter/setter 構文など（PicoBloodPool 等のスクリプト）は解析エラーとして報告される。
+
+### v3.25 — 実スクリプト互換 / FNF テーマ / 描画の最適化
+- **0.9 の全 .hxc（124 本）をパースできる**ようにした（実リポジトリの preview/public-playtest で検証）。hscript.js: アロー関数の本体 `{ … }` / `return x` / 式（`arrowBody()`）、条件付きコンパイル `#if … #else … #end`（FEATURE_* は常に偽）、`var x(default, set):T`（アクセサは無視してふつうの変数）、`import a.b.C as D`（別名 → `aliases`）。
+- ランタイム: `FlxG.random.bool/sign`、`FlxCamera.fade/flash/stopFX`（`overlays()` で重ね描き）、`FlxTween.cancelTweensOf`、`FlxObject.velocity/acceleration`（`move(dt)`）、stage prop の `velocity/active`、`Assets.cacheSound/cacheFlxGraphic`、`FlxG.sound.list`、`PlayState.currentSong.id`、`loadGraphic()` がチェーンできる。
+- ネイティブシェーダー: `AdjustColorShader`（`runtime/shader.js makeAdjustColorShader`。.frag は `NATIVE_FRAGS` で自動取得）。未実装: OverlayBlend / RuntimeRainShader / WiggleEffectRuntime / BlurFilter / SserafimShader（追加テクスチャが要る）、FlxTiledSprite / FunkinTiledSprite / FunkinSkewedSprite。
+- 効果音: `FunkinAssets.findSound()`（`sounds/*.ogg` を索引に追加）。
+- テーマ: `css/theme-fnf.css`（theme-navy を置き換え。暗いグレー + 黄色の強調 + 角を立てた枠）。英数字フォントは `services/uiFont.js` が funkin.assets の VCR OSD Mono（main: `fonts/vcr.ttf` / 0.9: `ui/fonts/VCR OSD Mono.ttf`）を FontFace で取得。日本語は端末の等幅フォント（`--font-ui` の後ろの候補）。フォントは同梱しない。
+- ウォーターマーク: `core/appInfo.js` の `SUPPORTED_VERSIONS = "0.8.6-0.8.8 With 0.8.9+"`（書き出す generatedBy にも反映）。
+- 最適化: シェーダーを掛けた prop は、フレーム・uniform・大きさが前回と同じなら出力を使い回す（`drawPropShaded` の `shadeMemo`。毎フレーム変わるものは 3 回外れたら使い回しをやめる）。ソフトウェア描画の計測で 1 フレーム 99ms → 34ms。
+
+### v3.26 — Chart / Stage Editor を FNF 本体のエディタの配置に
+- 本物の構成（`Funkin.assets/exclude/ui/editors/**`）: `main-view.xml` = 「上: メニューバー / 中: 空き / 下: playbar（Stage は bottom-bar）」、操作パネルは `toolboxes/*.xml` のドラッグできるウィンドウ。メニューは Chart: File / Edit / View / Audio / Test / Window / Help、Stage: File / Edit / View / Windows / Help。
+- 新しい共有部品 `ui/FnfShell.js` + `css/fnf-shell.css`。既存の Hud 画面（HudPanels）に後から被せる:
+  - メニューバー: `{ text, items: [{ text, click: "#id" | run | toggle: "panel", key, check }] }`。クリック項目は既存ボタンを `.click()` するだけなので、機能・id・イベントは変わらない。ホバーで隣のメニューへ切替、Esc / 外クリックで閉じる、✓ は HudPanels の開閉と連動。
+  - ツールボックス: `.hudDock` の `.hudPanel` をタイトルバー付きの浮動ウィンドウにする（ドラッグ / 前面へ / × で閉じる / リサイズ / 位置とサイズを localStorage に記憶 / 画面外に出たら戻す）。id 付きの `<h2>`（`stgPropsTitle` など）はタイトルバーへ移す。
+  - 旧ツールバーは `.fnfLegacyBar`（隠す）。パネル開閉ボタンだけ残す（HudPanels が使う）。
+- Chart: 下は `.fnfPlaybar`（シークバー / 時間・小節・step / `|<` `<<` `▶` `>>` `>|`（1 小節戻る・進む）/ ツール・Var・Diff・Snap・ズーム・Test）。初期表示は Notes & Events のみ。プレイテスト中はメニューバーとウィンドウを隠す。
+- Stage: 下は `.fnfStatusbar`（選択情報 + ズーム / 全体 / 原点 / 移動）。
+- 右下の共通ウィジェット（ローカル復元・カラーテスト）は playbar を避けて上へ。
+- 未適用: Character Editor / Note Editor（まだ従来の Hud のまま）。FNF のエディタの Help メニュー、コマンドパレット、右クリックのコンテキストメニューも未実装。

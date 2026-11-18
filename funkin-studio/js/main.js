@@ -24,6 +24,7 @@ import { startAutosave } from "./services/Autosave.js";
 import { startColorLab } from "./services/ColorLab.js";
 import { startMobileFilePicker } from "./services/MobileFilePicker.js";
 import { Hud } from "./ui/Hud.js";
+import { loadUiFont } from "./services/uiFont.js";
 import { Workspace } from "./services/Workspace.js";
 
 import { HomeState } from "./states/HomeState.js";
@@ -38,6 +39,7 @@ import { StageEditorState } from "./states/StageEditorState.js";
 import { ChartEditorState } from "./states/ChartEditorState.js";
 import { NoteEditorState } from "./states/NoteEditorState.js";
 
+loadUiFont(); // 英数字フォント（VCR）を funkin.assets から。待たずに進める
 const app = new App(document.getElementById("app"));
 
 // 共有パーツ。作る順番に意味がある: HUD（言語ボタンを持つ）→ 翻訳の開始

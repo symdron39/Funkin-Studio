@@ -22,6 +22,7 @@ import { exportMod } from "../../services/ModExport.js";
 import { registryPath } from "../../services/ModPack.js";
 import { Viewport, isTextEntry } from "../../ui/Viewport.js";
 import { HudPanels } from "../../ui/HudPanels.js";
+import { FnfShell } from "../../ui/FnfShell.js";
 import { defaultStage, normalizeStage, newProp, newRect, serializeStage, clone, round3, CHAR_IDS, CHAR_LABEL, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas } from "./stageData.js";
 import { loadImage, parseSparrowXml, parsePackerText, getImageCap, setImageCap } from "./sparrowAtlas.js";
 import { normAsset, infoOf, infoOfDir, setAssetNoteSink, openModZip, summarize } from "../../services/ModPack.js";
@@ -49,10 +50,21 @@ export function mountStageEditor(state) {
     }),
     panels = new HudPanels(state.root, {
       storageKey: "stage",
-      defaults: ["files", "layers", "props"],
-      narrowDefaults: ["layers"],
+      defaults: ["layers", "props", "statusbar"],
+      narrowDefaults: ["statusbar"],
       narrowExclusive: ["files", "layers", "props", "stage"],
     });
+  // FNF 本体の Stage Editor 風: 上にメニューバー、パネルは浮動ツールボックス、下にバー
+  new FnfShell(state.root, panels, {
+    key: "stage",
+    titles: { files: "File / ファイル", layers: "Objects（レイヤー）", props: "Object Properties（プロパティ）", stage: "Stage Data Settings（ステージ全体）" },
+    menus: [
+      { text: "File", items: [{ text: "新規ステージ", click: "#stgNew" }, { text: "ステージ / アセットを開く…", toggle: "files" }, "-", { text: "stage.json 保存", click: "#stgSave" }] },
+      { text: "Edit", items: [{ text: "元に戻す", key: "Ctrl+Z", click: "#hudUndo" }, { text: "やり直す", key: "Ctrl+Y", click: "#hudRedo" }, "-", { text: "色矩形を追加", click: "#stgAddRect" }, { text: "複製", key: "Ctrl+D", click: "#stgDup" }, { text: "削除", key: "Del", click: "#stgDel" }, "-", { text: "手前へ", click: "#stgUp" }, { text: "奥へ", click: "#stgDown" }] },
+      { text: "View", items: [{ text: "ズームイン", click: "#stgZoomIn" }, { text: "ズームアウト", click: "#stgZoomOut" }, { text: "全体を表示", key: "F", click: "#stgFit" }, { text: "原点へ", click: "#stgResetView" }, "-", { text: "移動ツール", click: "#stgPanTool", check: () => $("stgPanTool").getAttribute("aria-pressed") === "true" }] },
+      { text: "Windows", items: [{ text: "Objects", toggle: "layers" }, { text: "Object Properties", toggle: "props" }, { text: "Stage Data Settings", toggle: "stage" }, { text: "File", toggle: "files" }] },
+    ],
+  });
 
   let doc = defaultStage(); // いま編集しているステージ JSON
   const chars = { bf: new StageCharacter("bf"), dad: new StageCharacter("dad"), gf: new StageCharacter("gf") };

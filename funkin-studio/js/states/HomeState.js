@@ -7,7 +7,7 @@
      ② create() でボタンを配線する
    ============================================================ */
 import { getIncludeOriginal, setIncludeOriginal } from "../services/ModExport.js";
-import { isEnabled as isRemoteOn, setEnabled as setRemoteOn, refreshIndex } from "../services/FunkinAssets.js";
+import { isEnabled as isRemoteOn, setEnabled as setRemoteOn, refreshIndex, BRANCHES, getBranch, setBranch, reset as resetRemote } from "../services/FunkinAssets.js";
 import { State } from "../core/State.js";
 
 export class HomeState extends State {
@@ -40,6 +40,7 @@ export class HomeState extends State {
             <button id="homeModClear" type="button">空にする</button>
           </div>
           <label class="tiny" title="読み込んだ mod に無いキャラ・ステージ・ノートスタイル（と画像）を、FunkinCrew/Funkin.assets（GitHub）から必要な分だけ取得します。取得したものは書き出す zip には含めません"><input id="homeRemote" type="checkbox" /> mod に無い本体アセットを GitHub（Funkin.assets）から取得する</label>
+          <label class="tiny" title="取得元のブランチ。main = 0.8 系の配置、preview/public-playtest = 0.9 プレビューの配置。変えると、前回取得したものを捨てて取り直します">取得するブランチ <select id="homeBranch"></select></label>
           <label class="tiny"><input id="homeModWhole" type="checkbox" /> 書き出し時に、読み込んだ元の mod 全体も zip に含める</label>
           <p id="homeModInfo" class="tiny">まだ読み込んでいません。</p>
         </div>
@@ -79,7 +80,16 @@ export class HomeState extends State {
       render();
     };
     this._render = render;
-    refreshIndex(); // 本体アセットの一覧を新しくする（1 日 1 回。失敗しても同梱の一覧で動く）
+    refreshIndex(); // 本体アセットの一覧を新しくする（保存はしない。失敗しても同梱の一覧で動く）
+    const br = q("#homeBranch");
+    for (const b of BRANCHES) br.append(new Option(b.label, b.id));
+    br.value = getBranch();
+    br.onchange = () => {
+      setBranch(br.value);
+      resetRemote(this.app.workspace); // 前回のブランチから取得したものは捨てる
+      this.app.noteStyles?.dropBuiltin?.();
+      refreshIndex();
+    };
     q("#homeRemote").checked = isRemoteOn();
     q("#homeRemote").onchange = (e) => setRemoteOn(e.target.checked);
     q("#homeModWhole").checked = getIncludeOriginal();

@@ -76,6 +76,7 @@ export function startAutosave(app) {
   // ============================================================
   // 画面の右下に固定表示するパネルを JS で作る（保存状況の表示と、復元・今すぐ保存・削除・閉じるボタン）。
   const panel = document.createElement("div");
+  panel.id = "fsRecoveryPanel";
   panel.style.cssText =
     "position:fixed;bottom:12px;right:12px;z-index:9999;background:#242635;color:#fff;border:1px solid #777;border-radius:12px;padding:10px;max-width:min(340px,85vw);font:12px sans-serif;box-shadow:0 3px 16px #0009";
   panel.innerHTML =

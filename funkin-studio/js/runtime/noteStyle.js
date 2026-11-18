@@ -289,6 +289,18 @@ export class NoteStyleSet {
    * 標準の noteStyle（"funkin" / "pixel"）を登録する。すでにあれば（mod の funkin.json など）何もしない。
    * まず本体アセット（FunkinCrew/Funkin.assets）から JSON と画像を取ってくる。取れなければ false を返し、描画側は矢印を描く（ページに本体の画像は内蔵しない）。画像のキーは images/…（ルート以降のパス）、origin は "builtin:<id>"
    */
+  /** 本体アセットから取得した標準スタイル（origin が "builtin:"）を全部捨てる（毎回取り直すため）。mod の noteStyle は残す */
+  dropBuiltin() {
+    for (const [id, o] of [...this.origins]) {
+      if (!String(o).startsWith("builtin:")) continue;
+      this.raw.delete(id);
+      this.origins.delete(id);
+      this.styles.delete(id);
+    }
+    for (const m of [this.images, this.xmls]) for (const [k, v] of [...m]) if (String(v.origin).startsWith("builtin:")) m.delete(k);
+    this._loading?.clear();
+    this.version++;
+  }
   loadBuiltin(id) {
     if (this.raw.has(id)) return Promise.resolve(false);
     this._loading ??= new Map();

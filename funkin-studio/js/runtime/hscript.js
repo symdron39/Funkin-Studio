@@ -6,13 +6,52 @@
      var / final、if / for(in) / while / do-while / switch / try-catch / throw / return / break / continue、
      関数式 function(){} と (a,b)->x、匿名オブジェクト、配列、Map リテラル ['a'=>1]、配列内包 [for(..) ..]、
      文字列補間 'x=$x ${y}'、?? ?. ??= ... 範囲 a...b、new、cast、型注釈（読み飛ばし）。
-   ・非対応: マクロ、プロパティの get/set、enum の引数付きパターン、正規表現リテラル。
+   ・条件付きコンパイル #if…#end は常に偽（#else 側を使う）。var x(default,set) は ふつうの変数。
+   ・非対応: マクロ、プロパティの get/set 関数の呼び出し、enum の引数付きパターン、正規表現リテラル。
      パースできない場合は行番号付きのエラーを出す。
    ・ホスト側（runtime.js）が globals（FlxG・PlayState など）と bases（SongEvent・Module）を渡す。
    ・知らない名前は「スタブ」（何を呼んでも落ちない代役）になり、未対応 API として記録される。
    ============================================================ */
 
 export class HScriptError extends Error {}
+/** 条件付きコンパイル（#if FEATURE_X … #else … #end）。このランタイムでは FEATURE_* などはすべて「無い」扱い。行数は保つ */
+function preprocess(src) {
+  if (!src.includes("#")) return src;
+  const out = [];
+  const stack = []; // { on: 今の枝が有効か, done: すでにどれかの枝が有効だったか, parent: 外側が有効か }
+  const evalCond = (c) => {
+    c = c.trim();
+    if (c.startsWith("!")) return !evalCond(c.slice(1));
+    return false;
+  };
+  const live = () => stack.every((f) => f.on);
+  // 条件は「(…)」か「!?名前 (&&|\|\|) …」だけ。それ以降は本文
+  const re = /#(if|elseif|else|end)\b((?<=#(?:if|elseif)\b)(?:\s*\([^)\n]*\)|\s*!?\w+(?:\s*(?:&&|\|\|)\s*!?\w+)*))?/g;
+  let last = 0,
+    m;
+  const emit = (text) => out.push(live() ? text : text.replace(/[^\n]/g, ""));
+  while ((m = re.exec(src))) {
+    emit(src.slice(last, m.index));
+    last = m.index + m[0].length;
+    const kind = m[1],
+      rest = m[2] || "";
+    if (kind === "if") {
+      const on = evalCond(rest.replace(/^\s*\(|\)\s*$/g, ""));
+      stack.push({ on, done: on });
+    } else if (kind === "elseif") {
+      const f = stack[stack.length - 1];
+      if (f) {
+        f.on = !f.done && evalCond(rest.replace(/^\s*\(|\)\s*$/g, ""));
+        f.done ||= f.on;
+      }
+    } else if (kind === "else") {
+      const f = stack[stack.length - 1];
+      if (f) f.on = !f.done;
+    } else stack.pop();
+  }
+  emit(src.slice(last));
+  return out.join("");
+}
 class ThrowSignal {
   constructor(v) {
     this.value = v;
@@ -233,7 +272,7 @@ const MODS = new Set(["public", "private", "static", "override", "inline", "fina
 
 class Parser {
   constructor(src, baseLine = 0) {
-    this.toks = lex(src);
+    this.toks = lex(preprocess(src));
     if (baseLine) for (const t of this.toks) t.line += baseLine - 1;
     this.p = 0;
   }
@@ -285,7 +324,14 @@ class Parser {
     while (this.cur.t !== "eof") {
       this.skipMeta();
       if (this.isId("import") || this.isId("using") || this.isId("package")) {
-        while (!this.is(";") && this.cur.t !== "eof") this.p++;
+        const isImport = this.isId("import");
+        let last = null;
+        while (!this.is(";") && this.cur.t !== "eof") {
+          // import a.b.C as D;  →  D は C の別名
+          if (isImport && last && this.cur.t === "id" && this.cur.v === "as" && this.peek().t === "id") (this.aliases ??= {})[this.peek().v] = last;
+          if (this.cur.t === "id") last = this.cur.v;
+          this.p++;
+        }
         this.eat(";");
         continue;
       }
@@ -404,7 +450,14 @@ class Parser {
       if (this.isId("var") || this.isId("final")) {
         this.p++;
         const fname = this.ident();
-        if (this.is("(")) this.err("プロパティの get/set は未対応です");
+        if (this.is("(")) {
+          // var x(default, set):T — アクセサは使わず、ふつうの変数として扱う（set_x / get_x は呼ばない）
+          while (!this.is(")")) {
+            if (this.cur.t === "eof") this.err("「)」が足りません");
+            this.p++;
+          }
+          this.p++;
+        }
         if (this.eat(":")) this.skipType();
         let init = null;
         if (this.eat("=")) init = this.parseExpr();
@@ -723,6 +776,12 @@ class Parser {
     }
     return e;
   }
+  /** アロー関数の本体: { ... } はブロック、return x は文、それ以外は式（値を返す） */
+  arrowBody() {
+    if (this.is("{")) return this.parseBlock();
+    if (this.isId("return")) return this.parseStmt();
+    return { k: "return", e: this.parseExpr() };
+  }
   /** "(" から対応する ")" の次が "->" なら、アロー関数 */
   isArrowAhead() {
     let depth = 0,
@@ -761,7 +820,7 @@ class Parser {
         if (this.isArrowAhead()) {
           const params = this.parseParams();
           this.expect("->");
-          return { k: "func", params, body: { k: "return", e: this.parseExpr() }, line };
+          return { k: "func", params, body: this.arrowBody(), line };
         }
         this.p++;
         const e = this.parseExpr();
@@ -821,7 +880,7 @@ class Parser {
       // x -> expr（引数 1 個のアロー）
       if (this.is("->")) {
         this.p++;
-        return { k: "func", params: [{ name: t.v, def: null }], body: { k: "return", e: this.parseExpr() }, line };
+        return { k: "func", params: [{ name: t.v, def: null }], body: this.arrowBody(), line };
       }
       return { k: "id", n: t.v, line };
     }
@@ -948,7 +1007,9 @@ export class HScript {
     this.depth = 0;
   }
   load(source, fileName = "") {
-    const defs = new Parser(source).parseModule();
+    const ps = new Parser(source);
+    const defs = ps.parseModule();
+    if (ps.aliases) this.aliases = { ...this.aliases, ...ps.aliases };
     for (const c of defs) {
       c.file = fileName;
       c.staticVals = new Map();
@@ -1198,6 +1259,8 @@ export class HScript {
     }
     const g = this.host.globals;
     if (name in g) return { found: true, v: g[name], global: true };
+    const real = this.aliases?.[name];
+    if (real && real in g) return { found: true, v: g[real], global: true };
     const sib = this.classes.get(name);
     if (sib) return { found: true, v: { __classRef: sib }, global: true };
     return { found: false };

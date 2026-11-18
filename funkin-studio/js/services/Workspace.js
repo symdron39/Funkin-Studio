@@ -71,6 +71,16 @@ export class Workspace {
     this.outputOrigins.clear();
     this.app.events.emit("workspace:changed", { added: 0, cleared: true });
   }
+  /** funkin.assets から取得して足したファイルを全部外す（毎回取り直すため） */
+  dropRemote() {
+    const keep = this.files.filter((f) => !f.remote);
+    if (keep.length === this.files.length) return 0;
+    const n = this.files.length - keep.length;
+    this.files = keep;
+    this.keys = new Set(keep.map((f) => `${relPathOf(f)}|${f.size}|${f.lastModified}`));
+    this.app.events.emit("workspace:changed", { added: 0, dropped: n });
+    return n;
+  }
   /**
    * mod に無いキャラ / ステージ（とその画像）を、本体アセット（FunkinCrew/Funkin.assets）から足す。
    * spec: { stage, characters: {…} | [id…] } → { added, errors }。mod にあるものは触らない

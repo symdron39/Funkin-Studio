@@ -13,6 +13,7 @@
      ・カメラの追従の速さ（lerp 0.04 / 60fps 相当） ・4 拍ごとのズーム量(0.015)と戻り方 ・sing から idle へ戻る時刻
      ・FocusCamera の ease（CLASSIC 以外は簡易な補間）   ・反転したキャラのアニメオフセットの符号
    ============================================================ */
+import { GLPost } from "./glpost.js";
 import { findSpriteAtlas, findAnimateAtlas } from "../states/stage/atlas.js";
 import { StageCharacter, atlasKindOf } from "../states/stage/stageCharacter.js";
 import { loadImage } from "../states/stage/sparrowAtlas.js";
@@ -583,6 +584,17 @@ export class StageScene {
   update(dtMs, pos) {
     const dt = dtMs / 1000;
     this.advanceEvents(pos);
+    // スクリプトが active = true にした prop は、velocity / acceleration で動かす
+    for (const e of this.props) {
+      const a = e.api;
+      if (!a?.active) continue;
+      a.velocity.x += a.acceleration.x * dt;
+      a.velocity.y += a.acceleration.y * dt;
+      if (a.velocity.x || a.velocity.y) {
+        a.x += a.velocity.x * dt;
+        a.y += a.velocity.y * dt;
+      }
+    }
     const tm = this.o.timing?.();
     const stepMs = this.stepMs();
     // ステップごとのダンス（Bopper.onStepHit: step % (danceEvery × 4) == 0）
@@ -727,7 +739,111 @@ export class StageScene {
     ctx.scale(z, z);
     ctx.translate(-FRAME_W / 2 - sx * sf[0], -FRAME_H / 2 - sy * sf[1]);
   }
-  drawProp(ctx, e) {
+  /** シェーダー（FlxRuntimeShader）つきの prop: いったん別のキャンバスに描き、WebGL で .frag を掛けてから置く */
+  drawPropShaded(ctx, e) {
+    const sh = e.shader;
+    const w = Math.max(1, Math.min(2048, Math.ceil(e.w))),
+      h = Math.max(1, Math.min(2048, Math.ceil(e.h)));
+    const p = e.ref ?? e.p;
+    // 結果の使い回し: 絵（フレーム）・大きさ・uniform が前回と同じなら、前回のシェーダー出力をそのまま描く
+    // （静止した prop は GPU への転送もシェーダーも毎フレームは要らない。毎フレーム変わるシェーダーは、3 回続けて外れたら使い回しをやめる）
+    const frame = e.kind === "actor" ? e.actor.frame() || e.refFrame : null;
+    const sig = `${w}|${h}|${p.flipX ? 1 : 0}${p.flipY ? 1 : 0}${p.isPixel ? 1 : 0}|${p.color ?? ""}|${JSON.stringify(sh.uniforms ?? null)}|${sh.glsl.length}`;
+    const memo = (e.shadeMemo ??= { sig: "", frame: null, out: null, miss: 0 });
+    let out = null;
+    if (memo.out && memo.sig === sig && memo.frame === frame) {
+      out = memo.out;
+      memo.miss = 0;
+    } else {
+      if (!e.tmp) e.tmp = document.createElement("canvas");
+      if (e.tmp.width !== w || e.tmp.height !== h) {
+        e.tmp.width = w;
+        e.tmp.height = h;
+      }
+      const c2 = e.tmp.getContext("2d");
+      c2.setTransform(1, 0, 0, 1, 0, 0);
+      c2.clearRect(0, 0, w, h);
+      // 位置・角度・不透明度は最後に掛けるので、ここでは prop の中身だけを真ん中に描く
+      const saved = { position: p.position, angle: p.angle, alpha: p.alpha, blend: p.blend };
+      p.position = [w / 2 - e.w / 2, h / 2 - e.h / 2];
+      p.angle = 0;
+      p.alpha = 1;
+      p.blend = undefined;
+      c2.save();
+      this.drawProp(c2, e, true);
+      c2.restore();
+      Object.assign(p, saved);
+      this.gl ??= new GLPost();
+      sh.onError ??= (m) => this.warn(`シェーダー（${p.name || p.assetPath}）: ${m}`);
+      const res = this.gl.ok && (sh.active ? sh.active() : true) ? this.gl.apply(e.tmp, sh) : null;
+      out = res || e.tmp;
+      const same = memo.sig === sig && memo.frame === frame;
+      memo.sig = sig;
+      memo.frame = frame;
+      memo.miss = same ? 0 : memo.miss + 1;
+      if (res && memo.miss < 3) {
+        // GL の出力は次の prop に上書きされるので、使い回す分はコピーを持つ
+        if (!memo.copy) memo.copy = document.createElement("canvas");
+        if (memo.copy.width !== w || memo.copy.height !== h) {
+          memo.copy.width = w;
+          memo.copy.height = h;
+        }
+        const cc = memo.copy.getContext("2d");
+        cc.clearRect(0, 0, w, h);
+        cc.drawImage(res, 0, 0, w, h);
+        memo.out = memo.copy;
+      } else memo.out = null;
+    }
+    const [cx, cy] = [p.position[0] + e.w / 2, p.position[1] + e.h / 2];
+    ctx.translate(cx, cy);
+    if (p.angle) ctx.rotate((p.angle * Math.PI) / 180);
+    ctx.globalAlpha = Math.max(0, Math.min(1, num(p.alpha, 1)));
+    ctx.globalCompositeOperation = blendToCanvas(p.blend);
+    ctx.drawImage(out, -w / 2, -h / 2, w, h);
+  }
+  /** ステージスクリプトの getNamedProp(name) が返す、prop の操作窓口（x / y / alpha / visible / angle / scale / shader / animation / playAnim） */
+  propApi(name) {
+    const e = this.props.find((p) => p.ref.name === name);
+    if (!e) return null;
+    if (e.api) return e.api;
+    const p = e.ref;
+    const scale = {
+      get x() { return getScale(p)[0]; },
+      set x(v) { p.scale = [Number(v), getScale(p)[1]]; },
+      get y() { return getScale(p)[1]; },
+      set y(v) { p.scale = [getScale(p)[0], Number(v)]; },
+      set: (x, y = x) => (p.scale = [Number(x), Number(y)]),
+    };
+    const play = (n, f) => e.actor?.play(String(n), f !== false);
+    e.api = {
+      get x() { return p.position[0]; },
+      set x(v) { p.position = [Number(v), p.position[1]]; },
+      get y() { return p.position[1]; },
+      set y(v) { p.position = [p.position[0], Number(v)]; },
+      get alpha() { return num(p.alpha, 1); },
+      set alpha(v) { p.alpha = Number(v); },
+      get visible() { return !e.hidden; },
+      set visible(v) { e.hidden = !v; },
+      get angle() { return p.angle || 0; },
+      set angle(v) { p.angle = Number(v); },
+      get width() { return e.w; },
+      get height() { return e.h; },
+      get shader() { return e.shader ?? null; },
+      set shader(v) { e.shader = v || null; },
+      scale,
+      velocity: { x: 0, y: 0 }, // active = true のとき、毎フレーム位置に足される（FlxObject と同じ）
+      acceleration: { x: 0, y: 0 },
+      active: false,
+      animation: { play },
+      playAnim: play,
+      setPosition: (x, y) => (p.position = [Number(x), Number(y)]),
+      destroy() { e.hidden = true; },
+    };
+    return e.api;
+  }
+  drawProp(ctx, e, inner = false) {
+    if (e.hidden && !inner) return;
+    if (e.shader?.glsl && !inner) return this.drawPropShaded(ctx, e);
     const p = e.ref ?? e.p,
       [sx, sy] = getScale(p);
     const ex = e.w,
@@ -912,14 +1028,11 @@ export class StageScene {
       getBoyfriend: () => scene.apiOf("player"),
       getDad: () => scene.apiOf("opponent"),
       getGirlfriend: () => scene.apiOf("girlfriend"),
-      add: (o) => (o?.__char ? scene.addExtra(o.__char) : null),
+      add: (o) => (o?.__char ? scene.addExtra(o.__char) : null), // キャラ以外は Runtime.attachScene が PlayState 側へ振り分ける
       remove: (o) => (o?.__char ? scene.removeExtra(o.__char) : null),
       insert: (_i, o) => (o?.__char ? scene.addExtra(o.__char) : null),
       refresh: () => {}, // 描画のたびに zIndex で並べ直すので何もしなくてよい
-      getNamedProp: (name) => {
-        const e = scene.props.find((p) => p.ref.name === name);
-        return e ? { x: e.ref.position[0], y: e.ref.position[1], alpha: num(e.ref.alpha, 1), visible: true, playAnim: (n, f) => e.actor?.play(String(n), f !== false) } : null;
-      },
+      getNamedProp: (name) => scene.propApi(String(name)),
       getProp: (name) => scene.props.find((p) => p.ref.name === name)?.ref ?? null,
     };
   }

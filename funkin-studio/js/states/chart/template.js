@@ -13,27 +13,14 @@ export const template = `
       <div class="hudLayer" data-all-hidden="false">
         <button id="chtHudEye" class="hudEye" type="button" data-hud-all title="Hud の表示 / 非表示 (H)" aria-label="Hud の表示 / 非表示">👁</button>
 
-        <div class="hudBar" data-hud-panel="bar" data-hud-always>
-          <button type="button" data-hud-toggle="files" data-ja="📁 ファイル" data-en="📁 Files">📁 ファイル</button>
-          <button type="button" data-hud-toggle="song" data-ja="🎵 曲情報" data-en="🎵 Song">🎵 曲情報</button>
-          <button type="button" data-hud-toggle="diff" data-ja="🎚 難易度" data-en="🎚 Difficulty">🎚 難易度</button>
-          <button type="button" data-hud-toggle="timing" data-ja="⏱ BPM" data-en="⏱ BPM">⏱ BPM</button>
-          <button type="button" data-hud-toggle="edit" data-ja="✏ 編集" data-en="✏ Edit">✏ 編集</button>
-          <button type="button" data-hud-toggle="audio" data-ja="🔊 音声" data-en="🔊 Audio">🔊 音声</button>
-          <span class="hudSep"></span>
-          <button id="chtPlayBtn" type="button" title="この難易度をプレイテスト (P)">🎮 プレイテスト</button>
-          <span class="hudSep"></span>
-          <button id="chtToolPlace" type="button" aria-pressed="true" title="配置: クリックでノーツ/イベントを置く・ドラッグで長さ・選択物をドラッグで移動 (1)">✏ 配置</button>
-          <button id="chtToolSelect" type="button" aria-pressed="false" title="選択: ドラッグで範囲選択 (2)">▭ 選択</button>
-          <button id="chtToolPan" type="button" aria-pressed="false" title="スクロール: ドラッグで時間送り（スマホ向け） (3)">✋ 移動</button>
-          <span class="hudSep"></span>
-          <button id="chtZoomOut" type="button" title="縮小">−</button>
-          <button id="chtZoomIn" type="button" title="拡大">＋</button>
-          <label class="chtInline" title="スナップ（←/→ キーでも変更）">スナップ
-            <select id="chtSnap"></select>
-          </label>
-          <span class="hudSep"></span>
-          <span id="chtReadout" class="hudReadout"></span>
+        <!-- 旧ツールバー: パネルの開閉ボタン（HudPanels が使う）だけを残して隠す。操作は上のメニューバー / 下の playbar に移した -->
+        <div class="fnfLegacyBar" data-hud-panel="bar" data-hud-always hidden>
+          <button type="button" data-hud-toggle="files"></button>
+          <button type="button" data-hud-toggle="song"></button>
+          <button type="button" data-hud-toggle="diff"></button>
+          <button type="button" data-hud-toggle="timing"></button>
+          <button type="button" data-hud-toggle="edit"></button>
+          <button type="button" data-hud-toggle="audio"></button>
         </div>
 
         <div class="hudDock hudDockLeft">
@@ -215,16 +202,31 @@ export const template = `
           </aside>
         </div>
 
-        <div class="hudTransport" data-hud-panel="transport">
-          <div class="row">
-            <button id="chtPlay" class="primary" type="button" title="再生 / 一時停止 (Space)">▶</button>
-            <button id="chtStop" type="button" title="先頭へ (Home)">⏮</button>
-            <input id="chtSeek" type="range" min="0" max="1000" step="1" value="0" style="flex:1" title="位置" />
-            <span id="chtTime" class="hudReadout"></span>
-          </div>
-          <div class="row">
-            <label class="chtInline">バリエーション <select id="chtVariation"></select></label>
-            <label class="chtInline">難易度 <select id="chtDifficulty"></select></label>
+        <div class="hudTransport fnfPlaybar" data-hud-panel="transport">
+          <input id="chtSeek" class="fnfSeek" type="range" min="0" max="1000" step="1" value="0" title="位置" />
+          <div class="fnfPlayRow">
+            <div class="fnfPlayL">
+              <span id="chtTime" class="fnfStat"></span>
+              <span id="chtReadout" class="fnfStat"></span>
+            </div>
+            <div class="fnfPlayC">
+              <button id="chtStop" type="button" title="先頭へ (Home)">|&lt;</button>
+              <button id="chtBack" type="button" title="1 小節戻る">&lt;&lt;</button>
+              <button id="chtPlay" class="primary" type="button" title="再生 / 一時停止 (Space)">▶</button>
+              <button id="chtFwd" type="button" title="1 小節進む">&gt;&gt;</button>
+              <button id="chtEnd" type="button" title="最後へ">&gt;|</button>
+            </div>
+            <div class="fnfPlayR">
+              <button id="chtToolPlace" type="button" aria-pressed="true" title="配置: クリックでノーツ/イベントを置く・ドラッグで長さ・選択物をドラッグで移動 (1)">✏ 配置</button>
+              <button id="chtToolSelect" type="button" aria-pressed="false" title="選択: ドラッグで範囲選択 (2)">▭ 選択</button>
+              <button id="chtToolPan" type="button" aria-pressed="false" title="スクロール: ドラッグで時間送り（スマホ向け） (3)">✋ 移動</button>
+              <label class="chtInline" title="バリエーション">Var <select id="chtVariation"></select></label>
+              <label class="chtInline" title="難易度">Diff <select id="chtDifficulty"></select></label>
+              <label class="chtInline" title="スナップ（←/→ キーでも変更）">Snap <select id="chtSnap"></select></label>
+              <button id="chtZoomOut" type="button" title="縮小">−</button>
+              <button id="chtZoomIn" type="button" title="拡大">＋</button>
+              <button id="chtPlayBtn" type="button" title="この難易度をプレイテスト (P)">🎮 Test</button>
+            </div>
           </div>
           <div id="chtHint" class="hudStatus tiny"></div>
         </div>

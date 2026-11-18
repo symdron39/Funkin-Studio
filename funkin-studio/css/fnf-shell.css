@@ -1,0 +1,95 @@
+/* ============================================================
+   fnf-shell.css — FNF 本体のエディタ風の画面枠（ui/FnfShell.js と、各エディタの playbar 用）
+   上: メニューバー / パネル: タイトルバー付きの浮動ツールボックス / 下: playbar
+   ============================================================ */
+.fnfLegacyBar { display: none !important; }
+
+/* ---------- メニューバー ---------- */
+.fnfMenubar {
+  position: absolute; top: 0; left: 0; right: 0; height: 28px; z-index: 100000;
+  display: flex; align-items: stretch; gap: 0; padding: 0 0 0 4px;
+  background: #202020; border-bottom: 1px solid #000; pointer-events: auto;
+}
+.fnfMenu { position: relative; display: flex; }
+.fnfMenuBtn {
+  border: 0; border-radius: 0; background: transparent; color: var(--txt, #eee);
+  padding: 0 12px; font-size: 13px; box-shadow: none;
+}
+.fnfMenuBtn:hover, .fnfMenuBtn.on { background: #3a3a3a; }
+.fnfDrop {
+  position: absolute; top: 100%; left: 0; min-width: 240px; padding: 3px 0; z-index: 30;
+  background: #262626; border: 1px solid #000; box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.5);
+}
+.fnfDrop[hidden] { display: none; }
+.fnfItem {
+  display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+  border: 0; border-radius: 0; background: transparent; color: var(--txt, #eee);
+  padding: 5px 12px 5px 6px; font-size: 13px; box-shadow: none;
+}
+.fnfItem:hover { background: var(--accent, #ffd93d); color: #111; }
+.fnfTick { width: 14px; text-align: center; flex: 0 0 14px; }
+.fnfLabel { flex: 1 1 auto; white-space: nowrap; }
+.fnfKey { opacity: 0.6; font-size: 11px; padding-left: 18px; }
+.fnfSep { height: 1px; margin: 3px 0; background: #3c3c3c; }
+.fnfMenubar .hudEye {
+  position: static; margin-left: auto; width: 28px; height: 28px; border-radius: 0; border: 0;
+  background: transparent; backdrop-filter: none; box-shadow: none; font-size: 14px;
+}
+.fnfMenubar .hudEye:hover { background: #3a3a3a; }
+
+/* ---------- ツールボックス（浮動ウィンドウ） ---------- */
+.fnfShell .hudDock { display: none; } /* パネルは外へ出す。ドックは空 */
+.fnfWin {
+  position: absolute; z-index: 10; display: flex; flex-direction: column; padding: 0;
+  min-width: 220px; min-height: 90px; max-width: calc(100% - 10px);
+  resize: both; overflow: hidden; pointer-events: auto;
+  background: #262626; border: 1px solid #000; border-radius: 0; backdrop-filter: none;
+  box-shadow: 5px 5px 0 rgba(0, 0, 0, 0.5);
+}
+.fnfWin[hidden] { display: none !important; }
+.fnfTitle {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 0 0 0 10px; height: 26px; cursor: move; user-select: none; touch-action: none;
+  background: #3a3a3a; border-bottom: 1px solid #000;
+}
+.fnfTitleText { font-weight: 700; font-size: 13px; text-transform: none; color: var(--accent, #ffd93d); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fnfClose { border: 0; border-radius: 0; width: 28px; height: 26px; padding: 0; background: transparent; box-shadow: none; font-size: 16px; color: var(--txt, #eee); }
+.fnfClose:hover { background: #d6336c; color: #fff; }
+.fnfBody { flex: 1 1 auto; overflow: auto; padding: 10px 12px 12px; scrollbar-width: thin; }
+.fnfBody > h3:first-child { margin-top: 0; }
+
+/* ---------- 下の playbar ---------- */
+.fnfPlaybar {
+  left: 0 !important; right: 0; bottom: 0 !important; width: auto !important; padding: 0; z-index: 6;
+  background: #202020; border: 0; border-top: 1px solid #000; border-radius: 0; backdrop-filter: none; box-shadow: none;
+}
+.fnfSeek { display: block; width: 100%; height: 14px; margin: 0; padding: 0; cursor: pointer; }
+.fnfPlayRow { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 10px; flex-wrap: wrap; }
+.fnfPlayL, .fnfPlayC, .fnfPlayR { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.fnfPlayL { flex: 1 1 240px; }
+.fnfPlayR { flex: 1 1 360px; justify-content: flex-end; }
+.fnfStat { font-variant-numeric: tabular-nums; font-size: 12px; padding: 2px 8px; background: #151515; border: 1px solid #000; white-space: nowrap; }
+.fnfPlaybar button { border-radius: 0; padding: 3px 10px; min-width: 34px; }
+.fnfPlaybar select { border-radius: 0; padding: 2px 4px; max-width: 8.5em; }
+.fnfPlaybar .chtInline { margin: 0; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; }
+.fnfPlaybar button[aria-pressed="true"] { background: var(--accent, #ffd93d); color: #111; border-color: #000; }
+.fnfPlaybar .hudStatus { padding: 0 10px 3px; margin: 0; max-height: 2.6em; }
+
+/* 画面が狭いときは、メニューバーを横スクロールにして、ウィンドウは画面幅いっぱいに */
+@media (max-width: 700px) {
+  .fnfMenubar { overflow-x: auto; }
+  .fnfWin { left: 4px !important; width: calc(100% - 8px) !important; }
+}
+
+/* FNF 風の画面では、右下に固定表示される共通の小物（ローカル復元・カラーテスト）を playbar の上へ */
+body:has(.fnfShell:not([hidden])) #fsRecoveryPanel { bottom: 104px !important; opacity: 0.92; }
+body:has(.fnfShell:not([hidden])) #colorLabToggle { bottom: 104px !important; right: auto !important; left: 10px !important; }
+body:has(.fnfShell:not([hidden])) #colorLabPanel { bottom: 150px !important; right: auto !important; left: 10px !important; }
+.fnfPlaybar input[type="number"] { width: 78px; flex: 0 0 auto; border-radius: 0; padding: 3px 6px; }
+.fnfStatusbar .fnfPlayRow { min-height: 40px; }
+/* プレイテスト中は、メニューバーとウィンドウを隠してゲーム画面だけにする */
+.fnfShell:has(#chtPlayRoot:not([hidden])) .fnfMenubar,
+.fnfShell:has(#chtPlayRoot:not([hidden])) .fnfWin,
+.fnfShell:has(#chtPlayRoot:not([hidden])) .fnfPlaybar { display: none !important; }
+body:has(#chtPlayRoot:not([hidden])) #fsRecoveryPanel { bottom: 12px !important; }
+body:has(#chtPlayRoot:not([hidden])) #colorLabToggle { bottom: 14px !important; left: auto !important; right: 14px !important; }

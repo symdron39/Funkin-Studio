@@ -17,6 +17,7 @@ import { exportMod } from "../../services/ModExport.js";
 import { detectLayout, songDirOf, songAudioDirOf } from "../../services/ModPack.js";
 import { isTextEntry } from "../../ui/Viewport.js";
 import { HudPanels } from "../../ui/HudPanels.js";
+import { FnfShell } from "../../ui/FnfShell.js";
 import {
   DEFAULT_VARIATION, SNAP_QUANTS, BASE_QUANT_INDEX, STRUMLINE_SIZE, STEPS_PER_BEAT, DIR_NAMES, EVENT_SCHEMAS, eventKinds, isCustomEvent, registerEventSchema, unregisterEventSchema, eventTitle, defaultEventValue,
   defaultMetadata, defaultChart, normalizeMetadata, normalizeChart, serializeMetadata, serializeChart, Timing, clone, round3,
@@ -48,9 +49,28 @@ export function mountChartEditor(state) {
     ctx = canvas.getContext("2d");
   const panels = new HudPanels(state.root, {
     storageKey: "chart",
-    defaults: ["files", "edit", "transport"],
+    defaults: ["edit", "transport"],
     narrowDefaults: ["transport"],
     narrowExclusive: ["files", "song", "diff", "timing", "edit", "audio"],
+  });
+  // FNF 本体の Chart Editor 風: 上にメニューバー、パネルは浮動ツールボックス、下は playbar
+  const snapStep = (d) => {
+    const sel = $("chtSnap");
+    sel.selectedIndex = Math.max(0, Math.min(sel.options.length - 1, sel.selectedIndex + d));
+    sel.onchange?.();
+  };
+  const toolItem = (id) => ({ text: { chtToolPlace: "配置ツール", chtToolSelect: "選択ツール", chtToolPan: "移動ツール" }[id], click: "#" + id, check: () => $(id).getAttribute("aria-pressed") === "true" });
+  const shell = new FnfShell(state.root, panels, {
+    key: "chart",
+    titles: { files: "File / ファイル", song: "Metadata（曲情報）", diff: "Difficulty（難易度）", timing: "Timing（BPM・拍子）", edit: "Notes & Events（編集）", audio: "Audio（音声トラック）" },
+    menus: [
+      { text: "File", items: [{ text: "新規", click: "#chtNew" }, { text: "ファイルを開く / 追加…", toggle: "files" }, "-", { text: ".fnfc 保存", click: "#chtSaveFnfc" }, { text: "mod zip（全部）", click: "#chtSaveAllJson" }, { text: "chart → mod zip", click: "#chtSaveChart" }, { text: "metadata.json", click: "#chtSaveMeta" }] },
+      { text: "Edit", items: [{ text: "元に戻す", key: "Ctrl+Z", click: "#hudUndo" }, { text: "やり直す", key: "Ctrl+Y", click: "#hudRedo" }, "-", { text: "切り取り", key: "Ctrl+X", click: "#chtCut" }, { text: "コピー", key: "Ctrl+C", click: "#chtCopy" }, { text: "貼り付け", key: "Ctrl+V", click: "#chtPaste" }, { text: "削除", key: "Del", click: "#chtDel" }, { text: "重なったノートを削除", click: "#chtUnstack" }, { text: "ノートを反転", click: "#chtFlip" }, { text: "ノートをミラー", click: "#chtMirror" }, "-", { text: "すべて選択", key: "Ctrl+A", click: "#chtSelAll" }, "-", { text: "スナップを細かく", run: () => snapStep(1) }, { text: "スナップを粗く", run: () => snapStep(-1) }] },
+      { text: "View", items: [{ text: "拡大", click: "#chtZoomIn" }, { text: "縮小", click: "#chtZoomOut" }, "-", toolItem("chtToolPlace"), toolItem("chtToolSelect"), toolItem("chtToolPan")] },
+      { text: "Audio", items: [{ text: "再生 / 一時停止", key: "Space", click: "#chtPlay" }, { text: "先頭へ", key: "Home", click: "#chtStop" }, "-", { text: "音声トラック…", toggle: "audio" }] },
+      { text: "Test", items: [{ text: "この難易度をプレイテスト", key: "P", click: "#chtPlayBtn" }] },
+      { text: "Window", items: [{ text: "Difficulty", toggle: "diff" }, { text: "Metadata", toggle: "song" }, { text: "Timing", toggle: "timing" }, { text: "Notes & Events", toggle: "edit" }, { text: "Audio", toggle: "audio" }, { text: "File", toggle: "files" }] },
+    ],
   });
 
   let songId = "";
@@ -1738,6 +1758,14 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
   }
   $("chtPlay").onclick = togglePlay;
   $("chtStop").onclick = () => (audio.pause(), setPos(0));
+  // 1 小節（いまの BPM・拍子）ぶん戻る / 進む、最後へ
+  const measureMs = () => {
+    const tc = meta().timeChanges[timing.indexAtMs(posMs)];
+    return (60000 / tc.bpm) * 4 * (tc.n / tc.d);
+  };
+  $("chtBack").onclick = () => setPos(Math.max(0, posMs - measureMs()));
+  $("chtFwd").onclick = () => setPos(Math.min(songLengthMs(), posMs + measureMs()));
+  $("chtEnd").onclick = () => (audio.pause(), setPos(songLengthMs()));
 
   state.listen(window, "keyup", (e) => {
     if (e.code === "Space") spaceDown = false;
@@ -1789,6 +1817,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     noteStyles,
     getScripts: () => Object.fromEntries(Object.entries(scripts).map(([k, v]) => [k, v.text])),
     getStage: () => meta()?.playData?.stage ?? "",
+    getSongId: () => songId,
     getWorkspace: () => state.app.workspace,
     getCharacters: () => {
       const c = meta()?.playData?.characters ?? {};

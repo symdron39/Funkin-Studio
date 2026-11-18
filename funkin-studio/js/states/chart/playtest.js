@@ -13,7 +13,7 @@ import { Runtime, easeByName } from "../../runtime/runtime.js";
 import { ScrollVelocityTimeline, VisualClock } from "../../runtime/scrollVelocity.js";
 import { openModZip } from "../../services/ModPack.js";
 import { drawNoteSprite } from "../../runtime/noteStyle.js";
-import { has as hasRemote } from "../../services/FunkinAssets.js";
+import { has as hasRemote, reset as resetRemote, refreshIndex as refreshRemoteIndex, stageScripts, fragKey } from "../../services/FunkinAssets.js";
 import { StageScene } from "../../runtime/stageScene.js";
 const PIXELS_PER_MS = 0.45;
 const WIN = { sick: 45, good: 90, bad: 135, shit: 160 };
@@ -193,6 +193,10 @@ export function createPlayTest(root, d) {
 
   // ---------------- 開始 ----------------
   async function begin() {
+    // 本体アセット（funkin.assets）は毎回取り直す: 前回取得したものを捨ててから、標準ノートスタイル・ステージ・キャラを取得
+    resetRemote(d.getWorkspace?.());
+    d.noteStyles.dropBuiltin?.();
+    refreshRemoteIndex();
     await ensureDefaultSkin();
     readOpts();
     const startMs = opts.startFrom === "playhead" ? playhead : 0;
@@ -244,6 +248,8 @@ export function createPlayTest(root, d) {
       if (tok !== loadToken || state !== "loading") return; // 読み込み中に閉じた / 別の開始が走った
       scene.start(startMs);
     }
+    // 本体（funkin.assets）のステージスクリプトと、スクリプトが使う .frag（mod のものも）を先に読んでおく
+    await prepareStageScripts();
     window.__ptDebug = { get scene() { return scene; }, get rt() { return rt; } }; // 検証用（読み取り専用の覗き窓）
     startRuntime(startMs);
     d.audio.pause();
@@ -274,24 +280,48 @@ export function createPlayTest(root, d) {
     if (!ws || !ws.files.length) sc.warn("mod が読み込まれていません（ホーム画面で mod の zip / フォルダを読み込むと、実際のステージとキャラが出ます）");
     return sc;
   }
+  // ---------------- ステージスクリプト・シェーダー ----------------
+  let stageRemote = null; // { scripts: [{name, text}], frags: {キー: テキスト} }（本体のステージスクリプト）
+  let modFrags = {}; // mod の .frag（キーは名前をそろえたもの）
+  async function prepareStageScripts() {
+    stageRemote = null;
+    modFrags = {};
+    if (!opts.scripts) return;
+    const ws = d.getWorkspace?.();
+    try {
+      for (const f of ws?.files ?? []) {
+        if (f.remote || !/\.frag$/i.test(f.name)) continue;
+        modFrags[fragKey(f.name)] = await f.text();
+      }
+      const id = d.getStage?.() ?? "";
+      const modTexts = Object.values(d.getScripts?.() ?? {});
+      // mod に同じステージ用のスクリプトがあれば、そちらを使う（本体のものは取らない）
+      const own = new RegExp(`super\\(\\s*['"]${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}['"]`, "i");
+      if (id && !modTexts.some((t) => own.test(t))) stageRemote = await stageScripts(id);
+    } catch (e) {
+      scene?.warn(`本体のステージスクリプトを取得できませんでした: ${e.message}`);
+    }
+  }
   // ---------------- 演出スクリプト ----------------
   function startRuntime(startMs) {
     rt = null;
     evQueue = [];
     evIdx = 0;
-    const scripts = Object.entries(d.getScripts?.() ?? {});
+    const scripts = [...(stageRemote?.scripts ?? []).map((x) => [x.name, x.text]), ...Object.entries(d.getScripts?.() ?? {})];
     const wantScripts = opts.scripts && scripts.length;
     const style = skinStyle();
     const anyKind = notes.some((n) => n.k);
     if (!wantScripts && !style && !anyKind) return; // 何も使わないなら実行環境は作らない（軽量）
-    rt = new Runtime({ noteStyles: d.noteStyles, getOpts: () => opts, characters: d.getCharacters?.() });
+    rt = new Runtime({ noteStyles: d.noteStyles, getOpts: () => opts, characters: d.getCharacters?.(), songId: d.getSongId?.() });
     if (scene) rt.attachScene(scene);
     rt.ps.playerStrumline.noteStyle = style;
     rt.ps.opponentStrumline.noteStyle = style;
     // 採点しないノート（non_scoreable など）は分母から外す
     st.total = notes.filter((n) => n.player && rt.kindOf(n.k)?.scoreable !== false).length;
     if (!wantScripts) return;
+    rt.setFrags({ ...(stageRemote?.frags ?? {}), ...modFrags });
     for (const [name, text] of scripts) rt.loadScript(text, name);
+    rt.startStages();
     const all = d
       .getEvents()
       .filter((e) => e.e === "CustomEvent" || rt.hasEvent(e.e))

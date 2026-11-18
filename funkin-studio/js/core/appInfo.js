@@ -6,6 +6,6 @@
    ============================================================ */
 export const APP_NAME = "Funkin' Studio";
 /** 現在サポートしている V-Slice のバージョン範囲 */
-export const SUPPORTED_VERSIONS = "0.8.6-0.8.8";
+export const SUPPORTED_VERSIONS = "0.8.6-0.8.8 With 0.8.9+";
 /** 書き出す JSON の generatedBy（ユーザーは変更できない。常にこの値で上書きする） */
 export const GENERATED_BY = `${APP_NAME} (${SUPPORTED_VERSIONS})`;

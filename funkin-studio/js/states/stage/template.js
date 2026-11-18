@@ -13,21 +13,12 @@ export const template = `
       <div class="hudLayer" data-all-hidden="false">
         <button id="stgHudEye" class="hudEye" type="button" data-hud-all title="Hud の表示 / 非表示 (H)" aria-label="Hud の表示 / 非表示">👁</button>
 
-        <!-- 上のバー: パネルの切り替え・ビュー操作・選択中の情報 -->
-        <div class="hudBar" data-hud-panel="bar" data-hud-always>
-          <button type="button" data-hud-toggle="files" data-ja="📁 ファイル" data-en="📁 Files">📁 ファイル</button>
-          <button type="button" data-hud-toggle="layers" data-ja="🗂 レイヤー" data-en="🗂 Layers">🗂 レイヤー</button>
-          <button type="button" data-hud-toggle="props" data-ja="🔧 プロパティ" data-en="🔧 Properties">🔧 プロパティ</button>
-          <button type="button" data-hud-toggle="stage" data-ja="🎬 ステージ" data-en="🎬 Stage">🎬 ステージ</button>
-          <span class="hudSep"></span>
-          <button id="stgZoomOut" type="button" title="ズームアウト">−</button>
-          <input id="stgZoom" type="number" min=".05" max="16" step=".05" value="1" title="ズーム（ホイールでも可）" />
-          <button id="stgZoomIn" type="button" title="ズームイン">＋</button>
-          <button id="stgFit" type="button" title="すべてを画面に収める (F)" data-ja="⊡ 全体" data-en="⊡ Fit">⊡ 全体</button>
-          <button id="stgResetView" type="button" title="ズーム100%・原点を中央へ" data-ja="⌖ 原点" data-en="⌖ Origin">⌖ 原点</button>
-          <button id="stgPanTool" type="button" title="左ドラッグでビューを動かす（Space長押し / 中・右ドラッグでも可）" data-ja="✋ 移動" data-en="✋ Pan">✋ 移動</button>
-          <span class="hudSep"></span>
-          <span id="stgReadout" class="hudReadout"></span>
+        <!-- 旧ツールバー: パネルの開閉ボタン（HudPanels が使う）だけを残して隠す。操作は上のメニューバー / 下のバーへ -->
+        <div class="fnfLegacyBar" data-hud-panel="bar" data-hud-always hidden>
+          <button type="button" data-hud-toggle="files"></button>
+          <button type="button" data-hud-toggle="layers"></button>
+          <button type="button" data-hud-toggle="props"></button>
+          <button type="button" data-hud-toggle="stage"></button>
         </div>
 
         <!-- 左: ファイル・レイヤー -->
@@ -195,6 +186,21 @@ export const template = `
               Scroll が1でない物は、カメラが動くと遅れて動きます（視差）。ここでカメラ位置を動かすと見え方を確認できます。保存には影響しません。
             </p>
           </aside>
+        </div>
+
+        <!-- 下のバー（FNF の Stage Editor の bottom-bar 風）: ビュー操作と、選択中の情報 -->
+        <div class="hudTransport fnfPlaybar fnfStatusbar" data-hud-panel="statusbar">
+          <div class="fnfPlayRow">
+            <div class="fnfPlayL"><span id="stgReadout" class="fnfStat"></span></div>
+            <div class="fnfPlayR">
+              <button id="stgZoomOut" type="button" title="ズームアウト">−</button>
+              <input id="stgZoom" type="number" min=".05" max="16" step=".05" value="1" title="ズーム（ホイールでも可）" />
+              <button id="stgZoomIn" type="button" title="ズームイン">＋</button>
+              <button id="stgFit" type="button" title="すべてを画面に収める (F)" data-ja="⊡ 全体" data-en="⊡ Fit">⊡ 全体</button>
+              <button id="stgResetView" type="button" title="ズーム100%・原点を中央へ" data-ja="⌖ 原点" data-en="⌖ Origin">⌖ 原点</button>
+              <button id="stgPanTool" type="button" title="左ドラッグでビューを動かす（Space長押し / 中・右ドラッグでも可）" data-ja="✋ 移動" data-en="✋ Pan">✋ 移動</button>
+            </div>
+          </div>
         </div>
 
         <div id="stgToast" class="hudToast" hidden></div>

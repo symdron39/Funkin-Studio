@@ -1,28 +1,36 @@
 /* ============================================================
    services/FunkinAssets.js — 本体アセット（FunkinCrew/Funkin.assets）を GitHub から取得する
    ------------------------------------------------------------
-   読み込んだ mod に無いキャラ / ステージ / ノートスタイル（と、それが使う画像）を、必要になったときだけ
-   raw.githubusercontent.com から取ってくる。ページには本体の画像を入れない（一覧のパスだけ入っている）。
+   読み込んだ mod に無いキャラ / ステージ / ノートスタイル（と、それが使う画像・スクリプト・シェーダー）を、
+   必要になったときだけ raw.githubusercontent.com から取ってくる。ページには本体の画像を入れない（一覧のパスだけ入っている）。
+   ・毎回取得: 取得したものは保存しない（fetch は cache:"no-store"）。プレイテストを始めるたび・ブランチを変えるたびに
+     reset() で前回取得分を捨て、Workspace に足したファイルも外して作り直す
+   ・ブランチ: main（0.8 系の配置）/ preview/public-playtest（0.9 の配置）を切り替えられる（getBranch / setBranch）
    ・RemoteFile … LazyZipFile と同じ使い方（name / webkitRelativePath / blob() / text() / arrayBuffer()）。中身は読まれたときに取得
    ・ensureCharacter / ensureStage / ensureAtlas … ws（Workspace）に、必要なファイルだけ「funkin.assets」の origin で足す
+   ・stageScripts(id) … 本体のステージスクリプト（.hxc）と、それが使う props / シェーダークラス / .frag のテキスト
    ・noteStyle(id) … ノートスタイルの JSON と画像を返す（runtime/noteStyle.js の NoteStyleSet が使う）
    ・mod 側に同じものがあれば、そちらが先。ここは「mod に無かったとき」だけ
    ・素材は Friday Night Funkin' のもの（© The Funkin' Crew Inc.）。エディタのプレビュー用で、書き出す mod の zip には含めない
-   ・テスト・別のミラー用: globalThis.__FUNKIN_ASSETS = { raw: "https://…/", tree: "https://…" }
+   ・テスト・別のミラー用: globalThis.__FUNKIN_ASSETS = { raw: "http://…/", tree: "http://…/" }（末尾はブランチ名を足せる形）
    ============================================================ */
 import { FUNKIN_ASSETS_PATHS } from "./funkinAssetsIndex.js";
 import { infoOfPath, normAsset } from "./ModPack.js";
 
 export const ORIGIN = "funkin.assets";
 const KEY_ON = "studio.remoteAssets";
-const KEY_TREE = "studio.remoteAssets.tree.v1";
-const DAY = 24 * 3600 * 1000;
+const KEY_BRANCH = "studio.remoteAssets.branch";
 
+/** 取得できるブランチ。layout: 0.8 = data/<dir>/<id>.json + shared/preload の images / 0.9 = gameplay/<dir>/<id>/<id>.json、assetPath はリポジトリのパス */
+export const BRANCHES = [
+  { id: "main", label: "main（0.8 系）", layout: "0.8" },
+  { id: "preview/public-playtest", label: "preview/public-playtest（0.9 プレビュー）", layout: "0.9" },
+];
 const conf = () => {
   const o = globalThis.__FUNKIN_ASSETS || {};
   return {
-    raw: o.raw ?? "https://raw.githubusercontent.com/FunkinCrew/Funkin.assets/main/",
-    tree: o.tree ?? "https://api.github.com/repos/FunkinCrew/Funkin.assets/git/trees/main?recursive=1",
+    raw: o.raw ?? "https://raw.githubusercontent.com/FunkinCrew/Funkin.assets/",
+    tree: o.tree ?? "https://api.github.com/repos/FunkinCrew/Funkin.assets/git/trees/",
   };
 };
 export const isEnabled = () => {
@@ -37,27 +45,43 @@ export const setEnabled = (on) => {
     localStorage.setItem(KEY_ON, on ? "1" : "0");
   } catch {}
 };
+export const getBranch = () => {
+  try {
+    const b = localStorage.getItem(KEY_BRANCH);
+    if (BRANCHES.some((x) => x.id === b)) return b;
+  } catch {}
+  return BRANCHES[0].id;
+};
+export const setBranch = (id) => {
+  if (!BRANCHES.some((x) => x.id === id)) return;
+  try {
+    localStorage.setItem(KEY_BRANCH, id);
+  } catch {}
+};
+const layoutOf = (branch = getBranch()) => BRANCHES.find((x) => x.id === branch)?.layout ?? "0.8";
 
-// ---------------------------------------------------------------- 取得したファイル（キャッシュ付き）
-const bytesCache = new Map(); // repoPath → Promise<ArrayBuffer>
-function fetchBytes(repoPath) {
-  let p = bytesCache.get(repoPath);
+// ---------------------------------------------------------------- 取得したファイル（保存しない。同じ回の中だけ使い回す）
+const bytesCache = new Map(); // "branch|repoPath" → Promise<ArrayBuffer>
+function fetchBytes(branch, repoPath) {
+  const key = `${branch}|${repoPath}`;
+  let p = bytesCache.get(key);
   if (!p) {
-    const url = conf().raw + repoPath.split("/").map(encodeURIComponent).join("/");
-    p = fetch(url).then(async (r) => {
-      if (!r.ok) throw new Error(`funkin.assets から取得できません（${r.status}）: ${repoPath}`);
+    const url = conf().raw + branch + "/" + repoPath.split("/").map(encodeURIComponent).join("/");
+    p = fetch(url, { cache: "no-store" }).then(async (r) => {
+      if (!r.ok) throw new Error(`funkin.assets（${branch}）から取得できません（${r.status}）: ${repoPath}`);
       return r.arrayBuffer();
     });
-    p.catch(() => bytesCache.delete(repoPath)); // 失敗は覚えない（つながったら次は取れる）
-    bytesCache.set(repoPath, p);
+    p.catch(() => bytesCache.delete(key)); // 失敗は覚えない
+    bytesCache.set(key, p);
   }
   return p;
 }
 const MIME = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", json: "application/json", xml: "application/xml" };
 
 export class RemoteFile {
-  constructor(repoPath) {
+  constructor(repoPath, branch) {
     this.repoPath = repoPath;
+    this.branch = branch;
     this.name = repoPath.split("/").pop();
     this.webkitRelativePath = `${ORIGIN}/${repoPath}`; // ModPack の規則で origin = "funkin.assets"（週フォルダ付きなら "funkin.assets/week6"）
     this.size = 0;
@@ -65,60 +89,71 @@ export class RemoteFile {
     this.lazy = true;
     this.remote = true;
   }
+  /** 先に取りに行かせる（結果は読まれたときに使う）。失敗はここでは無視 */
+  prefetch() {
+    fetchBytes(this.branch, this.repoPath).catch(() => {});
+  }
   arrayBuffer() {
-    return fetchBytes(this.repoPath).then((b) => b.slice(0));
+    return fetchBytes(this.branch, this.repoPath).then((b) => b.slice(0));
   }
   async blob() {
     const ext = (this.name.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase();
-    return new Blob([await fetchBytes(this.repoPath)], { type: MIME[ext] || "" });
+    return new Blob([await fetchBytes(this.branch, this.repoPath)], { type: MIME[ext] || "" });
   }
   async text() {
-    return new TextDecoder().decode(await fetchBytes(this.repoPath));
+    return new TextDecoder().decode(await fetchBytes(this.branch, this.repoPath));
   }
   slice(...a) {
     return this.blob().then((b) => b.slice(...a));
   }
 }
 
-// ---------------------------------------------------------------- ファイル一覧
-const files = new Map(); // repoPath → RemoteFile
-const byNoExt = new Map(); // "images/characters/bf" など（ルート以降・拡張子なし・小文字）→ RemoteFile[]
-let indexReady = null;
-
-function addPath(p) {
-  if (files.has(p)) return;
-  const f = new RemoteFile(p);
-  files.set(p, f);
-  const k = infoOfPath(f.webkitRelativePath).noExt;
-  (byNoExt.get(k) ?? byNoExt.set(k, []).get(k)).push(f);
+// ---------------------------------------------------------------- ファイル一覧（ブランチごと）
+const indexes = new Map(); // branch → { files: Map<repoPath, RemoteFile>, byNoExt: Map<noExt, RemoteFile[]> }
+function indexOf(branch = getBranch()) {
+  let ix = indexes.get(branch);
+  if (!ix) {
+    ix = { files: new Map(), byNoExt: new Map() };
+    indexes.set(branch, ix);
+    for (const p of FUNKIN_ASSETS_PATHS[branch] ?? []) addPath(ix, branch, p); // 最初から同梱の一覧が使える（ネットが無くても、どの id があるかは分かる）
+  }
+  return ix;
 }
-for (const p of FUNKIN_ASSETS_PATHS) addPath(p); // 最初から同梱の一覧が使える（ネットが無くても、どの id があるかは分かる）
+function addPath(ix, branch, p) {
+  if (ix.files.has(p)) return;
+  const f = new RemoteFile(p, branch);
+  ix.files.set(p, f);
+  const k = infoOfPath(f.webkitRelativePath).noExt;
+  (ix.byNoExt.get(k) ?? ix.byNoExt.set(k, []).get(k)).push(f);
+}
+const noExtOf = (ix) => ix.byNoExt;
+const wantExt = /\.(json|png|jpg|xml|txt|hxc|frag|vert)$|(^|\/)sounds\/.*\.ogg$/i;
+const skipDir = /^(\.github|exclude|sserafim)\//;
 
-/** GitHub のツリー API で一覧を新しくする（1 日 1 回まで。失敗しても同梱の一覧のまま） */
-export function refreshIndex() {
-  if (indexReady) return indexReady;
-  indexReady = (async () => {
-    try {
-      let paths = null;
-      try {
-        const c = JSON.parse(localStorage.getItem(KEY_TREE) || "null");
-        if (c && Date.now() - c.t < DAY && c.tree === conf().tree) paths = c.paths;
-      } catch {}
-      if (!paths) {
-        const r = await fetch(conf().tree);
-        if (!r.ok) return;
-        const j = await r.json();
-        paths = (j.tree || []).filter((e) => e.type === "blob" && /\.(json|png|xml|txt)$/i.test(e.path) && !/^(\.github|exclude|sserafim)\//.test(e.path)).map((e) => e.path);
-        try {
-          localStorage.setItem(KEY_TREE, JSON.stringify({ t: Date.now(), tree: conf().tree, paths }));
-        } catch {}
-      }
-      for (const p of paths) addPath(p);
-    } catch {
-      /* オフラインなど: 同梱の一覧を使う */
+/** GitHub のツリー API で、いまのブランチの一覧を新しくする（保存はしない。失敗しても同梱の一覧のまま） */
+export async function refreshIndex() {
+  const branch = getBranch();
+  try {
+    const r = await fetch(conf().tree + encodeURIComponent(branch) + "?recursive=1", { cache: "no-store" });
+    if (!r.ok) return 0;
+    const j = await r.json();
+    const ix = indexOf(branch);
+    let n = 0;
+    for (const e of j.tree || []) {
+      if (e.type !== "blob" || !wantExt.test(e.path) || skipDir.test(e.path) || ix.files.has(e.path)) continue;
+      addPath(ix, branch, e.path);
+      n++;
     }
-  })();
-  return indexReady;
+    return n;
+  } catch {
+    return 0; // オフラインなど: 同梱の一覧を使う
+  }
+}
+
+/** 前回取得したものを全部捨てる（取得したバイト列・Workspace に足したファイル）。次の使用で取り直す。ws は省略できる */
+export function reset(ws) {
+  bytesCache.clear();
+  ws?.dropRemote?.();
 }
 
 // ---------------------------------------------------------------- 探す
@@ -133,39 +168,57 @@ const libHint = (assetPath) => String(assetPath || "").match(/^([^:/\\]+):/)?.[1
 function pickLib(list, hint) {
   return [...list].sort((a, b) => (libOf(b).toLowerCase() === hint ? 1 : 0) - (libOf(a).toLowerCase() === hint ? 1 : 0) || libRank(libOf(a)) - libRank(libOf(b)) || a.repoPath.localeCompare(b.repoPath));
 }
-const noExtKey = (dir, id) => `${dir}/${normAsset(id)}`;
 
-/** id がある種類（character / stage / notestyle）の JSON */
+/** id がある種類（character / stage / notestyle）の JSON。0.8: data/<dir>/<id> / 0.9: gameplay/<dir>/<id>/<id>（どちらの配置でも探す） */
 export function findData(kind, id) {
-  const dir = { character: "data/characters", stage: "data/stages", notestyle: "data/notestyles" }[kind];
+  const dir = { character: "characters", stage: "stages", notestyle: "notestyles" }[kind];
   if (!dir || !id) return null;
-  const list = (byNoExt.get(noExtKey(dir, id)) ?? []).filter((f) => /\.json$/i.test(f.name));
-  return list.length ? pickLib(list, "")[0] : null;
+  const n = normAsset(id);
+  const ix = noExtOf(indexOf());
+  const keys = layoutOf() === "0.9" ? [`gameplay/${dir}/${n}/${n}`, `data/${dir}/${n}`] : [`data/${dir}/${n}`, `gameplay/${dir}/${n}/${n}`];
+  for (const k of keys) {
+    const list = (ix.get(k) ?? []).filter((f) => /\.json$/i.test(f.name));
+    if (list.length) return pickLib(list, "")[0];
+  }
+  return null;
 }
 export const has = (kind, id) => isEnabled() && !!findData(kind, id);
 
-/** assetPath のアトラス一式。Sparrow / Packer = png + xml(txt)、AnimateAtlas = フォルダの中身全部、1 枚絵 = png だけ */
+/** 本体の効果音（Paths.sound("train_passes") など）。sounds/<名前>.ogg を、shared → preload → 週フォルダの順で探す。無ければ null */
+export function findSound(name) {
+  if (!isEnabled() || !name) return null;
+  const n = String(name).replace(/^[^:/\\]+:/, "").replace(/\.(ogg|mp3|wav)$/i, "").replace(/^sounds\//, "").toLowerCase();
+  const hits = [...indexOf().files.values()].filter((f) => /\.ogg$/i.test(f.name) && f.repoPath.toLowerCase().replace(/\.ogg$/, "").endsWith(`sounds/${n}`));
+  const exact = [...indexOf().files.values()].find((f) => /\.ogg$/i.test(f.name) && f.repoPath.toLowerCase().replace(/\.ogg$/, "") === n); // 0.9: リポジトリのパスそのまま
+  return exact ?? pickLib(hits, "")[0] ?? null;
+}
+
+/** assetPath のアトラス一式。Sparrow / Packer = png + xml(txt)、AnimateAtlas = フォルダの中身全部、1 枚絵 = png だけ。0.8 は images/<path>、0.9 はリポジトリのパスそのまま */
 export function findAtlas(assetPath) {
   const n = normAsset(assetPath);
   if (!n) return [];
   const hint = libHint(assetPath);
-  const key = `images/${n}`;
-  const same = byNoExt.get(key) ?? [];
-  const png = pickLib(same.filter((f) => /\.png$/i.test(f.name)), hint)[0];
-  if (png) {
-    const lib = libOf(png);
-    return same.filter((f) => libOf(f) === lib && /\.(png|xml|txt)$/i.test(f.name));
+  const ix = noExtOf(indexOf());
+  for (const key of [`images/${n}`, n]) {
+    const same = ix.get(key) ?? [];
+    const png = pickLib(same.filter((f) => /\.(png|jpg)$/i.test(f.name)), hint)[0];
+    if (png) {
+      const lib = libOf(png);
+      return same.filter((f) => libOf(f) === lib && /\.(png|jpg|xml|txt)$/i.test(f.name));
+    }
+    // AnimateAtlas: <key>/ の下
+    const prefix = key + "/";
+    const dirs = new Map(); // lib → files
+    for (const [k, list] of ix) {
+      if (!k.startsWith(prefix)) continue;
+      for (const f of list) if (/\.(png|jpg|json|xml|txt)$/i.test(f.name)) (dirs.get(libOf(f)) ?? dirs.set(libOf(f), []).get(libOf(f))).push(f);
+    }
+    if (dirs.size) {
+      const libs = [...dirs.keys()].sort((a, b) => (b.toLowerCase() === hint ? 1 : 0) - (a.toLowerCase() === hint ? 1 : 0) || libRank(a) - libRank(b));
+      return dirs.get(libs[0]);
+    }
   }
-  // AnimateAtlas: images/<n>/ の下
-  const prefix = key + "/";
-  const dirs = new Map(); // lib → files
-  for (const [k, list] of byNoExt) {
-    if (!k.startsWith(prefix)) continue;
-    for (const f of list) (dirs.get(libOf(f)) ?? dirs.set(libOf(f), []).get(libOf(f))).push(f);
-  }
-  if (!dirs.size) return [];
-  const libs = [...dirs.keys()].sort((a, b) => (b.toLowerCase() === hint ? 1 : 0) - (a.toLowerCase() === hint ? 1 : 0) || libRank(a) - libRank(b));
-  return dirs.get(libs[0]);
+  return [];
 }
 
 // ---------------------------------------------------------------- Workspace へ足す
@@ -176,7 +229,10 @@ const note = (ws, msg) => {
 };
 function addToWorkspace(ws, list) {
   const fresh = list.filter((f) => !ws.keys.has(`${f.webkitRelativePath}|${f.size}|${f.lastModified}`));
-  if (fresh.length) ws.add(fresh);
+  if (fresh.length) {
+    ws.add(fresh);
+    for (const f of fresh) f.prefetch(); // 並列で先に取りに行く（使うときには届いている）
+  }
   return fresh.length;
 }
 const parseJson = async (f) => JSON.parse((await f.text()).replace(/^﻿/, ""));
@@ -226,7 +282,7 @@ export async function ensureStage(ws, id) {
   return n;
 }
 
-/** { stage, characters: {player, girlfriend, opponent, …} | [id…] } にあるものを、無ければ取ってくる。失敗は例外にせず { errors } で返す */
+/** { stage, characters: {player, girlfriend, opponent, …} | [id…] } にあるものを、無ければ取ってくる（並列）。失敗は例外にせず { errors } で返す */
 export async function ensureFor(ws, spec = {}) {
   const errors = [];
   const run = async (fn, label) => {
@@ -237,11 +293,71 @@ export async function ensureFor(ws, spec = {}) {
       return 0;
     }
   };
-  let n = 0;
-  if (spec.stage) n += await run(() => ensureStage(ws, spec.stage), `ステージ「${spec.stage}」`);
+  const jobs = [];
+  if (spec.stage) jobs.push(run(() => ensureStage(ws, spec.stage), `ステージ「${spec.stage}」`));
   const ids = Array.isArray(spec.characters) ? spec.characters : Object.values(spec.characters || {});
-  for (const id of new Set(ids.filter(Boolean))) n += await run(() => ensureCharacter(ws, id), `キャラクター「${id}」`);
-  return { added: n, errors };
+  for (const id of new Set(ids.filter(Boolean))) jobs.push(run(() => ensureCharacter(ws, id), `キャラクター「${id}」`));
+  const added = (await Promise.all(jobs)).reduce((a, b) => a + b, 0);
+  return { added, errors };
+}
+
+// ---------------------------------------------------------------- ステージスクリプト・シェーダー
+const norm = (s) => String(s ?? "").toLowerCase().replace(/[-_ ]/g, "");
+/** シェーダー名のゆれ（adjustColor / adjust-color）をそろえるためのキー */
+export const fragKey = (name) => norm(String(name ?? "").replace(/^.*[\\/]/, "").replace(/\.frag$/i, ""));
+/**
+ * ステージ id の本体スクリプトを取る（無ければ null）。
+ * 0.8: scripts/stages/<id>.hxc + scripts/stages/props/*.hxc + scripts/shaders/*.hxc / 0.9: gameplay/stages/<id>/*.hxc + ui/shaders/*.hxc
+ * → { scripts: [{ name, text, main }], frags: { <fragKey>: text } }。.frag は、スクリプトの中で Paths.frag('名前') と書かれているものだけ取る
+ */
+/** 本体の Haxe シェーダークラスのうち、runtime 側で作ってあるもの → 使う .frag */
+const NATIVE_FRAGS = { AdjustColorShader: "adjust-color" };
+export async function stageScripts(stageId) {
+  if (!isEnabled() || !stageId) return null;
+  const branch = getBranch();
+  const ix = indexOf(branch);
+  const id = normAsset(stageId);
+  const is09 = layoutOf(branch) === "0.9";
+  const all = [...ix.files.values()];
+  const rp = (f) => f.repoPath.toLowerCase().replace(/^(preload|shared)\//, ""); // 0.8 は preload/ の下
+  const main = is09 ? all.filter((f) => /\.hxc$/i.test(f.name) && rp(f).startsWith(`gameplay/stages/${id}/`)) : all.filter((f) => rp(f) === `scripts/stages/${id}.hxc`);
+  if (!main.length) return null;
+  const aux = is09 ? all.filter((f) => /\.hxc$/i.test(f.name) && rp(f).startsWith("ui/shaders/")) : all.filter((f) => /\.hxc$/i.test(f.name) && (rp(f).startsWith("scripts/stages/props/") || rp(f).startsWith("scripts/shaders/")));
+  // 補助スクリプトは「main のスクリプトが名前で参照しているクラス」だけ（参照先が参照するものも含めて）読む。関係ないものを読むと、未対応構文の解析エラーが出るため
+  const mainTexts = await Promise.all(main.map((f) => f.text()));
+  const auxTexts = new Map();
+  const classOf = (f) => f.name.replace(/\.[^.]+$/, "");
+  const picked = [];
+  let pool = [...mainTexts];
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const f of aux) {
+      if (auxTexts.has(f)) continue;
+      const cn = classOf(f);
+      if (!pool.some((t) => new RegExp(`\\b${cn}\\b`).test(t))) continue;
+      const t = await f.text().catch(() => null); // 補助が取れなくても、他は動かす
+      if (t == null) {
+        auxTexts.set(f, "");
+        continue;
+      }
+      auxTexts.set(f, t);
+      picked.push(f);
+      pool.push(t);
+      grew = true;
+    }
+  }
+  const list = [...main, ...picked];
+  const texts = [...mainTexts, ...picked.map((f) => auxTexts.get(f))];
+  const scripts = list.map((f, i) => ({ name: `funkin.assets/${f.repoPath}`, text: texts[i], main: i < main.length }));
+  const wanted = new Set();
+  for (const t of texts) for (const m of t.matchAll(/Paths\.frag\(\s*['"]([^'"]+)['"]\s*\)/g)) wanted.add(fragKey(m[1]));
+  // ネイティブ実装のシェーダークラスが使う .frag（スクリプトが名前で参照したときだけ）
+  for (const [cls, frag] of Object.entries(NATIVE_FRAGS)) if (texts.some((t) => new RegExp(`\\b${cls}\\b`).test(t))) wanted.add(fragKey(frag));
+  const fragFiles = all.filter((f) => /\.frag$/i.test(f.name) && wanted.has(fragKey(f.name)) && (is09 ? rp(f).startsWith("ui/shaders/") : rp(f).startsWith("shaders/")));
+  const frags = {};
+  await Promise.all(fragFiles.map(async (f) => (frags[fragKey(f.name)] = await f.text().catch(() => ""))));
+  for (const k of Object.keys(frags)) if (!frags[k]) delete frags[k];
+  return { scripts, frags };
 }
 
 // ---------------------------------------------------------------- ノートスタイル
@@ -254,7 +370,7 @@ function collectAssetPaths(def, out) {
 }
 /**
  * 本体のノートスタイルを取る。{ json, images: [{ key, file }], xmls: [{ key, file }] } / 無ければ null
- * key は "images/…"（ルート以降・拡張子なし）。同じ origin（"builtin:<id>"）として使う
+ * key は ModPack の規則でのルート以降・拡張子なし（"images/notes" / 0.9 は "gameplay/notestyles/funkin/notes"）。origin は "builtin:<id>" として使う
  */
 export async function noteStyle(id) {
   if (!isEnabled()) return null;
@@ -267,8 +383,9 @@ export async function noteStyle(id) {
     xmls = [];
   for (const p of paths) {
     for (const rf of findAtlas(p)) {
+      rf.prefetch();
       const key = infoOfPath(rf.webkitRelativePath).noExt;
-      if (/\.png$/i.test(rf.name)) images.push({ key, file: rf });
+      if (/\.(png|jpg)$/i.test(rf.name)) images.push({ key, file: rf });
       else if (/\.xml$/i.test(rf.name)) xmls.push({ key, file: rf });
     }
   }
@@ -276,4 +393,4 @@ export async function noteStyle(id) {
 }
 
 /** 画面に出す短い説明 */
-export const describe = () => `本体アセット: ${isEnabled() ? "GitHub（FunkinCrew/Funkin.assets）から取得" : "オフ"}（一覧 ${files.size} 件）`;
+export const describe = () => `本体アセット: ${isEnabled() ? `GitHub（FunkinCrew/Funkin.assets の ${getBranch()}）から毎回取得` : "オフ"}（一覧 ${indexOf().files.size} 件）`;
