@@ -1356,7 +1356,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 #studioHome,#funkinWelcome,#renderWelcome { background: #181818; }
 #studioHome .welcome-inner,#funkinWelcome .welcome-inner,#renderWelcome .welcome-inner { background: #262626; border: 1px solid var(--line); border-radius: 4px; padding: clamp(20px,4vw,34px); box-shadow: 0 14px 34px rgba(0,0,0,.5); }
 #studioHome .welcome-inner { max-width: 730px; }
-#studioHome h1 { font-size: clamp(24px,4vw,32px); letter-spacing: -.025em; }
+#studioHome h1 { font-size: clamp(24px,4vw,32px); letter-spacing: 2px; }
 .render-choice { background: var(--studio-important); border: 1px solid #a82557; border-radius: 4px; min-height: 112px; gap: 9px; box-shadow: 0 1px 0 var(--studio-important-shadow); }
 .render-choice:hover:not(:disabled) { background: var(--studio-important-hover); border-color: #ff7aa8; }
 .render-choice strong { color: #fff; }
@@ -1386,7 +1386,10 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   --font-ui: "FNF VCR", "VCR OSD Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Noto Sans Mono CJK JP", "Osaka-Mono", "BIZ UDGothic", "MS Gothic", monospace;
 }
 html, body, button, input, select, textarea, summary { font-family: var(--font-ui); }
-body { font-size: 14px; letter-spacing: 0; }
+body { font-size: 14px; letter-spacing: 2px; }
+input, textarea, select, button, option { letter-spacing: inherit; }
+/* 等幅・数値入力・ゲーム画面の文字は詰めたまま */
+canvas, .mono, code, pre, input[type=number], .fnfKey { letter-spacing: 0; }
 h1, h2, h3, button, .render-choice strong, #studioHud { font-weight: 700; }
 h1 { text-transform: none; }
 /* ---------- 形: 角を立てる・影はぼかさずに落とす（FNF のメニューの雰囲気） ---------- */
@@ -1395,8 +1398,8 @@ button, input, select, textarea { border-radius: 2px; border-width: 1px; }
 button:not(:disabled):active { transform: translateY(1px); }
 button.primary, .primary, .studio-button, .render-choice { box-shadow: 0 2px 0 var(--studio-important-shadow); }
 .panel { box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.45); }
-h2 { color: var(--accent); text-transform: uppercase; letter-spacing: 0.04em; }
-.fnfTitle h2.fnfTitleText { margin: 0; padding: 0; font-size: 13px; text-transform: none; letter-spacing: 0; }
+h2 { color: var(--accent); text-transform: uppercase; letter-spacing: 2px; }
+.fnfTitle h2.fnfTitleText { margin: 0; padding: 0; font-size: 13px; text-transform: none; letter-spacing: 2px; }
 #timeline, input[type="range"], input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 ::selection { background: var(--accent); color: #111; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -1491,8 +1494,6 @@ h2 { color: var(--accent); text-transform: uppercase; letter-spacing: 0.04em; }
 
 /* FNF 風の画面では、右下に固定表示される共通の小物（ローカル復元・カラーテスト）を playbar の上へ */
 body:has(.fnfShell:not([hidden])) #fsRecoveryPanel { bottom: 104px !important; opacity: 0.92; }
-body:has(.fnfShell:not([hidden])) #colorLabToggle { bottom: 104px !important; right: auto !important; left: 10px !important; }
-body:has(.fnfShell:not([hidden])) #colorLabPanel { bottom: 150px !important; right: auto !important; left: 10px !important; }
 .fnfPlaybar input[type="number"] { width: 78px; flex: 0 0 auto; border-radius: 0; padding: 3px 6px; }
 .fnfStatusbar .fnfPlayRow { min-height: 40px; }
 /* プレイテスト中は、メニューバーとウィンドウを隠してゲーム画面だけにする */
@@ -1500,26 +1501,6 @@ body:has(.fnfShell:not([hidden])) #colorLabPanel { bottom: 150px !important; rig
 .fnfShell:has(#chtPlayRoot:not([hidden])) .fnfWin,
 .fnfShell:has(#chtPlayRoot:not([hidden])) .fnfPlaybar { display: none !important; }
 body:has(#chtPlayRoot:not([hidden])) #fsRecoveryPanel { bottom: 12px !important; }
-body:has(#chtPlayRoot:not([hidden])) #colorLabToggle { bottom: 14px !important; left: auto !important; right: 14px !important; }
-
-</style>
-    <style>
-/* ===== ./funkin-studio/css/color-lab.css ===== */
-/* Color Lab isolated UI. Theme override uses CSS variables defined in theme-navy.css. */
-#colorLabToggle{position:fixed;bottom:14px;right:14px;z-index:100020;background:#994e3d;color:#fff;border:1px solid #c48678;border-radius:13px;padding:11px 15px;box-shadow:0 3px 14px #001b3b80;font-weight:700}
-#colorLabPanel{position:fixed;z-index:100021;right:12px;bottom:68px;width:min(360px,calc(100vw - 24px));max-height:min(76dvh,690px);overflow:auto;background:#122d4e;color:#e6edf7;border:1px solid #6b8bab;border-radius:16px;padding:15px;box-shadow:0 14px 45px #001528a8;font-size:14px}
-#colorLabPanel[hidden]{display:none!important}#colorLabPanel *{box-sizing:border-box}#colorLabPanel .cl-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}#colorLabPanel button,#colorLabPanel select{color:#fff;background:#274769;border:1px solid #6583a0;border-radius:8px;padding:8px;font:inherit}#colorLabPanel .cl-hint{color:#c5d6e8;font-size:12px;line-height:1.5;margin:8px 0}#colorLabPanel .cl-row{display:grid;grid-template-columns:1fr 54px 91px;gap:7px;align-items:center;margin:9px 0;color:#e6edf7;font-size:13px}#colorLabPanel .cl-row:has(select){grid-template-columns:1fr 1fr}#colorLabPanel input[type=color]{width:54px;height:36px;padding:2px;background:transparent;border:1px solid #63819f;border-radius:8px}#colorLabPanel input[type=text]{width:91px;min-width:0;padding:8px 5px;border-radius:7px;background:#213c5a;color:#fff;border:1px solid #6583a0;font:12px monospace}#colorLabPanel .cl-preview{border-top:1px solid #5b7895;padding-top:10px;margin-top:12px}#colorLabPanel .cl-sample-panel{background:var(--panel);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:8px}#colorLabPanel .cl-sample-row{display:flex;gap:8px;margin:10px 0;flex-wrap:wrap}#colorLabPanel .cl-sample-row span{padding:9px 10px;border-radius:9px;color:#fff;font-weight:bold;font-size:12px}#colorLabPanel .cl-sample-normal{background:var(--studio-button)}#colorLabPanel .cl-sample-important{background:var(--studio-important)}#colorLabPanel .cl-sample-canvas{background:var(--studio-canvas);color:#263442;padding:16px;text-align:center;border-radius:7px}#colorLabPanel .cl-actions{display:flex;gap:8px;margin-top:12px}#colorLabPanel .cl-actions button{flex:1}#colorLabPanel #clClose{padding:4px 9px}
-/* Override hard-coded Navy rules only while the lab is active. */
-body.cl-active #studioHome,body.cl-active #funkinWelcome,body.cl-active #renderWelcome{background:var(--bg)}
-body.cl-active #studioHome .welcome-inner,body.cl-active #funkinWelcome .welcome-inner,body.cl-active #renderWelcome .welcome-inner{background:var(--panel);border-color:var(--line)}
-body.cl-active .studio-files,body.cl-active .studio-display-options,body.cl-active .studio-inspector-group,body.cl-active #layers{background:var(--panel);border-color:var(--line)}
-body.cl-active #studioHud,body.cl-active #langMenu{background:var(--panel);border-color:var(--line)}
-body.cl-active .render-choice{background:var(--studio-important);border-color:var(--line)}
-body.cl-active .render-choice:hover:not(:disabled){background:var(--studio-important-hover)}
-body.cl-active button.primary,body.cl-active .primary,body.cl-active .studio-button{background:var(--studio-important);border-color:var(--line)}
-body.cl-active button:not(.primary):not(.render-choice):not(#colorLabToggle):not(#clClose):not(#clCopy):not(#clReset):hover:not(:disabled){background:var(--studio-button-hover)}
-body.cl-active #stage,body.cl-active #spCanvas,body.cl-active #symCanvas,body.cl-active #offCanvas{background:var(--studio-canvas)!important}
-@media(max-width:520px){#colorLabToggle{right:8px;bottom:8px;padding:9px 12px}#colorLabPanel{right:8px;bottom:55px;width:calc(100vw - 16px);max-height:72dvh}}
 
 </style>
     <style>
@@ -2739,218 +2720,8 @@ function startAutosave(app) {
 return { startAutosave };
 })();
 
-/* ===== funkin-studio/js/services/ColorLab.js ===== */
-const __m8 = (() => {
-/* ============================================================
-   services/ColorLab.js — 配色ラボ（画面の色をその場で変えて試すパネル）
-   ------------------------------------------------------------
-   仕組み: 12色を CSS 変数（--bg, --panel ...）に対応させ、<html> の style に直接書き込む。
-     カラーピッカー / HEX 入力 / プリセットで変更 → すぐ画面に反映 → localStorage に保存（次回も復元）。
-   「CSSをコピー」で、決めた色を :root { ... } の形でコピーでき、テーマ用の CSS に貼り付けて使える。
-   関連: css/color-lab.css（パネルの見た目）/ css/theme-*.css（テーマの色）
-   ============================================================ */
-// 右下の「🎨 カラーテスト」ボタンとパネルの HTML。State ではなく、どの画面にも重なる共有パーツなので
-// index.html には置かず、このファイルが自分で DOM に挿入する。
-const template = `
-
-    <!-- Color Lab: UI配色をその場で比較。編集データには影響しません。 -->
-    <button type="button" id="colorLabToggle" aria-controls="colorLabPanel" aria-expanded="false">🎨 カラーテスト</button>
-    <aside id="colorLabPanel" hidden aria-label="カラーテスト">
-      <div class="cl-head"><strong>🎨 Color Lab</strong><button type="button" id="clClose" aria-label="閉じる">✕</button></div>
-      <p class="cl-hint">色を変えるとホーム・編集画面にすぐ反映されます。画像データには影響しません。</p>
-      <label class="cl-row">プリセット<select id="clPreset"><option value="navy">Navy Comfort</option><option value="soft">Soft Slate</option><option value="peach">Peach</option><option value="custom">カスタム</option></select></label>
-      <div id="clColors"></div>
-      <div class="cl-preview"><strong>UI Preview</strong><div class="cl-sample-panel">Panel / Text<div class="cl-sample-row"><span class="cl-sample-normal">通常ボタン</span><span class="cl-sample-important">重要ボタン</span></div><div class="cl-sample-canvas">Canvas</div></div></div>
-      <div class="cl-actions"><button type="button" id="clCopy">CSSをコピー</button><button type="button" id="clReset">初期色に戻す</button></div>
-      <p class="cl-hint" id="clStatus" aria-live="polite">このブラウザ内に色設定を保存します。</p>
-    </aside>
-
-`;
-
-// KEY: localStorage に色を保存するときの名前
-const KEY = "funkin-studio-color-lab-v1";
-// labels: [CSS変数名, パネルに出す名前] の一覧。この並び順が、下の presets と colors の並び順（12色）に対応する。
-const labels = [
-  ["--bg", "全体背景"],
-  ["--panel", "パネル"],
-  ["--line", "境界線"],
-  ["--txt", "文字"],
-  ["--muted", "補助文字"],
-  ["--accent", "アクセント"],
-  ["--studio-button", "通常ボタン"],
-  ["--studio-button-hover", "通常ホバー"],
-  ["--studio-important", "重要ボタン"],
-  ["--studio-important-hover", "重要ホバー"],
-  ["--studio-important-shadow", "ボタン影"],
-  ["--studio-canvas", "キャンバス"],
-];
-// presets: 用意されたプリセット（navy / soft / peach）。それぞれ labels と同じ順番に12色を並べている。
-const presets = {
-  navy: [
-    "#002b66",
-    "#103b70",
-    "#42638a",
-    "#e6edf7",
-    "#c3d4eb",
-    "#94c5dd",
-    "#183f70",
-    "#285382",
-    "#994e3d",
-    "#ad5e4a",
-    "#66352d",
-    "#d8dce2",
-  ],
-  soft: [
-    "#252c38",
-    "#343d4b",
-    "#586578",
-    "#f0f2f5",
-    "#c2cbd6",
-    "#95b9d2",
-    "#41526a",
-    "#506581",
-    "#994e3d",
-    "#ad5e4a",
-    "#66352d",
-    "#d8dce2",
-  ],
-  peach: [
-    "#f2c9bd",
-    "#fff5f0",
-    "#b58c87",
-    "#302c35",
-    "#67575b",
-    "#286f69",
-    "#286f69",
-    "#348980",
-    "#994e3d",
-    "#ad5e4a",
-    "#66352d",
-    "#e5e5e5",
-  ],
-};
-// $: getElementById の短縮形 / root: <html>（CSS 変数を書き込む先）
-const $ = (id) => document.getElementById(id),
-  root = document.documentElement;
-// #rrggbb 形式（6桁）の色かどうか
-const hex = (v) => /^#[0-9a-f]{6}$/i.test(v);
-// fields: 各色の入力欄 { picker, text }（色の番号 → 欄）/ colors: 現在の12色（最初は navy）
-const fields = new Map();
-let colors = presets.navy.slice();
-// 現在の colors を画面へ反映する: body に cl-active を付ける → 各 CSS 変数へ色を設定 → 入力欄の表示を合わせる → localStorage に保存（保存できない環境では無視）
-function apply() {
-  document.body.classList.add("cl-active");
-  labels.forEach(([key], i) => root.style.setProperty(key, colors[i]));
-  fields.forEach((f, i) => {
-    f.picker.value = colors[i];
-    f.text.value = colors[i];
-  });
-  try {
-    localStorage.setItem(KEY, JSON.stringify(colors));
-  } catch (e) {}
-}
-// 12色をまとめて差し替える（プリセット選択・リセット用）
-function setColors(values, preset) {
-  colors = values.slice();
-  $("clPreset").value = preset;
-  apply();
-}
-// i 番目の色を変更する（不正な値は無視。プリセット欄は「custom」にする）
-function update(i, value) {
-  if (!hex(value)) return;
-  colors[i] = value.toLowerCase();
-  $("clPreset").value = "custom";
-  apply();
-}
-// パネルを組み立て、ボタンを配線する（ページの読み込み後に1回だけ実行）: 色ごとの行を作る → 保存済みの色があれば復元 → プリセット・開閉・リセット・コピーを配線
-function init() {
-  const host = $("clColors");
-  labels.forEach(([key, label], i) => {
-    const row = document.createElement("label");
-    row.className = "cl-row";
-    const name = document.createElement("span");
-    name.textContent = label;
-    const picker = document.createElement("input");
-    picker.type = "color";
-    picker.setAttribute("aria-label", label + " カラーピッカー");
-    const text = document.createElement("input");
-    text.type = "text";
-    text.maxLength = 7;
-    text.setAttribute("aria-label", label + " HEX");
-    row.append(name, picker, text);
-    host.append(row);
-    fields.set(i, { picker, text });
-    picker.addEventListener("input", () => update(i, picker.value));
-    text.addEventListener("change", () => {
-      if (hex(text.value)) update(i, text.value);
-      else text.value = colors[i];
-    });
-  });
-  try {
-    // 前回保存した色が、12個すべて正しい形式なら復元する
-    const stored = JSON.parse(localStorage.getItem(KEY));
-    if (Array.isArray(stored) && stored.length === labels.length && stored.every(hex)) {
-      colors = stored;
-      document.body.classList.add("cl-active");
-      apply();
-      // プリセット欄も保存された色に合わせる（一致しなければ「カスタム」）
-      const match = Object.keys(presets).find((k) => presets[k].every((c, i) => c === stored[i]));
-      $("clPreset").value = match || "custom";
-    }
-  } catch (e) {}
-  fields.forEach((f, i) => {
-    f.picker.value = colors[i];
-    f.text.value = colors[i];
-  });
-  $("clPreset").addEventListener("change", (e) => {
-    if (presets[e.target.value]) setColors(presets[e.target.value], e.target.value);
-  });
-  // パネルの開閉（aria-expanded も更新）
-  const toggle = () => {
-    const panel = $("colorLabPanel");
-    panel.hidden = !panel.hidden;
-    $("colorLabToggle").setAttribute("aria-expanded", String(!panel.hidden));
-  };
-  $("colorLabToggle").addEventListener("click", toggle);
-  $("clClose").addEventListener("click", () => {
-    if (!$("colorLabPanel").hidden) toggle();
-  });
-  $("clReset").addEventListener("click", () => setColors(presets.navy, "navy"));
-  // 「CSSをコピー」: 今の色を :root { --bg: ...; } の形でクリップボードへ。使えない環境では textarea 経由の古い方法で代替する
-  $("clCopy").addEventListener("click", async () => {
-    const css =
-      ":root {\n" +
-      labels.map(([key], i) => "  " + key + ": " + colors[i] + ";").join("\n") +
-      "\n}";
-    try {
-      await navigator.clipboard.writeText(css);
-      $("clStatus").textContent = "CSSをコピーしました。";
-    } catch (e) {
-      const area = document.createElement("textarea");
-      area.value = css;
-      document.body.append(area);
-      area.select();
-      try {
-        if (!document.execCommand("copy")) throw Error("copy failed");
-        $("clStatus").textContent = "CSSをコピーしました。";
-      } catch (err) {
-        $("clStatus").textContent = "コピーできませんでした。";
-      }
-      area.remove();
-    }
-  });
-}
-// 起動時に main.js から1回だけ呼ぶ: パネルを DOM へ挿入 → 色の行を作って配線
-function startColorLab() {
-  document.body.insertAdjacentHTML("beforeend", template);
-  init();
-}
-
-return { startColorLab };
-})();
-
 /* ===== funkin-studio/js/services/MobileFilePicker.js ===== */
-const __m9 = (() => {
+const __m8 = (() => {
 /* ============================================================
    services/MobileFilePicker.js — スマホ / タブレットでファイルが選べない問題の対策
    ------------------------------------------------------------
@@ -3011,7 +2782,7 @@ return { isImageOnlyAccept, needsRelax, startMobileFilePicker };
 })();
 
 /* ===== funkin-studio/js/core/appInfo.js ===== */
-const __m10 = (() => {
+const __m9 = (() => {
 /* ============================================================
    core/appInfo.js — アプリ名と「対応している V-Slice のバージョン」を1か所で決める
    ------------------------------------------------------------
@@ -3028,7 +2799,7 @@ return { APP_NAME, SUPPORTED_VERSIONS, GENERATED_BY };
 })();
 
 /* ===== funkin-studio/js/ui/Hud.js ===== */
-const __m11 = (() => {
+const __m10 = (() => {
 /* ============================================================
    ui/Hud.js — 画面上部のバー（Undo / Redo / Home / 形式切替 / 言語）
    ------------------------------------------------------------
@@ -3042,7 +2813,7 @@ const __m11 = (() => {
    旧コードの「if (!$("sparrowWorkspace").hidden)」のような分岐が不要になった。
    ============================================================ */
 const { htmlToElement } = __m1;
-const { SUPPORTED_VERSIONS } = __m10;
+const { SUPPORTED_VERSIONS } = __m9;
 
 const template = `
 <header id="studioHud" hidden>
@@ -3123,7 +2894,7 @@ return { Hud };
 })();
 
 /* ===== funkin-studio/js/services/funkinAssetsIndex.js ===== */
-const __m12 = (() => {
+const __m11 = (() => {
 /* ============================================================
    services/funkinAssetsIndex.js — FunkinCrew/Funkin.assets のファイルパス一覧（自動生成。手で編集しない）
    ------------------------------------------------------------
@@ -3137,7 +2908,7 @@ return { FUNKIN_ASSETS_PATHS };
 })();
 
 /* ===== funkin-studio/js/states/chart/zip.js ===== */
-const __m13 = (() => {
+const __m12 = (() => {
 /* ============================================================
    chart/zip.js — .fnfc（= ZIP）の読み書き（外部ライブラリなし）
    ------------------------------------------------------------
@@ -3311,7 +3082,7 @@ return { crc32, readZip, writeZip, openZipLazy };
 })();
 
 /* ===== funkin-studio/js/services/ModPack.js ===== */
-const __m14 = (() => {
+const __m13 = (() => {
 /* ============================================================
    services/ModPack.js — mod パック（フォルダ / zip）のファイルを「パス付き」で扱う共通部品
    ------------------------------------------------------------
@@ -3325,7 +3096,7 @@ const __m14 = (() => {
    ・originOf(): "Mod/images/…" → "mod"（どの mod / フォルダに属するか。同じ origin のファイルを優先する）
    ・LazyZipFile: zip の中の 1 ファイル。File と同じ使い方ができ、中身は読まれたときだけ取り出す
    ============================================================ */
-const { openZipLazy } = __m13;
+const { openZipLazy } = __m12;
 
 /** FNF の mod / assets 直下に来るフォルダ名。この名前が最初に出てきた所を「ルート」とみなす */
 const ANCHORS = new Set(["images", "data", "scripts", "sounds", "music", "songs", "shaders", "fonts", "videos", "preload", "shared", "gameplay", "ui"]);
@@ -3566,7 +3337,7 @@ return { relPathOf, infoOf, infoOfPath, infoOfDir, rootedOf, originOf, normAsset
 })();
 
 /* ===== funkin-studio/js/services/FunkinAssets.js ===== */
-const __m15 = (() => {
+const __m14 = (() => {
 /* ============================================================
    services/FunkinAssets.js — 本体アセット（FunkinCrew/Funkin.assets）を GitHub から取得する
    ------------------------------------------------------------
@@ -3583,8 +3354,8 @@ const __m15 = (() => {
    ・素材は Friday Night Funkin' のもの（© The Funkin' Crew Inc.）。エディタのプレビュー用で、書き出す mod の zip には含めない
    ・テスト・別のミラー用: globalThis.__FUNKIN_ASSETS = { raw: "http://…/", tree: "http://…/" }（末尾はブランチ名を足せる形）
    ============================================================ */
-const { FUNKIN_ASSETS_PATHS } = __m12;
-const { infoOfPath, normAsset } = __m14;
+const { FUNKIN_ASSETS_PATHS } = __m11;
+const { infoOfPath, normAsset, detectLayout } = __m13;
 
 const ORIGIN = "funkin.assets";
 const KEY_ON = "studio.remoteAssets";
@@ -3614,19 +3385,33 @@ const setEnabled = (on) => {
     localStorage.setItem(KEY_ON, on ? "1" : "0");
   } catch {}
 };
-const getBranch = () => {
+/** 設定値: "auto"（既定。読み込んだ mod の配置に合わせる）か、ブランチ名 */
+const getBranchMode = () => {
   try {
     const b = localStorage.getItem(KEY_BRANCH);
-    if (BRANCHES.some((x) => x.id === b)) return b;
+    if (b === "auto" || BRANCHES.some((x) => x.id === b)) return b;
   } catch {}
-  return BRANCHES[0].id;
+  return "auto";
+};
+let autoBranch = BRANCHES[0].id; // auto のときに使うブランチ（mod が 0.9 の配置なら 0.9 のブランチ）
+/** いま実際に使うブランチ */
+const getBranch = () => {
+  const m = getBranchMode();
+  return m === "auto" ? autoBranch : m;
 };
 const setBranch = (id) => {
-  if (!BRANCHES.some((x) => x.id === id)) return;
+  if (id !== "auto" && !BRANCHES.some((x) => x.id === id)) return;
   try {
     localStorage.setItem(KEY_BRANCH, id);
   } catch {}
 };
+/** auto のとき、読み込んだ mod の配置（"0.8" / "0.9"）から取得元のブランチを決める。mod が空なら 0.8（main）のまま */
+function syncLayout(ws) {
+  const files = ws?.files?.filter?.((f) => !f.remote) ?? [];
+  const layout = files.length ? detectLayout(files) : "0.8";
+  autoBranch = (BRANCHES.find((b) => b.layout === layout) ?? BRANCHES[0]).id;
+  return getBranch();
+}
 const layoutOf = (branch = getBranch()) => BRANCHES.find((x) => x.id === branch)?.layout ?? "0.8";
 
 // ---------------------------------------------------------------- 取得したファイル（保存しない。同じ回の中だけ使い回す）
@@ -3721,6 +3506,7 @@ async function refreshIndex() {
 
 /** 前回取得したものを全部捨てる（取得したバイト列・Workspace に足したファイル）。次の使用で取り直す。ws は省略できる */
 function reset(ws) {
+  syncLayout(ws);
   bytesCache.clear();
   ws?.dropRemote?.();
 }
@@ -3740,11 +3526,15 @@ function pickLib(list, hint) {
 
 /** id がある種類（character / stage / notestyle）の JSON。0.8: data/<dir>/<id> / 0.9: gameplay/<dir>/<id>/<id>（どちらの配置でも探す） */
 function findData(kind, id) {
+  return findData1(kind, id, getBranch()) ?? findData1(kind, id, otherBranch()); // 見つからなければ、もう一方のブランチも探す
+}
+const otherBranch = (b = getBranch()) => (BRANCHES.find((x) => x.id !== b) ?? BRANCHES[0]).id;
+function findData1(kind, id, branch) {
   const dir = { character: "characters", stage: "stages", notestyle: "notestyles" }[kind];
   if (!dir || !id) return null;
   const n = normAsset(id);
-  const ix = noExtOf(indexOf());
-  const keys = layoutOf() === "0.9" ? [`gameplay/${dir}/${n}/${n}`, `data/${dir}/${n}`] : [`data/${dir}/${n}`, `gameplay/${dir}/${n}/${n}`];
+  const ix = noExtOf(indexOf(branch));
+  const keys = layoutOf(branch) === "0.9" ? [`gameplay/${dir}/${n}/${n}`, `data/${dir}/${n}`] : [`data/${dir}/${n}`, `gameplay/${dir}/${n}/${n}`];
   for (const k of keys) {
     const list = (ix.get(k) ?? []).filter((f) => /\.json$/i.test(f.name));
     if (list.length) return pickLib(list, "")[0];
@@ -3764,10 +3554,14 @@ function findSound(name) {
 
 /** assetPath のアトラス一式。Sparrow / Packer = png + xml(txt)、AnimateAtlas = フォルダの中身全部、1 枚絵 = png だけ。0.8 は images/<path>、0.9 はリポジトリのパスそのまま */
 function findAtlas(assetPath) {
+  const a = findAtlas1(assetPath, getBranch());
+  return a.length ? a : findAtlas1(assetPath, otherBranch());
+}
+function findAtlas1(assetPath, branch) {
   const n = normAsset(assetPath);
   if (!n) return [];
   const hint = libHint(assetPath);
-  const ix = noExtOf(indexOf());
+  const ix = noExtOf(indexOf(branch));
   for (const key of [`images/${n}`, n]) {
     const same = ix.get(key) ?? [];
     const png = pickLib(same.filter((f) => /\.(png|jpg)$/i.test(f.name)), hint)[0];
@@ -3808,6 +3602,7 @@ const parseJson = async (f) => JSON.parse((await f.text()).replace(/^﻿/, ""));
 
 /** アトラス（assetPath）が mod に無いときだけ、本体のものを足す */
 async function ensureAtlas(ws, assetPath) {
+  syncLayout(ws);
   if (!assetPath || /^#|^none$/i.test(String(assetPath).trim())) return 0;
   if (ws.atlasFor?.(assetPath)) return 0;
   const list = findAtlas(assetPath);
@@ -3819,6 +3614,7 @@ async function ensureAtlas(ws, assetPath) {
  * 足したファイル数（何も足していなければ 0）
  */
 async function ensureCharacter(ws, id) {
+  syncLayout(ws);
   if (!isEnabled() || !id) return 0;
   let f = ws.resolve("character", id, { quiet: true }),
     n = 0;
@@ -3836,6 +3632,7 @@ async function ensureCharacter(ws, id) {
 
 /** ステージも同じ: stage.json が無ければ足し、props の画像が mod に無ければ本体のものを足す */
 async function ensureStage(ws, id) {
+  syncLayout(ws);
   if (!isEnabled() || !id) return 0;
   let f = ws.resolve("stage", id, { quiet: true }),
     n = 0;
@@ -3853,6 +3650,7 @@ async function ensureStage(ws, id) {
 
 /** { stage, characters: {player, girlfriend, opponent, …} | [id…] } にあるものを、無ければ取ってくる（並列）。失敗は例外にせず { errors } で返す */
 async function ensureFor(ws, spec = {}) {
+  syncLayout(ws);
   const errors = [];
   const run = async (fn, label) => {
     try {
@@ -3879,6 +3677,35 @@ const fragKey = (name) => norm(String(name ?? "").replace(/^.*[\\/]/, "").replac
  * 0.8: scripts/stages/<id>.hxc + scripts/stages/props/*.hxc + scripts/shaders/*.hxc / 0.9: gameplay/stages/<id>/*.hxc + ui/shaders/*.hxc
  * → { scripts: [{ name, text, main }], frags: { <fragKey>: text } }。.frag は、スクリプトの中で Paths.frag('名前') と書かれているものだけ取る
  */
+/** 本体のノーツ kind のスクリプト（preload/scripts/notekinds/ または gameplay/notekinds/）。kinds = 譜面で使われている kind、have = mod が定義済みの kind は除く。
+ *  ファイル名 = kind 名のものを取る。見つからない kind は、全ファイルの `super('kind')` を調べる */
+async function noteKindScripts(kinds, have = []) {
+  if (!isEnabled()) return [];
+  const want = [...new Set(kinds)].filter((k) => k && !have.includes(k));
+  if (!want.length) return [];
+  const ix = indexOf(getBranch());
+  const rp = (f) => f.repoPath.toLowerCase().replace(/^(preload|shared)\//, "");
+  const files = [...ix.files.values()].filter((f) => /\.hxc$/i.test(f.name) && /^(scripts|gameplay)\/notekinds\//.test(rp(f)));
+  const out = new Map();
+  const rest = [];
+  for (const k of want) {
+    const f = files.find((x) => x.name.replace(/\.hxc$/i, "").toLowerCase() === String(k).toLowerCase());
+    if (f) out.set(f.repoPath, f);
+    else rest.push(k);
+  }
+  if (rest.length) {
+    await Promise.all(
+      files.map(async (f) => {
+        if (out.has(f.repoPath)) return;
+        const t = await f.text().catch(() => "");
+        if (rest.some((k) => new RegExp(`super\\(\\s*['"]${String(k).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}['"]`).test(t))) out.set(f.repoPath, f);
+      }),
+    );
+  }
+  const list = [...out.values()];
+  return Promise.all(list.map(async (f) => ({ name: `funkin.assets/${f.repoPath}`, text: await f.text() }))).then((a) => a.filter((x) => x.text));
+}
+
 /** 本体の Haxe シェーダークラスのうち、runtime 側で作ってあるもの → 使う .frag */
 const NATIVE_FRAGS = { AdjustColorShader: "adjust-color" };
 async function stageScripts(stageId) {
@@ -3964,11 +3791,11 @@ async function noteStyle(id) {
 /** 画面に出す短い説明 */
 const describe = () => `本体アセット: ${isEnabled() ? `GitHub（FunkinCrew/Funkin.assets の ${getBranch()}）から毎回取得` : "オフ"}（一覧 ${indexOf().files.size} 件）`;
 
-return { ORIGIN, BRANCHES, isEnabled, setEnabled, getBranch, setBranch, RemoteFile, refreshIndex, reset, findData, has, findSound, findAtlas, ensureAtlas, ensureCharacter, ensureStage, ensureFor, fragKey, stageScripts, noteStyle, describe };
+return { ORIGIN, BRANCHES, isEnabled, setEnabled, getBranchMode, getBranch, setBranch, syncLayout, RemoteFile, refreshIndex, reset, findData, has, findSound, findAtlas, ensureAtlas, ensureCharacter, ensureStage, ensureFor, fragKey, noteKindScripts, stageScripts, noteStyle, describe };
 })();
 
 /* ===== funkin-studio/js/services/uiFont.js ===== */
-const __m16 = (() => {
+const __m15 = (() => {
 /* ============================================================
    services/uiFont.js — 画面の英数字フォント（VCR OSD Mono）を funkin.assets から読み込む
    ------------------------------------------------------------
@@ -3977,7 +3804,7 @@ const __m16 = (() => {
    ・取れないとき（オフライン等）は何もしない → css の次の候補（端末の等幅フォント）がそのまま使われる。
    ・日本語など VCR に無い文字は、css 側の次の候補（端末の等幅フォント）で表示される。
    ============================================================ */
-const { getBranch } = __m15;
+const { getBranch } = __m14;
 
 const FAMILY = "FNF VCR";
 const FILES = {
@@ -4009,7 +3836,7 @@ return { loadUiFont };
 })();
 
 /* ===== funkin-studio/js/services/Workspace.js ===== */
-const __m17 = (() => {
+const __m16 = (() => {
 /* ============================================================
    services/Workspace.js — 全エディタで共有する「読み込み済み mod のファイルの山」
    ------------------------------------------------------------
@@ -4021,8 +3848,8 @@ const __m17 = (() => {
    ・toFile(f)    … 既存の <input type=file> ベースの処理へ渡すための、通常の File への変換
    ・atlasFor(assetPath, origin) … キャラ/prop 用の { png, def, anim } を探す
    ============================================================ */
-const { ensureFor, ORIGIN: REMOTE_ORIGIN } = __m15;
-const { openModZip, summarize, resolveAsset, infoOf, normAsset, relPathOf } = __m14;
+const { ensureFor, ORIGIN: REMOTE_ORIGIN } = __m14;
+const { openModZip, summarize, resolveAsset, infoOf, normAsset, relPathOf } = __m13;
 
 class Workspace {
   constructor(app) {
@@ -4140,7 +3967,7 @@ return { Workspace };
 })();
 
 /* ===== funkin-studio/js/services/ModExport.js ===== */
-const __m18 = (() => {
+const __m17 = (() => {
 /* ============================================================
    services/ModExport.js — 各エディタの書き出しを「mod の zip ごと」にまとめる
    ------------------------------------------------------------
@@ -4151,8 +3978,8 @@ const __m18 = (() => {
    をまとめた zip をダウンロードさせる。zip の中身の場所は元の mod と同じなので、そのまま上書きして使える。
    ・queueExport … 同じ瞬間に何度も呼ばれる（png + json など）ものを 1 つの zip にまとめる
    ============================================================ */
-const { crc32 } = __m13;
-const { relPathOf, infoOf } = __m14;
+const { crc32 } = __m12;
+const { relPathOf, infoOf } = __m13;
 
 const KEY = "studio.exportWholeMod";
 const getIncludeOriginal = () => {
@@ -4284,7 +4111,7 @@ return { getIncludeOriginal, setIncludeOriginal, exportMod, queueExport };
 })();
 
 /* ===== funkin-studio/js/states/HomeState.js ===== */
-const __m19 = (() => {
+const __m18 = (() => {
 /* ============================================================
    states/HomeState.js — ホーム画面（最初に出る画面）
    ------------------------------------------------------------
@@ -4293,8 +4120,8 @@ const __m19 = (() => {
      ① static id / template を決める
      ② create() でボタンを配線する
    ============================================================ */
-const { getIncludeOriginal, setIncludeOriginal } = __m18;
-const { isEnabled: isRemoteOn, setEnabled: setRemoteOn, refreshIndex, BRANCHES, getBranch, setBranch, reset: resetRemote } = __m15;
+const { getIncludeOriginal, setIncludeOriginal } = __m17;
+const { isEnabled: isRemoteOn, setEnabled: setRemoteOn, refreshIndex, BRANCHES, getBranchMode, setBranch, reset: resetRemote } = __m14;
 const { State } = __m2;
 
 class HomeState extends State {
@@ -4327,7 +4154,7 @@ class HomeState extends State {
             <button id="homeModClear" type="button">空にする</button>
           </div>
           <label class="tiny" title="読み込んだ mod に無いキャラ・ステージ・ノートスタイル（と画像）を、FunkinCrew/Funkin.assets（GitHub）から必要な分だけ取得します。取得したものは書き出す zip には含めません"><input id="homeRemote" type="checkbox" /> mod に無い本体アセットを GitHub（Funkin.assets）から取得する</label>
-          <label class="tiny" title="取得元のブランチ。main = 0.8 系の配置、preview/public-playtest = 0.9 プレビューの配置。変えると、前回取得したものを捨てて取り直します">取得するブランチ <select id="homeBranch"></select></label>
+          <label class="tiny" title="取得元のブランチ。自動 = mod が gameplay/ 配置（0.9）なら preview/public-playtest、そうでなければ main。main = 0.8 系の配置、preview/public-playtest = 0.9 プレビューの配置。変えると、前回取得したものを捨てて取り直します">取得するブランチ <select id="homeBranch"></select></label>
           <label class="tiny"><input id="homeModWhole" type="checkbox" /> 書き出し時に、読み込んだ元の mod 全体も zip に含める</label>
           <p id="homeModInfo" class="tiny">まだ読み込んでいません。</p>
         </div>
@@ -4369,8 +4196,9 @@ class HomeState extends State {
     this._render = render;
     refreshIndex(); // 本体アセットの一覧を新しくする（保存はしない。失敗しても同梱の一覧で動く）
     const br = q("#homeBranch");
+    br.append(new Option("自動（読み込んだ mod の配置に合わせる）", "auto"));
     for (const b of BRANCHES) br.append(new Option(b.label, b.id));
-    br.value = getBranch();
+    br.value = getBranchMode();
     br.onchange = () => {
       setBranch(br.value);
       resetRemote(this.app.workspace); // 前回のブランチから取得したものは捨てる
@@ -4393,7 +4221,7 @@ return { HomeState };
 })();
 
 /* ===== funkin-studio/js/states/RenderMenuState.js ===== */
-const __m20 = (() => {
+const __m19 = (() => {
 /* ============================================================
    states/RenderMenuState.js — アトラス形式の選択（AnimateAtlas / Sparrow）
    ============================================================ */
@@ -4434,7 +4262,7 @@ return { RenderMenuState };
 })();
 
 /* ===== funkin-studio/js/states/FunkinMenuState.js ===== */
-const __m21 = (() => {
+const __m20 = (() => {
 /* ============================================================
    states/FunkinMenuState.js — Funkin' Editor のツール選択
    ============================================================ */
@@ -4482,7 +4310,7 @@ return { FunkinMenuState };
 })();
 
 /* ===== funkin-studio/js/states/OtherMenuState.js ===== */
-const __m22 = (() => {
+const __m21 = (() => {
 /* ============================================================
    states/OtherMenuState.js — その他（コミュニティ / クレジット）
    ============================================================ */
@@ -4523,7 +4351,7 @@ return { OtherMenuState };
 })();
 
 /* ===== funkin-studio/js/data/contributors.js ===== */
-const __m23 = (() => {
+const __m22 = (() => {
 /*
  * Contributors: Add a new object to the array to publish a new credit.
  * image: optional image URL or local file path relative to the repository root.
@@ -4576,7 +4404,7 @@ return { CONTRIBUTORS };
 })();
 
 /* ===== funkin-studio/js/states/ContributorsState.js ===== */
-const __m24 = (() => {
+const __m23 = (() => {
 /* ============================================================
    states/ContributorsState.js — クレジット一覧
    ------------------------------------------------------------
@@ -4585,7 +4413,7 @@ const __m24 = (() => {
    言語が切り替わったら作り直す（app.events の "language-changed"）。
    ============================================================ */
 const { State } = __m2;
-const { CONTRIBUTORS } = __m23;
+const { CONTRIBUTORS } = __m22;
 
 // http/https のリンクだけ許可する（javascript: などを防ぐ）
 function safeUrl(url) {
@@ -4694,7 +4522,7 @@ return { ContributorsState };
 })();
 
 /* ===== funkin-studio/js/ui/ModPicker.js ===== */
-const __m25 = (() => {
+const __m24 = (() => {
 /* ============================================================
    ui/ModPicker.js — 各エディタに置く「読み込み済みの mod から選ぶ」欄
    ------------------------------------------------------------
@@ -4703,7 +4531,7 @@ const __m25 = (() => {
    → エディタ側のロジックは変えずに、全エディタでアセットを共有できる。
    使い方: mountModPicker(state, hostEl, { title, list(ws) → [{label, files:{inputId: File}}], run(): 読み込みボタンを押す関数 })
    ============================================================ */
-const { infoOf } = __m14;
+const { infoOf } = __m13;
 
 function mountModPicker(state, host, spec) {
   const ws = state.app.workspace;
@@ -4763,11 +4591,11 @@ return { mountModPicker };
 })();
 
 /* ===== funkin-studio/js/ui/modLists.js ===== */
-const __m26 = (() => {
+const __m25 = (() => {
 /* ============================================================
    ui/modLists.js — 各エディタの「mod から選ぶ」一覧の作り方（種類ごと）
    ============================================================ */
-const { infoOf } = __m14;
+const { infoOf } = __m13;
 
 const label = (i) => (i.origin ? i.origin + " / " : "") + i.noExt;
 
@@ -4826,7 +4654,7 @@ return { sparrowList, animateList, characterList, songList };
 })();
 
 /* ===== funkin-studio/js/states/EditorState.js ===== */
-const __m27 = (() => {
+const __m26 = (() => {
 /* ============================================================
    states/EditorState.js — 3つのエディタ共通の親クラス（State → EditorState → 各エディタ）
    ------------------------------------------------------------
@@ -4853,7 +4681,7 @@ return { EditorState };
 })();
 
 /* ===== funkin-studio/js/states/animate/template.js ===== */
-const __m28 = (() => {
+const __m27 = (() => {
 /* ============================================================
    animate/template.js — animate 画面の HTML
    ------------------------------------------------------------
@@ -5526,8 +5354,8 @@ return { template };
 })();
 
 /* ===== funkin-studio/js/states/animate/editor.js ===== */
-const __m29 = (() => {
-const { queueExport } = __m18;
+const __m28 = (() => {
+const { queueExport } = __m17;
 /* ============================================================
    states/animate/editor.js — Animate Editor（AnimateAtlas）本体のロジック
    ------------------------------------------------------------
@@ -8601,7 +8429,7 @@ return { mountAnimateEditor };
 })();
 
 /* ===== funkin-studio/js/states/animate/partsPanel.js ===== */
-const __m30 = (() => {
+const __m29 = (() => {
 /* ============================================================
    states/animate/partsPanel.js — パーツ管理パネル（Animate 画面の下の折りたたみパネル）
    ------------------------------------------------------------
@@ -8680,7 +8508,7 @@ return { mountPartsPanel };
 })();
 
 /* ===== funkin-studio/js/states/AnimateEditorState.js ===== */
-const __m31 = (() => {
+const __m30 = (() => {
 /* ============================================================
    states/AnimateEditorState.js — Animate Editor（AnimateAtlas）の画面
    ------------------------------------------------------------
@@ -8688,12 +8516,12 @@ const __m31 = (() => {
    persistent（隠れても破棄しない）・hud（HUD を出す）・未保存の確認は、親の EditorState から引き継いでいる。
    隠れるときは onHide、戻ってくると onShow が呼ばれる。
    ============================================================ */
-const { mountModPicker } = __m25;
-const { animateList } = __m26;
-const { EditorState } = __m27;
-const { template } = __m28;
-const { mountAnimateEditor } = __m29;
-const { mountPartsPanel } = __m30;
+const { mountModPicker } = __m24;
+const { animateList } = __m25;
+const { EditorState } = __m26;
+const { template } = __m27;
+const { mountAnimateEditor } = __m28;
+const { mountPartsPanel } = __m29;
 
 class AnimateEditorState extends EditorState {
   static id = "animate";
@@ -8727,7 +8555,7 @@ return { AnimateEditorState };
 })();
 
 /* ===== funkin-studio/js/states/sparrow/template.js ===== */
-const __m32 = (() => {
+const __m31 = (() => {
 /* ============================================================
    sparrow/template.js — sparrow 画面の HTML
    ------------------------------------------------------------
@@ -8926,8 +8754,8 @@ return { template };
 })();
 
 /* ===== funkin-studio/js/states/sparrow/editor.js ===== */
-const __m33 = (() => {
-const { queueExport } = __m18;
+const __m32 = (() => {
+const { queueExport } = __m17;
 /* ============================================================
    states/sparrow/editor.js — Sparrow Editor（Sparrow形式のアトラス: XML + PNG の編集）のロジック
    ------------------------------------------------------------
@@ -9538,17 +9366,17 @@ return { mountSparrowEditor };
 })();
 
 /* ===== funkin-studio/js/states/SparrowEditorState.js ===== */
-const __m34 = (() => {
+const __m33 = (() => {
 /* ============================================================
    states/SparrowEditorState.js — Sparrow Editor の画面
    ------------------------------------------------------------
    構造は AnimateEditorState と同じ（入れ物 + editor.js のロジック + template.js の HTML）。
    ============================================================ */
-const { mountModPicker } = __m25;
-const { sparrowList } = __m26;
-const { EditorState } = __m27;
-const { template } = __m32;
-const { mountSparrowEditor } = __m33;
+const { mountModPicker } = __m24;
+const { sparrowList } = __m25;
+const { EditorState } = __m26;
+const { template } = __m31;
+const { mountSparrowEditor } = __m32;
 
 class SparrowEditorState extends EditorState {
   static id = "sparrow";
@@ -9578,7 +9406,7 @@ return { SparrowEditorState };
 })();
 
 /* ===== funkin-studio/js/states/character/template.js ===== */
-const __m35 = (() => {
+const __m34 = (() => {
 /* ============================================================
    character/template.js — character 画面の HTML
    ------------------------------------------------------------
@@ -9863,7 +9691,7 @@ return { template };
 })();
 
 /* ===== funkin-studio/js/ui/Viewport.js ===== */
-const __m36 = (() => {
+const __m35 = (() => {
 /* ============================================================
    ui/Viewport.js — 画面いっぱいの「スクロール(パン)＆ズームできるプレビュー」
    ------------------------------------------------------------
@@ -10114,7 +9942,7 @@ return { isTypingTarget, isTextEntry, Viewport };
 })();
 
 /* ===== funkin-studio/js/ui/HudPanels.js ===== */
-const __m37 = (() => {
+const __m36 = (() => {
 /* ============================================================
    ui/HudPanels.js — 画面の上に重ねる「Hud パネル」の表示 / 非表示を管理する
    ------------------------------------------------------------
@@ -10238,7 +10066,7 @@ return { HudPanels };
 })();
 
 /* ===== funkin-studio/js/states/stage/sparrowAtlas.js ===== */
-const __m38 = (() => {
+const __m37 = (() => {
 /* ============================================================
    stage/sparrowAtlas.js — Sparrow アトラス（PNG + XML）の読み込みと切り出し描画
    ------------------------------------------------------------
@@ -10405,7 +10233,7 @@ return { getImageCap, setImageCap, loadImage, parseSparrowXml, parsePackerText, 
 })();
 
 /* ===== funkin-studio/js/states/character/editor.js ===== */
-const __m39 = (() => {
+const __m38 = (() => {
 /* ============================================================
    states/character/editor.js — Character Editor（V-Slice の character.json / Offset 編集）のロジック
    ------------------------------------------------------------
@@ -10439,12 +10267,12 @@ const __m39 = (() => {
    目次: 1.状態変数 2.アトラスの登録 3.基本ヘルパーと Undo/Redo 4.再生するフレーム列の決め方
          5.描画 6.読み込みとアニメの追加・改名・削除 7.再生操作 8.オフセットの編集と書き出し 9.ビューと Hud の操作
    ============================================================ */
-const { exportMod } = __m18;
-const { registryPath } = __m14;
-const { Viewport, isTextEntry } = __m36;
-const { HudPanels } = __m37;
-const { parsePackerText } = __m38;
-const { GENERATED_BY } = __m10;
+const { exportMod } = __m17;
+const { registryPath } = __m13;
+const { Viewport, isTextEntry } = __m35;
+const { HudPanels } = __m36;
+const { parsePackerText } = __m37;
+const { GENERATED_BY } = __m9;
 
 function mountCharacterEditor(state) {
   // ============================================================
@@ -11626,18 +11454,18 @@ return { mountCharacterEditor };
 })();
 
 /* ===== funkin-studio/js/states/CharacterEditorState.js ===== */
-const __m40 = (() => {
+const __m39 = (() => {
 /* ============================================================
    states/CharacterEditorState.js — Character Editor（V-Slice の character.json / Offset 編集）の画面
    ------------------------------------------------------------
    この画面の Undo/Redo は画面内のボタン（offUndo など）で行い、HUD の Undo/Redo は使わない。
    （State に undo()/redo() を書かなければ、HUD のボタンは押せないままになる）
    ============================================================ */
-const { mountModPicker } = __m25;
-const { characterList } = __m26;
-const { EditorState } = __m27;
-const { template } = __m35;
-const { mountCharacterEditor } = __m39;
+const { mountModPicker } = __m24;
+const { characterList } = __m25;
+const { EditorState } = __m26;
+const { template } = __m34;
+const { mountCharacterEditor } = __m38;
 
 class CharacterEditorState extends EditorState {
   static id = "character";
@@ -11661,7 +11489,7 @@ return { CharacterEditorState };
 })();
 
 /* ===== funkin-studio/js/states/stage/template.js ===== */
-const __m41 = (() => {
+const __m40 = (() => {
 /* ============================================================
    stage/template.js — Stage Editor 画面の HTML
    ------------------------------------------------------------
@@ -11876,7 +11704,7 @@ return { template };
 })();
 
 /* ===== funkin-studio/js/ui/FnfShell.js ===== */
-const __m42 = (() => {
+const __m41 = (() => {
 /* ============================================================
    ui/FnfShell.js — FNF 本体のエディタ（V-Slice の Chart / Stage Editor）風の画面枠
    ------------------------------------------------------------
@@ -12110,7 +11938,7 @@ return { FnfShell };
 })();
 
 /* ===== funkin-studio/js/states/stage/stageData.js ===== */
-const __m43 = (() => {
+const __m42 = (() => {
 /* ============================================================
    stage/stageData.js — V-Slice の「ステージ JSON」（StageData.hx）を扱う純粋な関数群
    ------------------------------------------------------------
@@ -12300,7 +12128,7 @@ return { STAGE_VERSION, CHAR_IDS, CHAR_LABEL, clone, round3, defaultCharacter, d
 })();
 
 /* ===== funkin-studio/js/states/stage/atlas.js ===== */
-const __m44 = (() => {
+const __m43 = (() => {
 /* ============================================================
    stage/atlas.js — 絵の形式ごとの違いを「フレーム」にそろえる（Sparrow / Packer / AnimateAtlas）
    ------------------------------------------------------------
@@ -12322,8 +12150,8 @@ const __m44 = (() => {
           MultiSparrowCharacter / MultiAnimateAtlasCharacter（アニメごとの assetPath と renderType）
    ※ AnimateAtlas の描画ロジックは Character Editor（states/character/editor.js）と同じ。あちらは触らない方針のため重複している。
    ============================================================ */
-const { loadImage, parseSparrowXml, parsePackerText, sparrowSequenceOf, paintSparrow } = __m38;
-const { rankFiles, topTies, assetNote, infoOf, infoOfDir, scorePath, originOf } = __m14;
+const { loadImage, parseSparrowXml, parsePackerText, sparrowSequenceOf, paintSparrow } = __m37;
+const { rankFiles, topTies, assetNote, infoOf, infoOfDir, scorePath, originOf } = __m13;
 
 // ============================================================
 // 1. Sparrow / Packer（切り出す形式）
@@ -12830,7 +12658,7 @@ return { SpriteAtlas, AnimateAtlas, isAnimationJsonName, isSpritemapJsonName, bu
 })();
 
 /* ===== funkin-studio/js/states/stage/stageCharacter.js ===== */
-const __m45 = (() => {
+const __m44 = (() => {
 /* ============================================================
    stage/stageCharacter.js — ステージ上に「実物のキャラクター」を出すための部品
    ------------------------------------------------------------
@@ -12856,8 +12684,8 @@ const __m45 = (() => {
    ■ 左右反転: BF は !flipX、DAD / GF は flipX（Stage.addCharacter）。反転は「表示中フレーム自身の枠」の中で行う。
    ■ カメラ焦点: originalPosition + (幅/2, 高さ/2) + キャラの cameraOffsets + ステージ側の cameraOffsets
    ============================================================ */
-const { findSpriteAtlas, findAnimateAtlas } = __m44;
-const { originOf } = __m14;
+const { findSpriteAtlas, findAnimateAtlas } = __m43;
+const { originOf } = __m13;
 
 const RENDER_TYPES = ["sparrow", "packer", "multisparrow", "animateatlas", "multianimateatlas"];
 
@@ -13023,7 +12851,7 @@ return { RENDER_TYPES, atlasKindOf, referenceAnimOf, StageCharacter };
 })();
 
 /* ===== funkin-studio/js/states/stage/editor.js ===== */
-const __m46 = (() => {
+const __m45 = (() => {
 /* ============================================================
    stage/editor.js — Stage Editor（V-Slice のステージ JSON の編集）のロジック
    ------------------------------------------------------------
@@ -13044,16 +12872,16 @@ const __m46 = (() => {
    目次: 1.状態 2.画像アセット 3.履歴 4.図形の計算 5.描画 6.選択とドラッグ 7.レイヤー一覧 8.プロパティ欄
          9.ステージ全体・ファイル 10.ビューとキーボード
    ============================================================ */
-const { exportMod } = __m18;
-const { registryPath } = __m14;
-const { Viewport, isTextEntry } = __m36;
-const { HudPanels } = __m37;
-const { FnfShell } = __m42;
-const { defaultStage, normalizeStage, newProp, newRect, serializeStage, clone, round3, CHAR_IDS, CHAR_LABEL, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas } = __m43;
-const { loadImage, parseSparrowXml, parsePackerText, getImageCap, setImageCap } = __m38;
-const { normAsset, infoOf, infoOfDir, setAssetNoteSink, openModZip, summarize } = __m14;
-const { SpriteAtlas, animateGroups, buildAnimateAtlas, isSpritemapPng, matchFile, relPath, findAnimateAtlas } = __m44;
-const { StageCharacter } = __m45;
+const { exportMod } = __m17;
+const { registryPath } = __m13;
+const { Viewport, isTextEntry } = __m35;
+const { HudPanels } = __m36;
+const { FnfShell } = __m41;
+const { defaultStage, normalizeStage, newProp, newRect, serializeStage, clone, round3, CHAR_IDS, CHAR_LABEL, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas } = __m42;
+const { loadImage, parseSparrowXml, parsePackerText, getImageCap, setImageCap } = __m37;
+const { normAsset, infoOf, infoOfDir, setAssetNoteSink, openModZip, summarize } = __m13;
+const { SpriteAtlas, animateGroups, buildAnimateAtlas, isSpritemapPng, matchFile, relPath, findAnimateAtlas } = __m43;
+const { StageCharacter } = __m44;
 
 const SEL_COLOR = "#ffb020"; // 選択枠の色
 const PLACEHOLDER = { bf: "#4a8cff", dad: "#a15cff", gf: "#ff6fb1" }; // キャラ未読み込み時のシルエット色
@@ -14569,16 +14397,16 @@ return { mountStageEditor };
 })();
 
 /* ===== funkin-studio/js/states/StageEditorState.js ===== */
-const __m47 = (() => {
+const __m46 = (() => {
 /* ============================================================
    states/StageEditorState.js — Stage Editor（V-Slice のステージ JSON の編集）の画面
    ------------------------------------------------------------
    構造は他のエディタと同じ（入れ物 + stage/editor.js のロジック + stage/template.js の HTML）。
    Character Editor と違い、HUD の Undo / Redo ボタンをそのまま使う（undo() / redo() を持つ画面は HUD のボタンが押せる）。
    ============================================================ */
-const { EditorState } = __m27;
-const { template } = __m41;
-const { mountStageEditor } = __m46;
+const { EditorState } = __m26;
+const { template } = __m40;
+const { mountStageEditor } = __m45;
 
 class StageEditorState extends EditorState {
   static id = "stage";
@@ -14607,7 +14435,7 @@ return { StageEditorState };
 })();
 
 /* ===== funkin-studio/js/states/chart/template.js ===== */
-const __m48 = (() => {
+const __m47 = (() => {
 /* ============================================================
    chart/template.js — Chart Editor 画面の HTML
    ------------------------------------------------------------
@@ -14905,7 +14733,7 @@ return { template };
 })();
 
 /* ===== funkin-studio/js/states/chart/chartData.js ===== */
-const __m49 = (() => {
+const __m48 = (() => {
 /* ============================================================
    chart/chartData.js — Chart Editor のデータ（metadata / chart）と時間計算
    ------------------------------------------------------------
@@ -14915,7 +14743,7 @@ const __m49 = (() => {
    ・時間はすべてミリ秒(ms)で持つ。グリッドの縦位置は「step（16分音符）」で数える。
    ・ノーツ d: 0-3 = プレイヤー側, 4-7 = 相手側（getStrumlineIndex）。グリッド上は 相手=左 / プレイヤー=右 / イベント=最右。
    ============================================================ */
-const { GENERATED_BY } = __m10;
+const { GENERATED_BY } = __m9;
 
 const METADATA_VERSION = "2.2.8";
 const CHART_VERSION = "2.0.0";
@@ -15271,7 +15099,7 @@ return { METADATA_VERSION, CHART_VERSION, STRUMLINE_SIZE, STEPS_PER_BEAT, DEFAUL
 })();
 
 /* ===== funkin-studio/js/states/chart/audio.js ===== */
-const __m50 = (() => {
+const __m49 = (() => {
 /* ============================================================
    chart/audio.js — Chart Editor の音声（Inst / Voices の複数トラック）
    ------------------------------------------------------------
@@ -15435,7 +15263,7 @@ return { PEAK_MS, AudioEngine };
 })();
 
 /* ===== funkin-studio/js/states/chart/scriptEvents.js ===== */
-const __m51 = (() => {
+const __m50 = (() => {
 /* ============================================================
    chart/scriptEvents.js — HScript（.hxc）から「イベントのスキーマ」と「ノーツ kind」を読み取る
    ------------------------------------------------------------
@@ -15696,7 +15524,7 @@ return { parseHxc };
 })();
 
 /* ===== funkin-studio/js/runtime/hscript.js ===== */
-const __m52 = (() => {
+const __m51 = (() => {
 /* ============================================================
    runtime/hscript.js — HScript（Haxe のサブセット）の軽量インタプリタ
    ------------------------------------------------------------
@@ -17307,7 +17135,7 @@ return { HScriptError, HMap, isStub, makeStub, HScript };
 })();
 
 /* ===== funkin-studio/js/runtime/glpost.js ===== */
-const __m53 = (() => {
+const __m52 = (() => {
 /* ============================================================
    runtime/glpost.js — カメラの「フィルター（シェーダー）」を WebGL で掛ける後処理
    ------------------------------------------------------------
@@ -17428,7 +17256,7 @@ return { GLSL_GRAYSCALE, GLPost };
 })();
 
 /* ===== funkin-studio/js/runtime/shader.js ===== */
-const __m54 = (() => {
+const __m53 = (() => {
 /* ============================================================
    runtime/shader.js — FlxRuntimeShader（スクリプトから使う .frag シェーダー）
    ------------------------------------------------------------
@@ -17578,7 +17406,7 @@ return { glslFrom, shaderMethods, shaderInit, FlxRuntimeShader, makeAdjustColorS
 })();
 
 /* ===== funkin-studio/js/runtime/runtime.js ===== */
-const __m55 = (() => {
+const __m54 = (() => {
 /* ============================================================
    runtime/runtime.js — V-Slice の演出スクリプト（SongEvent / Module）を動かす、軽量なゲーム環境
    ------------------------------------------------------------
@@ -17590,11 +17418,11 @@ const __m55 = (() => {
    ・軽量化: ・描画は 1280×720 の仮想座標を縮尺する 2D キャンバス描画  ・シェーダーを持つカメラだけ WebGL を通す
      ・画面外 / alpha 0 のものは描かない  ・Tween は 1 本のリストを 1 回なめるだけ
    ============================================================ */
-const { findSound } = __m15;
-const { HScript, HMap, makeStub } = __m52;
-const { GLPost, GLSL_GRAYSCALE } = __m53;
-const { FlxRuntimeShader, shaderInit, shaderMethods, makeAdjustColorShader } = __m54;
-const { loadImage, parseSparrowXml } = __m38;
+const { findSound } = __m14;
+const { HScript, HMap, makeStub } = __m51;
+const { GLPost, GLSL_GRAYSCALE } = __m52;
+const { FlxRuntimeShader, shaderInit, shaderMethods, makeAdjustColorShader } = __m53;
+const { loadImage, parseSparrowXml } = __m37;
 
 const LAYER_MAX_W = 1280; // フィルターを掛けるカメラの絵の最大幅(px)
 const GAME_W = 1280,
@@ -19034,7 +18862,7 @@ return { GAME_W, FlxEase, easeByName, FlxColor, FlxSprite, FlxText, FlxTypedGrou
 })();
 
 /* ===== funkin-studio/js/runtime/scrollVelocity.js ===== */
-const __m56 = (() => {
+const __m55 = (() => {
 /* ============================================================
    runtime/scrollVelocity.js — ScrollVelocity イベント（V-Slice 0.9 の ScrollVelocityTimeline.hx を移植）
    ------------------------------------------------------------
@@ -19046,7 +18874,7 @@ const __m56 = (() => {
    ・stepLag / lagToVisual : スクロール速度が変わっても絵が跳ねないよう、ずれを px で持ち越す（Strumline.updateNotes）
    [出典] source/funkin/play/notes/ScrollVelocityTimeline.hx / Strumline.hx updateNotes
    ============================================================ */
-const { easeByName } = __m55;
+const { easeByName } = __m54;
 
 const SLICES = 32;
 const NORMAL = 0.0001;
@@ -19205,7 +19033,7 @@ return { ScrollVelocityTimeline, VisualClock };
 })();
 
 /* ===== funkin-studio/js/runtime/noteStyle.js ===== */
-const __m57 = (() => {
+const __m56 = (() => {
 /* ============================================================
    runtime/noteStyle.js — V-Slice のノートスキン（notestyles/*.json + PNG/XML）の読み込みと描画
    ------------------------------------------------------------
@@ -19215,9 +19043,9 @@ const __m57 = (() => {
    ・描画の大きさは「1 レーン = 112px の 720p」を基準にした倍率 k で縮尺する（プレイテストのレーン幅に合わせる）。
    ・軽量化: 画像は ImageBitmap（デコード済み）で保持し、フレーム検索は prefix ごとにキャッシュする。
    ============================================================ */
-const { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } = __m38;
-const { noteStyle: noteStyleFromRemote } = __m15;
-const { infoOfPath, normAsset, scorePath, assetNote, openModZip } = __m14;
+const { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } = __m37;
+const { noteStyle: noteStyleFromRemote } = __m14;
+const { infoOfPath, normAsset, scorePath, assetNote, openModZip } = __m13;
 
 const DIRS = ["left", "down", "up", "right"];
 const STRUM_INIT = -28.6; // Strumline.INITIAL_OFFSET = -0.275 * 104
@@ -19652,7 +19480,7 @@ return { framesByPrefix, NoteStyle, NoteStyleSet, drawNoteSprite };
 })();
 
 /* ===== funkin-studio/js/runtime/stageScene.js ===== */
-const __m58 = (() => {
+const __m57 = (() => {
 /* ============================================================
    runtime/stageScene.js — プレイテストの「ステージとキャラクター」
    ------------------------------------------------------------
@@ -19668,13 +19496,13 @@ const __m58 = (() => {
      ・カメラの追従の速さ（lerp 0.04 / 60fps 相当） ・4 拍ごとのズーム量(0.015)と戻り方 ・sing から idle へ戻る時刻
      ・FocusCamera の ease（CLASSIC 以外は簡易な補間）   ・反転したキャラのアニメオフセットの符号
    ============================================================ */
-const { GLPost } = __m53;
-const { findSpriteAtlas, findAnimateAtlas } = __m44;
-const { StageCharacter, atlasKindOf } = __m45;
-const { loadImage } = __m38;
-const { normalizeStage, isSolid, isAnimated, getScale, getScroll, parseColor, toRgbaCss, blendToCanvas, defaultCharacter } = __m43;
-const { originOf, infoOf } = __m14;
-const { easeByName } = __m55;
+const { GLPost } = __m52;
+const { findSpriteAtlas, findAnimateAtlas } = __m43;
+const { StageCharacter, atlasKindOf } = __m44;
+const { loadImage } = __m37;
+const { normalizeStage, isSolid, isAnimated, getScale, getScroll, parseColor, toRgbaCss, blendToCanvas, defaultCharacter } = __m42;
+const { originOf, infoOf } = __m13;
+const { easeByName } = __m54;
 
 const FRAME_W = 1280,
   FRAME_H = 720;
@@ -19933,6 +19761,8 @@ class StageScene {
     this.focusEvents = [];
     this.zoomEvents = [];
     this.bopEvents = [];
+    this.animEvents = [];
+    this.ai = 0;
     this.bi = 0;
     this.focusTarget = { x: FRAME_W / 2, y: FRAME_H / 2 };
     this.tweenZoom = null;
@@ -20171,6 +20001,9 @@ class StageScene {
     this.focusEvents = evs.filter((e) => e.e === "FocusCamera").sort((a, b) => a.t - b.t);
     this.zoomEvents = evs.filter((e) => e.e === "ZoomCamera").sort((a, b) => a.t - b.t);
     this.bopEvents = evs.filter((e) => e.e === "BopCameraOnce").sort((a, b) => a.t - b.t);
+    // PlayAnimation / SetTargetBopSpeed（本体の組み込みイベント）: キャラや名前付き prop にアニメ再生・ダンス間隔を設定する
+    this.animEvents = evs.filter((e) => e.e === "PlayAnimation" || e.e === "SetTargetBopSpeed").sort((a, b) => a.t - b.t);
+    this.ai = 0;
     this.bi = 0;
     this.fi = 0;
     this.zi = 0;
@@ -20214,6 +20047,8 @@ class StageScene {
         this.tweenCam = null;
       } else this.tweenCam = { from: { ...this.cam }, to: target, t0: e.t, dur, fn };
     }
+    // PlayAnimation / SetTargetBopSpeed。開始位置より前のものは、ダンス間隔だけ反映してアニメは再生しない
+    while (this.ai < this.animEvents.length && this.animEvents[this.ai].t <= pos) this.applyAnimEvent(this.animEvents[this.ai++], snap);
     // BopCameraOnce（0.9）: 拍と関係なく、カメラを 1 回だけ弾ませる（強さ 1 = 通常の 1.015 倍）
     while (this.bi < this.bopEvents.length && this.bopEvents[this.bi].t <= pos) {
       const e = this.bopEvents[this.bi++];
@@ -20230,6 +20065,32 @@ class StageScene {
         this.tweenZoom = null;
       } else this.tweenZoom = { from: this.zoom, to: target, t0: e.t, dur, fn };
     }
+  }
+  /** イベントの target（boyfriend|bf|player / dad|opponent / girlfriend|gf / prop の name）から、キャラか prop を探す */
+  eventTarget(name) {
+    const role = { boyfriend: "player", bf: "player", player: "player", dad: "opponent", opponent: "opponent", girlfriend: "girlfriend", gf: "girlfriend" }[String(name ?? "boyfriend")];
+    if (role) return this.chars[role] ? { char: this.chars[role] } : null;
+    const e = this.props.find((p) => p.ref?.name === name);
+    return e ? { prop: e } : null;
+  }
+  applyAnimEvent(ev, snap) {
+    const v = ev.v ?? {};
+    const t = this.eventTarget(v.target);
+    if (!t) {
+      this.warn(`イベント ${ev.e}: target「${v.target ?? "boyfriend"}」が見つかりません`);
+      return;
+    }
+    if (ev.e === "SetTargetBopSpeed") {
+      const rate = num(v.rate, 1);
+      if (t.char) t.char.json = { ...(t.char.json ?? {}), danceEvery: rate };
+      else t.prop.danceEvery = rate;
+      return;
+    }
+    if (snap) return; // 途中から始めるときは、過去のアニメは再生しない
+    const anim = String(v.anim ?? "idle");
+    const force = v.force === true || v.force === "true";
+    if (t.char) t.char.playAnim(anim, force, force); // BaseCharacter.playAnimation(anim, force, force)
+    else t.prop.actor?.play(anim, force);
   }
   stepMs() {
     const tm = this.o.timing?.();
@@ -20697,7 +20558,7 @@ return { FRAME_W, StageScene };
 })();
 
 /* ===== funkin-studio/js/states/chart/playtest.js ===== */
-const __m59 = (() => {
+const __m58 = (() => {
 /* ============================================================
    chart/playtest.js — Chart のプレイテスト（音ズレ・譜面の難しさの確認用）
    ------------------------------------------------------------
@@ -20709,12 +20570,12 @@ const __m59 = (() => {
    ・ホールドは押し続ける必要がある（終わる 160ms 前までに離すとドロップ）。相手側ノーツは自動で叩かれる。
    ・スマホは画面タップ（プレイヤー側の4レーン）で叩ける。
    ============================================================ */
-const { Runtime, easeByName } = __m55;
-const { ScrollVelocityTimeline, VisualClock } = __m56;
-const { openModZip } = __m14;
-const { drawNoteSprite } = __m57;
-const { has: hasRemote, reset: resetRemote, refreshIndex: refreshRemoteIndex, stageScripts, fragKey } = __m15;
-const { StageScene } = __m58;
+const { Runtime, easeByName } = __m54;
+const { ScrollVelocityTimeline, VisualClock } = __m55;
+const { openModZip } = __m13;
+const { drawNoteSprite } = __m56;
+const { has: hasRemote, reset: resetRemote, refreshIndex: refreshRemoteIndex, stageScripts, noteKindScripts, fragKey } = __m14;
+const { StageScene } = __m57;
 const PIXELS_PER_MS = 0.45;
 const WIN = { sick: 45, good: 90, bad: 135, shit: 160 };
 const NOTE_COLORS = ["#c24b99", "#00ffff", "#12fa05", "#f9393f"];
@@ -20998,6 +20859,11 @@ function createPlayTest(root, d) {
       // mod に同じステージ用のスクリプトがあれば、そちらを使う（本体のものは取らない）
       const own = new RegExp(`super\\(\\s*['"]${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}['"]`, "i");
       if (id && !modTexts.some((t) => own.test(t))) stageRemote = await stageScripts(id);
+      // 譜面で使っている kind のうち、mod が定義していないものは本体のスクリプトを取る（ugh / 2hot / mom など）
+      const used = [...new Set(notes.map((n) => n.k).filter(Boolean))];
+      const have = used.filter((k) => modTexts.some((t) => new RegExp(`super\\(\\s*['"]${String(k).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}['"]`).test(t)));
+      const kindScripts = await noteKindScripts(used, have);
+      if (kindScripts.length) stageRemote = { scripts: [...(stageRemote?.scripts ?? []), ...kindScripts], frags: stageRemote?.frags ?? {} };
     } catch (e) {
       scene?.warn(`本体のステージスクリプトを取得できませんでした: ${e.message}`);
     }
@@ -21601,7 +21467,7 @@ return { createPlayTest };
 })();
 
 /* ===== funkin-studio/js/states/chart/editor.js ===== */
-const __m60 = (() => {
+const __m59 = (() => {
 /* ============================================================
    chart/editor.js — Chart Editor（V-Slice の chart.json / metadata.json 編集）のロジック
    ------------------------------------------------------------
@@ -21617,17 +21483,17 @@ const __m60 = (() => {
 
    目次: 1.状態 2.データ参照 3.履歴 4.音声と読み込み 5.描画 6.操作(ポインタ) 7.パネル 8.保存 9.再生・キーボード
    ============================================================ */
-const { exportMod } = __m18;
-const { detectLayout, songDirOf, songAudioDirOf } = __m14;
-const { isTextEntry } = __m36;
-const { HudPanels } = __m37;
-const { FnfShell } = __m42;
-const { DEFAULT_VARIATION, SNAP_QUANTS, BASE_QUANT_INDEX, STRUMLINE_SIZE, STEPS_PER_BEAT, DIR_NAMES, EVENT_SCHEMAS, eventKinds, isCustomEvent, registerEventSchema, unregisterEventSchema, eventTitle, defaultEventValue, defaultMetadata, defaultChart, normalizeMetadata, normalizeChart, serializeMetadata, serializeChart, Timing, clone, round3 } = __m49;
-const { AudioEngine, PEAK_MS } = __m50;
-const { readZip, writeZip } = __m13;
-const { parseHxc } = __m51;
-const { createPlayTest } = __m59;
-const { NoteStyleSet } = __m57;
+const { exportMod } = __m17;
+const { detectLayout, songDirOf, songAudioDirOf } = __m13;
+const { isTextEntry } = __m35;
+const { HudPanels } = __m36;
+const { FnfShell } = __m41;
+const { DEFAULT_VARIATION, SNAP_QUANTS, BASE_QUANT_INDEX, STRUMLINE_SIZE, STEPS_PER_BEAT, DIR_NAMES, EVENT_SCHEMAS, eventKinds, isCustomEvent, registerEventSchema, unregisterEventSchema, eventTitle, defaultEventValue, defaultMetadata, defaultChart, normalizeMetadata, normalizeChart, serializeMetadata, serializeChart, Timing, clone, round3 } = __m48;
+const { AudioEngine, PEAK_MS } = __m49;
+const { readZip, writeZip } = __m12;
+const { parseHxc } = __m50;
+const { createPlayTest } = __m58;
+const { NoteStyleSet } = __m56;
 
 const GRID = 40; // 1マスの基準ピクセル（V-Slice の GRID_SIZE）
 const COLS = STRUMLINE_SIZE * 2 + 1; // 相手4 + プレイヤー4 + イベント1
@@ -23129,21 +22995,30 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
   };
   /** 読み込み済みの mod（Workspace）にある .hxc / .hx を、イベント・ノーツ種類・Module として取り込む */
   const SCRIPT_CLS = /extends\s+(SongEvent|ScriptedSongEvent|ScriptedNoteKind|NoteKind|Module|ScriptedModule)\b/;
+  // mod の Stage スクリプト（extends Stage）と、それが使う補助クラス（props / シェーダー / ヘルパー）。イベント一覧には出ない（プレイテストだけで使う）
+  const STAGE_CLS = /extends\s+(Stage|ScriptedStage)\b/;
+  const modAux = new Map(); // 名前 → { text, stage: bool }
   async function importWorkspaceScripts() {
     const ws = state.app.workspace;
-    if (!ws?.files?.length) return;
+    if (!ws?.files?.length) {
+      modAux.clear();
+      return;
+    }
     const names = [];
     for (const f of ws.files) {
       if (!/\.(hxc|hx)$/i.test(f.name || "")) continue;
       const name = "mod:" + String(f.name).replace(/^.*[\\/]/, "");
-      if (scripts[name]?.fromMod === f) continue;
+      if (scripts[name]?.fromMod === f || modAux.get(name)?.file === f) continue;
       let text;
       try {
         text = (await f.text()).replace(/^\uFEFF/, "");
       } catch {
         continue;
       }
-      if (!SCRIPT_CLS.test(text)) continue;
+      if (!SCRIPT_CLS.test(text)) {
+        modAux.set(name, { text, file: f, stage: STAGE_CLS.test(text) });
+        continue;
+      }
       if (!registerScript(name, text).count) continue;
       scripts[name].fromMod = f;
       names.push(name);
@@ -23152,6 +23027,27 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
       refreshAfterScripts();
       say(`mod からスクリプトを取り込みました（${names.length} 件）:\n${names.map((n) => `${n} → ${[...scripts[n].ids, ...scripts[n].kinds.map((k) => k + "(ノーツ種類)"), ...scripts[n].modules.map((k) => k + "(Module)")].join(", ")}`).join("\n")}`);
     }
+  }
+  /** 実行する mod のステージスクリプトと、そこから（推移的に）名前で参照されている補助クラスだけ。関係ないスクリプトは読まない（未対応構文の解析エラーを避ける） */
+  function modStageScripts() {
+    const out = {};
+    const pool = [];
+    for (const [n, a] of modAux) if (a.stage) {
+      out[n] = a.text;
+      pool.push(a.text);
+    }
+    for (let grew = pool.length > 0; grew; ) {
+      grew = false;
+      for (const [n, a] of modAux) {
+        if (n in out) continue;
+        const cn = n.replace(/^mod:/, "").replace(/\.[^.]+$/, "");
+        if (!pool.some((t) => new RegExp(`\\b${cn}\\b`).test(t))) continue;
+        out[n] = a.text;
+        pool.push(a.text);
+        grew = true;
+      }
+    }
+    return out;
   }
   state.addDisposer(state.app.events.on("workspace:changed", importWorkspaceScripts));
   importWorkspaceScripts();
@@ -23416,7 +23312,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
   const playtest = createPlayTest(state.root, {
     audio,
     noteStyles,
-    getScripts: () => Object.fromEntries(Object.entries(scripts).map(([k, v]) => [k, v.text])),
+    getScripts: () => ({ ...Object.fromEntries(Object.entries(scripts).map(([k, v]) => [k, v.text])), ...modStageScripts() }),
     getStage: () => meta()?.playData?.stage ?? "",
     getSongId: () => songId,
     getWorkspace: () => state.app.workspace,
@@ -23476,17 +23372,17 @@ return { mountChartEditor };
 })();
 
 /* ===== funkin-studio/js/states/ChartEditorState.js ===== */
-const __m61 = (() => {
+const __m60 = (() => {
 /* ============================================================
    states/ChartEditorState.js — Chart Editor（V-Slice の chart.json / metadata.json の編集）の画面
    ------------------------------------------------------------
    構造は Stage Editor と同じ（入れ物 + chart/editor.js のロジック + chart/template.js の HTML）。
    ============================================================ */
-const { mountModPicker } = __m25;
-const { songList } = __m26;
-const { EditorState } = __m27;
-const { template } = __m48;
-const { mountChartEditor } = __m60;
+const { mountModPicker } = __m24;
+const { songList } = __m25;
+const { EditorState } = __m26;
+const { template } = __m47;
+const { mountChartEditor } = __m59;
 
 class ChartEditorState extends EditorState {
   static id = "chart";
@@ -23516,7 +23412,7 @@ return { ChartEditorState };
 })();
 
 /* ===== funkin-studio/js/states/note/template.js ===== */
-const __m62 = (() => {
+const __m61 = (() => {
 /* ============================================================
    note/template.js — Note Editor 画面の HTML
    ------------------------------------------------------------
@@ -23646,7 +23542,7 @@ return { template };
 })();
 
 /* ===== funkin-studio/js/states/note/editor.js ===== */
-const __m63 = (() => {
+const __m62 = (() => {
 /* ============================================================
    note/editor.js — Note Editor（noteStyle の編集）
    ------------------------------------------------------------
@@ -23656,14 +23552,14 @@ const __m63 = (() => {
    ・プレビューの描画は runtime/noteStyle.js（プレイテストと同じ NoteStyle）を使う。fallback の連鎖もたどる
    ・書き出しは mod の zip ごと（services/ModExport.js）→ data/notestyles/<id>.json
    ============================================================ */
-const { Viewport } = __m36;
-const { HudPanels } = __m37;
-const { mountModPicker } = __m25;
-const { NoteStyleSet, NoteStyle, framesByPrefix } = __m57;
-const { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } = __m38;
-const { infoOf } = __m14;
-const { exportMod } = __m18;
-const { registryPath } = __m14;
+const { Viewport } = __m35;
+const { HudPanels } = __m36;
+const { mountModPicker } = __m24;
+const { NoteStyleSet, NoteStyle, framesByPrefix } = __m56;
+const { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } = __m37;
+const { infoOf } = __m13;
+const { exportMod } = __m17;
+const { registryPath } = __m13;
 
 const DIRS = ["left", "down", "up", "right"];
 const LANE = 112; // 1 レーンの幅（V-Slice の Strumline.NOTE_SPACING）
@@ -24603,13 +24499,13 @@ return { defaultStyle, mountNoteEditor };
 })();
 
 /* ===== funkin-studio/js/states/NoteEditorState.js ===== */
-const __m64 = (() => {
+const __m63 = (() => {
 /* ============================================================
    states/NoteEditorState.js — Note Editor（noteStyle の編集）の画面。V-Slice 本体には無い、Funkin' Studio 独自のエディタ。
    ============================================================ */
-const { EditorState } = __m27;
-const { template } = __m62;
-const { mountNoteEditor } = __m63;
+const { EditorState } = __m26;
+const { template } = __m61;
+const { mountNoteEditor } = __m62;
 
 class NoteEditorState extends EditorState {
   static id = "note";
@@ -24638,7 +24534,7 @@ return { NoteEditorState };
 })();
 
 /* ===== funkin-studio/js/main.js ===== */
-const __m65 = (() => {
+const __m64 = (() => {
 /* ============================================================
    main.js — アプリの入口（Haxe の Main.hx / FlxGame の起動に相当）
    ------------------------------------------------------------
@@ -24662,23 +24558,22 @@ const { App } = __m4;
 const { I18n } = __m5;
 const { UnsavedGuard } = __m6;
 const { startAutosave } = __m7;
-const { startColorLab } = __m8;
-const { startMobileFilePicker } = __m9;
-const { Hud } = __m11;
-const { loadUiFont } = __m16;
-const { Workspace } = __m17;
+const { startMobileFilePicker } = __m8;
+const { Hud } = __m10;
+const { loadUiFont } = __m15;
+const { Workspace } = __m16;
 
-const { HomeState } = __m19;
-const { RenderMenuState } = __m20;
-const { FunkinMenuState } = __m21;
-const { OtherMenuState } = __m22;
-const { ContributorsState } = __m24;
-const { AnimateEditorState } = __m31;
-const { SparrowEditorState } = __m34;
-const { CharacterEditorState } = __m40;
-const { StageEditorState } = __m47;
-const { ChartEditorState } = __m61;
-const { NoteEditorState } = __m64;
+const { HomeState } = __m18;
+const { RenderMenuState } = __m19;
+const { FunkinMenuState } = __m20;
+const { OtherMenuState } = __m21;
+const { ContributorsState } = __m23;
+const { AnimateEditorState } = __m30;
+const { SparrowEditorState } = __m33;
+const { CharacterEditorState } = __m39;
+const { StageEditorState } = __m46;
+const { ChartEditorState } = __m60;
+const { NoteEditorState } = __m63;
 
 loadUiFont(); // 英数字フォント（VCR）を funkin.assets から。待たずに進める
 const app = new App(document.getElementById("app"));
@@ -24704,10 +24599,8 @@ app.states.register(
   NoteEditorState,
 );
 
-startColorLab();
 startMobileFilePicker(); // スマホで XML / JSON が選べない問題の対策（services/MobileFilePicker.js）
 startAutosave(app);
-app.i18n.start(); // HUD / ColorLab の文字を翻訳し、以降の DOM 追加も監視
 
 app.switchTo("home"); // ← FlxG.switchState(new MainMenuState()) と同じ
 

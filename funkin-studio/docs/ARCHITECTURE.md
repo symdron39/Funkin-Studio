@@ -323,3 +323,13 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 - Stage: 下は `.fnfStatusbar`（選択情報 + ズーム / 全体 / 原点 / 移動）。
 - 右下の共通ウィジェット（ローカル復元・カラーテスト）は playbar を避けて上へ。
 - 未適用: Character Editor / Note Editor（まだ従来の Hud のまま）。FNF のエディタの Help メニュー、コマンドパレット、右クリックのコンテキストメニューも未実装。
+
+## v3.27 — Playtest / アセット管理の再修正
+
+- **ステージスクリプト**: チャートエディタの `getScripts()` に mod 側のステージスクリプト（`modStageScripts()`）を含める。`playtest.js` の `prepareStageScripts()` は、mod に `super('<stageId>')` が無いときだけ本体のステージスクリプトを取得する。
+- **ノートカインド**: `FunkinAssets.noteKindScripts(kinds, have)` が、譜面で使われている kind のうち mod が定義していないものを本体（0.8 `preload/scripts/notekinds/`、0.9 `gameplay/notekinds/`）から取得する。ファイル名 = kind 名、無ければ全 `.hxc` の `super('<kind>')` を探す。
+- **PlayAnimation / SetTargetBopSpeed**: `StageScene.start()` で `animEvents` を作り、`advanceEvents` で順に `applyAnimEvent()`。target は boyfriend/bf/player・dad/opponent・girlfriend/gf、または名前付き prop。
+- **0.9 モードの取得**: `findData` / `findAtlas` は現在のブランチで見つからなければ、もう一方のブランチも探す（ブランチ設定 auto は mod の配置から決定）。
+- **文字間隔**: `theme-fnf.css` で全体の `letter-spacing: 2px`（canvas / 等幅 / 数値入力は 0）。
+- **カラーテスト削除**: `ColorLab.js` / `color-lab.css` と関連 CSS を撤去。
+- 修正: `StageScene` で `evs` を `start()` の外で参照していたバグ。

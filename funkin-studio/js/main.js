@@ -21,7 +21,6 @@ import { App } from "./core/App.js";
 import { I18n } from "./services/i18n.js";
 import { UnsavedGuard } from "./services/UnsavedGuard.js";
 import { startAutosave } from "./services/Autosave.js";
-import { startColorLab } from "./services/ColorLab.js";
 import { startMobileFilePicker } from "./services/MobileFilePicker.js";
 import { Hud } from "./ui/Hud.js";
 import { loadUiFont } from "./services/uiFont.js";
@@ -63,10 +62,8 @@ app.states.register(
   NoteEditorState,
 );
 
-startColorLab();
 startMobileFilePicker(); // スマホで XML / JSON が選べない問題の対策（services/MobileFilePicker.js）
 startAutosave(app);
-app.i18n.start(); // HUD / ColorLab の文字を翻訳し、以降の DOM 追加も監視
 
 app.switchTo("home"); // ← FlxG.switchState(new MainMenuState()) と同じ
 

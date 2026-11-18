@@ -278,6 +278,8 @@ export class StageScene {
     this.focusEvents = [];
     this.zoomEvents = [];
     this.bopEvents = [];
+    this.animEvents = [];
+    this.ai = 0;
     this.bi = 0;
     this.focusTarget = { x: FRAME_W / 2, y: FRAME_H / 2 };
     this.tweenZoom = null;
@@ -516,6 +518,9 @@ export class StageScene {
     this.focusEvents = evs.filter((e) => e.e === "FocusCamera").sort((a, b) => a.t - b.t);
     this.zoomEvents = evs.filter((e) => e.e === "ZoomCamera").sort((a, b) => a.t - b.t);
     this.bopEvents = evs.filter((e) => e.e === "BopCameraOnce").sort((a, b) => a.t - b.t);
+    // PlayAnimation / SetTargetBopSpeed（本体の組み込みイベント）: キャラや名前付き prop にアニメ再生・ダンス間隔を設定する
+    this.animEvents = evs.filter((e) => e.e === "PlayAnimation" || e.e === "SetTargetBopSpeed").sort((a, b) => a.t - b.t);
+    this.ai = 0;
     this.bi = 0;
     this.fi = 0;
     this.zi = 0;
@@ -559,6 +564,8 @@ export class StageScene {
         this.tweenCam = null;
       } else this.tweenCam = { from: { ...this.cam }, to: target, t0: e.t, dur, fn };
     }
+    // PlayAnimation / SetTargetBopSpeed。開始位置より前のものは、ダンス間隔だけ反映してアニメは再生しない
+    while (this.ai < this.animEvents.length && this.animEvents[this.ai].t <= pos) this.applyAnimEvent(this.animEvents[this.ai++], snap);
     // BopCameraOnce（0.9）: 拍と関係なく、カメラを 1 回だけ弾ませる（強さ 1 = 通常の 1.015 倍）
     while (this.bi < this.bopEvents.length && this.bopEvents[this.bi].t <= pos) {
       const e = this.bopEvents[this.bi++];
@@ -575,6 +582,32 @@ export class StageScene {
         this.tweenZoom = null;
       } else this.tweenZoom = { from: this.zoom, to: target, t0: e.t, dur, fn };
     }
+  }
+  /** イベントの target（boyfriend|bf|player / dad|opponent / girlfriend|gf / prop の name）から、キャラか prop を探す */
+  eventTarget(name) {
+    const role = { boyfriend: "player", bf: "player", player: "player", dad: "opponent", opponent: "opponent", girlfriend: "girlfriend", gf: "girlfriend" }[String(name ?? "boyfriend")];
+    if (role) return this.chars[role] ? { char: this.chars[role] } : null;
+    const e = this.props.find((p) => p.ref?.name === name);
+    return e ? { prop: e } : null;
+  }
+  applyAnimEvent(ev, snap) {
+    const v = ev.v ?? {};
+    const t = this.eventTarget(v.target);
+    if (!t) {
+      this.warn(`イベント ${ev.e}: target「${v.target ?? "boyfriend"}」が見つかりません`);
+      return;
+    }
+    if (ev.e === "SetTargetBopSpeed") {
+      const rate = num(v.rate, 1);
+      if (t.char) t.char.json = { ...(t.char.json ?? {}), danceEvery: rate };
+      else t.prop.danceEvery = rate;
+      return;
+    }
+    if (snap) return; // 途中から始めるときは、過去のアニメは再生しない
+    const anim = String(v.anim ?? "idle");
+    const force = v.force === true || v.force === "true";
+    if (t.char) t.char.playAnim(anim, force, force); // BaseCharacter.playAnimation(anim, force, force)
+    else t.prop.actor?.play(anim, force);
   }
   stepMs() {
     const tm = this.o.timing?.();

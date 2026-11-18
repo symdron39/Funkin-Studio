@@ -83,8 +83,6 @@
 
 /* FNF 風の画面では、右下に固定表示される共通の小物（ローカル復元・カラーテスト）を playbar の上へ */
 body:has(.fnfShell:not([hidden])) #fsRecoveryPanel { bottom: 104px !important; opacity: 0.92; }
-body:has(.fnfShell:not([hidden])) #colorLabToggle { bottom: 104px !important; right: auto !important; left: 10px !important; }
-body:has(.fnfShell:not([hidden])) #colorLabPanel { bottom: 150px !important; right: auto !important; left: 10px !important; }
 .fnfPlaybar input[type="number"] { width: 78px; flex: 0 0 auto; border-radius: 0; padding: 3px 6px; }
 .fnfStatusbar .fnfPlayRow { min-height: 40px; }
 /* プレイテスト中は、メニューバーとウィンドウを隠してゲーム画面だけにする */
@@ -92,4 +90,3 @@ body:has(.fnfShell:not([hidden])) #colorLabPanel { bottom: 150px !important; rig
 .fnfShell:has(#chtPlayRoot:not([hidden])) .fnfWin,
 .fnfShell:has(#chtPlayRoot:not([hidden])) .fnfPlaybar { display: none !important; }
 body:has(#chtPlayRoot:not([hidden])) #fsRecoveryPanel { bottom: 12px !important; }
-body:has(#chtPlayRoot:not([hidden])) #colorLabToggle { bottom: 14px !important; left: auto !important; right: 14px !important; }

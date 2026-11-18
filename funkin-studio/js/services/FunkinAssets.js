@@ -15,7 +15,7 @@
    ・テスト・別のミラー用: globalThis.__FUNKIN_ASSETS = { raw: "http://…/", tree: "http://…/" }（末尾はブランチ名を足せる形）
    ============================================================ */
 import { FUNKIN_ASSETS_PATHS } from "./funkinAssetsIndex.js";
-import { infoOfPath, normAsset } from "./ModPack.js";
+import { infoOfPath, normAsset, detectLayout } from "./ModPack.js";
 
 export const ORIGIN = "funkin.assets";
 const KEY_ON = "studio.remoteAssets";
@@ -45,19 +45,33 @@ export const setEnabled = (on) => {
     localStorage.setItem(KEY_ON, on ? "1" : "0");
   } catch {}
 };
-export const getBranch = () => {
+/** 設定値: "auto"（既定。読み込んだ mod の配置に合わせる）か、ブランチ名 */
+export const getBranchMode = () => {
   try {
     const b = localStorage.getItem(KEY_BRANCH);
-    if (BRANCHES.some((x) => x.id === b)) return b;
+    if (b === "auto" || BRANCHES.some((x) => x.id === b)) return b;
   } catch {}
-  return BRANCHES[0].id;
+  return "auto";
+};
+let autoBranch = BRANCHES[0].id; // auto のときに使うブランチ（mod が 0.9 の配置なら 0.9 のブランチ）
+/** いま実際に使うブランチ */
+export const getBranch = () => {
+  const m = getBranchMode();
+  return m === "auto" ? autoBranch : m;
 };
 export const setBranch = (id) => {
-  if (!BRANCHES.some((x) => x.id === id)) return;
+  if (id !== "auto" && !BRANCHES.some((x) => x.id === id)) return;
   try {
     localStorage.setItem(KEY_BRANCH, id);
   } catch {}
 };
+/** auto のとき、読み込んだ mod の配置（"0.8" / "0.9"）から取得元のブランチを決める。mod が空なら 0.8（main）のまま */
+export function syncLayout(ws) {
+  const files = ws?.files?.filter?.((f) => !f.remote) ?? [];
+  const layout = files.length ? detectLayout(files) : "0.8";
+  autoBranch = (BRANCHES.find((b) => b.layout === layout) ?? BRANCHES[0]).id;
+  return getBranch();
+}
 const layoutOf = (branch = getBranch()) => BRANCHES.find((x) => x.id === branch)?.layout ?? "0.8";
 
 // ---------------------------------------------------------------- 取得したファイル（保存しない。同じ回の中だけ使い回す）
@@ -152,6 +166,7 @@ export async function refreshIndex() {
 
 /** 前回取得したものを全部捨てる（取得したバイト列・Workspace に足したファイル）。次の使用で取り直す。ws は省略できる */
 export function reset(ws) {
+  syncLayout(ws);
   bytesCache.clear();
   ws?.dropRemote?.();
 }
@@ -171,11 +186,15 @@ function pickLib(list, hint) {
 
 /** id がある種類（character / stage / notestyle）の JSON。0.8: data/<dir>/<id> / 0.9: gameplay/<dir>/<id>/<id>（どちらの配置でも探す） */
 export function findData(kind, id) {
+  return findData1(kind, id, getBranch()) ?? findData1(kind, id, otherBranch()); // 見つからなければ、もう一方のブランチも探す
+}
+const otherBranch = (b = getBranch()) => (BRANCHES.find((x) => x.id !== b) ?? BRANCHES[0]).id;
+function findData1(kind, id, branch) {
   const dir = { character: "characters", stage: "stages", notestyle: "notestyles" }[kind];
   if (!dir || !id) return null;
   const n = normAsset(id);
-  const ix = noExtOf(indexOf());
-  const keys = layoutOf() === "0.9" ? [`gameplay/${dir}/${n}/${n}`, `data/${dir}/${n}`] : [`data/${dir}/${n}`, `gameplay/${dir}/${n}/${n}`];
+  const ix = noExtOf(indexOf(branch));
+  const keys = layoutOf(branch) === "0.9" ? [`gameplay/${dir}/${n}/${n}`, `data/${dir}/${n}`] : [`data/${dir}/${n}`, `gameplay/${dir}/${n}/${n}`];
   for (const k of keys) {
     const list = (ix.get(k) ?? []).filter((f) => /\.json$/i.test(f.name));
     if (list.length) return pickLib(list, "")[0];
@@ -195,10 +214,14 @@ export function findSound(name) {
 
 /** assetPath のアトラス一式。Sparrow / Packer = png + xml(txt)、AnimateAtlas = フォルダの中身全部、1 枚絵 = png だけ。0.8 は images/<path>、0.9 はリポジトリのパスそのまま */
 export function findAtlas(assetPath) {
+  const a = findAtlas1(assetPath, getBranch());
+  return a.length ? a : findAtlas1(assetPath, otherBranch());
+}
+function findAtlas1(assetPath, branch) {
   const n = normAsset(assetPath);
   if (!n) return [];
   const hint = libHint(assetPath);
-  const ix = noExtOf(indexOf());
+  const ix = noExtOf(indexOf(branch));
   for (const key of [`images/${n}`, n]) {
     const same = ix.get(key) ?? [];
     const png = pickLib(same.filter((f) => /\.(png|jpg)$/i.test(f.name)), hint)[0];
@@ -239,6 +262,7 @@ const parseJson = async (f) => JSON.parse((await f.text()).replace(/^﻿/, ""));
 
 /** アトラス（assetPath）が mod に無いときだけ、本体のものを足す */
 export async function ensureAtlas(ws, assetPath) {
+  syncLayout(ws);
   if (!assetPath || /^#|^none$/i.test(String(assetPath).trim())) return 0;
   if (ws.atlasFor?.(assetPath)) return 0;
   const list = findAtlas(assetPath);
@@ -250,6 +274,7 @@ export async function ensureAtlas(ws, assetPath) {
  * 足したファイル数（何も足していなければ 0）
  */
 export async function ensureCharacter(ws, id) {
+  syncLayout(ws);
   if (!isEnabled() || !id) return 0;
   let f = ws.resolve("character", id, { quiet: true }),
     n = 0;
@@ -267,6 +292,7 @@ export async function ensureCharacter(ws, id) {
 
 /** ステージも同じ: stage.json が無ければ足し、props の画像が mod に無ければ本体のものを足す */
 export async function ensureStage(ws, id) {
+  syncLayout(ws);
   if (!isEnabled() || !id) return 0;
   let f = ws.resolve("stage", id, { quiet: true }),
     n = 0;
@@ -284,6 +310,7 @@ export async function ensureStage(ws, id) {
 
 /** { stage, characters: {player, girlfriend, opponent, …} | [id…] } にあるものを、無ければ取ってくる（並列）。失敗は例外にせず { errors } で返す */
 export async function ensureFor(ws, spec = {}) {
+  syncLayout(ws);
   const errors = [];
   const run = async (fn, label) => {
     try {
@@ -310,6 +337,35 @@ export const fragKey = (name) => norm(String(name ?? "").replace(/^.*[\\/]/, "")
  * 0.8: scripts/stages/<id>.hxc + scripts/stages/props/*.hxc + scripts/shaders/*.hxc / 0.9: gameplay/stages/<id>/*.hxc + ui/shaders/*.hxc
  * → { scripts: [{ name, text, main }], frags: { <fragKey>: text } }。.frag は、スクリプトの中で Paths.frag('名前') と書かれているものだけ取る
  */
+/** 本体のノーツ kind のスクリプト（preload/scripts/notekinds/ または gameplay/notekinds/）。kinds = 譜面で使われている kind、have = mod が定義済みの kind は除く。
+ *  ファイル名 = kind 名のものを取る。見つからない kind は、全ファイルの `super('kind')` を調べる */
+export async function noteKindScripts(kinds, have = []) {
+  if (!isEnabled()) return [];
+  const want = [...new Set(kinds)].filter((k) => k && !have.includes(k));
+  if (!want.length) return [];
+  const ix = indexOf(getBranch());
+  const rp = (f) => f.repoPath.toLowerCase().replace(/^(preload|shared)\//, "");
+  const files = [...ix.files.values()].filter((f) => /\.hxc$/i.test(f.name) && /^(scripts|gameplay)\/notekinds\//.test(rp(f)));
+  const out = new Map();
+  const rest = [];
+  for (const k of want) {
+    const f = files.find((x) => x.name.replace(/\.hxc$/i, "").toLowerCase() === String(k).toLowerCase());
+    if (f) out.set(f.repoPath, f);
+    else rest.push(k);
+  }
+  if (rest.length) {
+    await Promise.all(
+      files.map(async (f) => {
+        if (out.has(f.repoPath)) return;
+        const t = await f.text().catch(() => "");
+        if (rest.some((k) => new RegExp(`super\\(\\s*['"]${String(k).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}['"]`).test(t))) out.set(f.repoPath, f);
+      }),
+    );
+  }
+  const list = [...out.values()];
+  return Promise.all(list.map(async (f) => ({ name: `funkin.assets/${f.repoPath}`, text: await f.text() }))).then((a) => a.filter((x) => x.text));
+}
+
 /** 本体の Haxe シェーダークラスのうち、runtime 側で作ってあるもの → 使う .frag */
 const NATIVE_FRAGS = { AdjustColorShader: "adjust-color" };
 export async function stageScripts(stageId) {

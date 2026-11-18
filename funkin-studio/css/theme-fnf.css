@@ -38,7 +38,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 #studioHome,#funkinWelcome,#renderWelcome { background: #181818; }
 #studioHome .welcome-inner,#funkinWelcome .welcome-inner,#renderWelcome .welcome-inner { background: #262626; border: 1px solid var(--line); border-radius: 4px; padding: clamp(20px,4vw,34px); box-shadow: 0 14px 34px rgba(0,0,0,.5); }
 #studioHome .welcome-inner { max-width: 730px; }
-#studioHome h1 { font-size: clamp(24px,4vw,32px); letter-spacing: -.025em; }
+#studioHome h1 { font-size: clamp(24px,4vw,32px); letter-spacing: 2px; }
 .render-choice { background: var(--studio-important); border: 1px solid #a82557; border-radius: 4px; min-height: 112px; gap: 9px; box-shadow: 0 1px 0 var(--studio-important-shadow); }
 .render-choice:hover:not(:disabled) { background: var(--studio-important-hover); border-color: #ff7aa8; }
 .render-choice strong { color: #fff; }
@@ -68,7 +68,10 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   --font-ui: "FNF VCR", "VCR OSD Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Noto Sans Mono CJK JP", "Osaka-Mono", "BIZ UDGothic", "MS Gothic", monospace;
 }
 html, body, button, input, select, textarea, summary { font-family: var(--font-ui); }
-body { font-size: 14px; letter-spacing: 0; }
+body { font-size: 14px; letter-spacing: 2px; }
+input, textarea, select, button, option { letter-spacing: inherit; }
+/* 等幅・数値入力・ゲーム画面の文字は詰めたまま */
+canvas, .mono, code, pre, input[type=number], .fnfKey { letter-spacing: 0; }
 h1, h2, h3, button, .render-choice strong, #studioHud { font-weight: 700; }
 h1 { text-transform: none; }
 /* ---------- 形: 角を立てる・影はぼかさずに落とす（FNF のメニューの雰囲気） ---------- */
@@ -77,8 +80,8 @@ button, input, select, textarea { border-radius: 2px; border-width: 1px; }
 button:not(:disabled):active { transform: translateY(1px); }
 button.primary, .primary, .studio-button, .render-choice { box-shadow: 0 2px 0 var(--studio-important-shadow); }
 .panel { box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.45); }
-h2 { color: var(--accent); text-transform: uppercase; letter-spacing: 0.04em; }
-.fnfTitle h2.fnfTitleText { margin: 0; padding: 0; font-size: 13px; text-transform: none; letter-spacing: 0; }
+h2 { color: var(--accent); text-transform: uppercase; letter-spacing: 2px; }
+.fnfTitle h2.fnfTitleText { margin: 0; padding: 0; font-size: 13px; text-transform: none; letter-spacing: 2px; }
 #timeline, input[type="range"], input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 ::selection { background: var(--accent); color: #111; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }

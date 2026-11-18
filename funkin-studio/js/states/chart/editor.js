@@ -1528,21 +1528,30 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
   };
   /** 読み込み済みの mod（Workspace）にある .hxc / .hx を、イベント・ノーツ種類・Module として取り込む */
   const SCRIPT_CLS = /extends\s+(SongEvent|ScriptedSongEvent|ScriptedNoteKind|NoteKind|Module|ScriptedModule)\b/;
+  // mod の Stage スクリプト（extends Stage）と、それが使う補助クラス（props / シェーダー / ヘルパー）。イベント一覧には出ない（プレイテストだけで使う）
+  const STAGE_CLS = /extends\s+(Stage|ScriptedStage)\b/;
+  const modAux = new Map(); // 名前 → { text, stage: bool }
   async function importWorkspaceScripts() {
     const ws = state.app.workspace;
-    if (!ws?.files?.length) return;
+    if (!ws?.files?.length) {
+      modAux.clear();
+      return;
+    }
     const names = [];
     for (const f of ws.files) {
       if (!/\.(hxc|hx)$/i.test(f.name || "")) continue;
       const name = "mod:" + String(f.name).replace(/^.*[\\/]/, "");
-      if (scripts[name]?.fromMod === f) continue;
+      if (scripts[name]?.fromMod === f || modAux.get(name)?.file === f) continue;
       let text;
       try {
         text = (await f.text()).replace(/^\uFEFF/, "");
       } catch {
         continue;
       }
-      if (!SCRIPT_CLS.test(text)) continue;
+      if (!SCRIPT_CLS.test(text)) {
+        modAux.set(name, { text, file: f, stage: STAGE_CLS.test(text) });
+        continue;
+      }
       if (!registerScript(name, text).count) continue;
       scripts[name].fromMod = f;
       names.push(name);
@@ -1551,6 +1560,27 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
       refreshAfterScripts();
       say(`mod からスクリプトを取り込みました（${names.length} 件）:\n${names.map((n) => `${n} → ${[...scripts[n].ids, ...scripts[n].kinds.map((k) => k + "(ノーツ種類)"), ...scripts[n].modules.map((k) => k + "(Module)")].join(", ")}`).join("\n")}`);
     }
+  }
+  /** 実行する mod のステージスクリプトと、そこから（推移的に）名前で参照されている補助クラスだけ。関係ないスクリプトは読まない（未対応構文の解析エラーを避ける） */
+  function modStageScripts() {
+    const out = {};
+    const pool = [];
+    for (const [n, a] of modAux) if (a.stage) {
+      out[n] = a.text;
+      pool.push(a.text);
+    }
+    for (let grew = pool.length > 0; grew; ) {
+      grew = false;
+      for (const [n, a] of modAux) {
+        if (n in out) continue;
+        const cn = n.replace(/^mod:/, "").replace(/\.[^.]+$/, "");
+        if (!pool.some((t) => new RegExp(`\\b${cn}\\b`).test(t))) continue;
+        out[n] = a.text;
+        pool.push(a.text);
+        grew = true;
+      }
+    }
+    return out;
   }
   state.addDisposer(state.app.events.on("workspace:changed", importWorkspaceScripts));
   importWorkspaceScripts();
@@ -1815,7 +1845,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
   const playtest = createPlayTest(state.root, {
     audio,
     noteStyles,
-    getScripts: () => Object.fromEntries(Object.entries(scripts).map(([k, v]) => [k, v.text])),
+    getScripts: () => ({ ...Object.fromEntries(Object.entries(scripts).map(([k, v]) => [k, v.text])), ...modStageScripts() }),
     getStage: () => meta()?.playData?.stage ?? "",
     getSongId: () => songId,
     getWorkspace: () => state.app.workspace,

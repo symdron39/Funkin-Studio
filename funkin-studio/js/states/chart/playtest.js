@@ -13,7 +13,7 @@ import { Runtime, easeByName } from "../../runtime/runtime.js";
 import { ScrollVelocityTimeline, VisualClock } from "../../runtime/scrollVelocity.js";
 import { openModZip } from "../../services/ModPack.js";
 import { drawNoteSprite } from "../../runtime/noteStyle.js";
-import { has as hasRemote, reset as resetRemote, refreshIndex as refreshRemoteIndex, stageScripts, fragKey } from "../../services/FunkinAssets.js";
+import { has as hasRemote, reset as resetRemote, refreshIndex as refreshRemoteIndex, stageScripts, noteKindScripts, fragKey } from "../../services/FunkinAssets.js";
 import { StageScene } from "../../runtime/stageScene.js";
 const PIXELS_PER_MS = 0.45;
 const WIN = { sick: 45, good: 90, bad: 135, shit: 160 };
@@ -298,6 +298,11 @@ export function createPlayTest(root, d) {
       // mod に同じステージ用のスクリプトがあれば、そちらを使う（本体のものは取らない）
       const own = new RegExp(`super\\(\\s*['"]${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}['"]`, "i");
       if (id && !modTexts.some((t) => own.test(t))) stageRemote = await stageScripts(id);
+      // 譜面で使っている kind のうち、mod が定義していないものは本体のスクリプトを取る（ugh / 2hot / mom など）
+      const used = [...new Set(notes.map((n) => n.k).filter(Boolean))];
+      const have = used.filter((k) => modTexts.some((t) => new RegExp(`super\\(\\s*['"]${String(k).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}['"]`).test(t)));
+      const kindScripts = await noteKindScripts(used, have);
+      if (kindScripts.length) stageRemote = { scripts: [...(stageRemote?.scripts ?? []), ...kindScripts], frags: stageRemote?.frags ?? {} };
     } catch (e) {
       scene?.warn(`本体のステージスクリプトを取得できませんでした: ${e.message}`);
     }
