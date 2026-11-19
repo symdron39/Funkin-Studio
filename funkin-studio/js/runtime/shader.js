@@ -19,9 +19,19 @@ uniform vec2 openfl_TextureSize;
 `;
 /** OpenFL 形式の .frag → GLPost 用の GLSL */
 export function glslFrom(frag) {
-  const src = String(frag ?? "");
-  if (/#pragma\s+header/.test(src)) return src.replace(/#pragma\s+header/, HEADER);
-  return HEADER + src;
+  let src = compat(String(frag ?? ""));
+  // RuntimePostEffectShader 向けの .frag（screenCoord など）には、その分の宣言を足す（custom-blend / rain）
+  const head = /\b(screenCoord|uCameraBounds|uFrameBounds|uScreenResolution|screenToWorld|worldToScreen)\b/.test(src) && !/uniform\s+vec4\s+uCameraBounds/.test(src) ? HEADER + POST_HEAD : HEADER;
+  if (/#pragma\s+header/.test(src)) return src.replace(/#pragma\s+header/, head);
+  return head + src;
+}
+/** デスクトップの GLSL では通るが、WebGL（GLSL ES 1.00）では通らない書き方の直し（int と float の混在）。見つけた分だけ */
+function compat(src) {
+  // 整数定数 / 整数ループ変数 を float の演算に混ぜている: `N / openfl_TextureSize[0]` → `float(N) / …`
+  src = src.replace(/\b([A-Za-z_]\w*)\s*\/\s*(openfl_TextureSize)/g, "float($1) / $2");
+  // `x /= INT_CONST;`
+  for (const m of src.matchAll(/\bconst\s+int\s+(\w+)\s*=/g)) src = src.replace(new RegExp(`/=\\s*${m[1]}\\b`, "g"), `/= float(${m[1]})`);
+  return src;
 }
 const arr = (a) => Array.from(a ?? [], Number);
 /** メソッドの表（スクリプトの class X extends FlxRuntimeShader から super で届く分と、new FlxRuntimeShader(...) の分で共有） */
@@ -139,6 +149,130 @@ export function makeAdjustColorShader(getFrag) {
     }
     toString() {
       return `AdjustColorShader(${this._h}, ${this._s}, ${this._b}, ${this._c})`;
+    }
+  };
+}
+
+/** RuntimePostEffectShader の GLSL 側（screenCoord / uCameraBounds / screenToWorld など）。ポストエフェクトは画面全体に掛けるので screenCoord = uv */
+const POST_HEAD = `
+#define screenCoord uv
+uniform vec2 uScreenResolution;
+uniform vec4 uCameraBounds;
+uniform vec4 uFrameBounds;
+vec2 screenToWorld(vec2 sc) { return sc * vec2(uCameraBounds.z - uCameraBounds.x, uCameraBounds.w - uCameraBounds.y) + uCameraBounds.xy; }
+vec2 worldToScreen(vec2 wc) { return (wc - uCameraBounds.xy) / vec2(uCameraBounds.z - uCameraBounds.x, uCameraBounds.w - uCameraBounds.y); }
+vec2 screenToFrame(vec2 sc) {
+  float w = uFrameBounds.z - uFrameBounds.x, h = uFrameBounds.w - uFrameBounds.y;
+  return vec2((clamp(sc.x, uFrameBounds.x, uFrameBounds.z) - uFrameBounds.x) / w, (clamp(sc.y, uFrameBounds.y, uFrameBounds.w) - uFrameBounds.y) / h);
+}
+vec2 bitmapCoordScale() { return vec2(1.0); }
+vec2 screenToBitmap(vec2 sc) { return sc; }
+vec4 sampleBitmapScreen(vec2 sc) { return texture2D(bitmap, sc); }
+vec4 sampleBitmapWorld(vec2 wc) { return sampleBitmapScreen(worldToScreen(wc)); }
+`;
+/** funkin.graphics.shaders.RuntimeRainShader（雨 + 水たまり）。.frag は ui/shaders/rain.frag（getFrag("rain")）。mask / lightMap / blurredScreen は未対応（本物でもコメントアウトされている） */
+export function makeRainShader(getFrag) {
+  return class RuntimeRainShader {
+    constructor() {
+      shaderInit(this, getFrag("rain"));
+      this.glsl = this.glsl.replace(/precision mediump float;/, "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif");
+      this.uniforms.uScreenResolution = [1280, 720];
+      this.uniforms.uCameraBounds = [0, 0, 1280, 720];
+      this.uniforms.uFrameBounds = [0, 0, 1, 1];
+      this.time = 1;
+      this.spriteMode = false;
+      this.scale = 1;
+      this.intensity = 0.5;
+      this.puddleY = 0;
+      this.puddleScaleY = 0;
+      this.rainColor = 0xff6680cc;
+      this.numLightsSwag = 0;
+    }
+    set time(v) { this._time = Number(v); this.uniforms.uTime = this._time; }
+    get time() { return this._time; }
+    set spriteMode(v) { this._sm = !!v; this.uniforms.uSpriteMode = this._sm ? 1 : 0; this.types.uSpriteMode = "i"; }
+    get spriteMode() { return this._sm; }
+    set scale(v) { this._scale = Number(v); this.uniforms.uScale = this._scale; }
+    get scale() { return this._scale; }
+    set intensity(v) { this._int = Number(v); this.uniforms.uIntensity = this._int; }
+    get intensity() { return this._int; }
+    set puddleY(v) { this._py = Number(v); this.uniforms.uPuddleY = this._py; }
+    get puddleY() { return this._py; }
+    set puddleScaleY(v) { this._ps = Number(v); this.uniforms.uPuddleScaleY = this._ps; }
+    get puddleScaleY() { return this._ps; }
+    set rainColor(c) { this._rc = c; const n = Number(c) >>> 0; this.uniforms.uRainColor = [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; }
+    get rainColor() { return this._rc; }
+    set numLightsSwag(v) { this._nl = Math.trunc(Number(v)); this.uniforms.numLights = this._nl; this.types.numLights = "i"; }
+    get numLightsSwag() { return this._nl; }
+    set mask(v) { this._mask = v; }
+    get mask() { return this._mask; }
+    set lightMap(v) { this._lm = v; }
+    get lightMap() { return this._lm; }
+    set blurredScreen(v) { this._bs = v; }
+    get blurredScreen() { return this._bs; }
+    update(elapsed) { this.time = this._time + Number(elapsed); }
+    /** updateViewInfo(FlxG.width, FlxG.height, FlxG.camera): カメラの見ている範囲（world px） */
+    updateViewInfo(w, h, cam) {
+      const sx = Number(cam?.scroll?.x) || 0, sy = Number(cam?.scroll?.y) || 0;
+      this.uniforms.uScreenResolution = [Number(w) || 1280, Number(h) || 720];
+      this.uniforms.uCameraBounds = [sx, sy, sx + (Number(w) || 1280), sy + (Number(h) || 720)];
+    }
+    updateFrameInfo() {}
+    toString() { return "RuntimeRainShader"; }
+  };
+}
+
+/**
+ * 本体の「FlxRuntimeShader を継承した小さなシェーダークラス」（HSVShader / Grayscale / MosaicEffect / GaussianBlurShader / InverseDotsShader）。
+ * 値をプロパティで受け取り、決まった uniform に流す（実ソース funkin/graphics/shaders/*.hx と同じ対応）。
+ *   spec = { frag: "hsv", name, props: [[プロパティ名, uniform 名, 既定値]], methods: { setAmount: "amount" } }
+ */
+export function makeNativeShader(getFrag, spec) {
+  const C = class {
+    constructor(...args) {
+      shaderInit(this, getFrag(spec.frag));
+      spec.props.forEach(([prop, uni, def], i) => {
+        this[prop] = args[i] ?? def;
+      });
+    }
+    toString() {
+      return spec.name;
+    }
+  };
+  for (const [prop, uni] of spec.props)
+    Object.defineProperty(C.prototype, prop, {
+      get() {
+        return this["_" + prop];
+      },
+      set(v) {
+        this["_" + prop] = Number(v);
+        this.uniforms[uni] = Number(v);
+      },
+    });
+  for (const [m, prop] of Object.entries(spec.methods ?? {})) C.prototype[m] = function (v) { this[prop] = v; };
+  Object.defineProperty(C, "name", { value: spec.name });
+  return C;
+}
+export const NATIVE_SHADERS = [
+  { name: "HSVShader", frag: "hsv", props: [["hue", "_hue", 1], ["saturation", "_sat", 1], ["value", "_val", 1]] },
+  { name: "Grayscale", frag: "grayscale", props: [["amount", "_amount", 1]], methods: { setAmount: "amount" } },
+  { name: "GaussianBlurShader", frag: "gaussian-blur", props: [["amount", "_amount", 1]], methods: { setAmount: "amount" } },
+  { name: "InverseDotsShader", frag: "inverse-dots", props: [["amount", "_amount", 1]], methods: { setAmount: "amount" } },
+];
+/** MosaicEffect: blockSize（FlxPoint）→ uBlocksize [w, h] */
+export function makeMosaicEffect(getFrag, Pt) {
+  return class MosaicEffect {
+    constructor() {
+      shaderInit(this, getFrag("mosaic"));
+      this.blockSize = new Pt(1, 1);
+      this.setBlockSize(1, 1);
+    }
+    setBlockSize(w, h) {
+      this.blockSize.set(Number(w), Number(h));
+      this.uniforms.uBlocksize = [Number(w), Number(h)];
+    }
+    toString() {
+      return "MosaicEffect";
     }
   };
 }

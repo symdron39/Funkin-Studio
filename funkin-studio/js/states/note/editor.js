@@ -9,6 +9,7 @@
    ============================================================ */
 import { Viewport } from "../../ui/Viewport.js";
 import { HudPanels } from "../../ui/HudPanels.js";
+import { FnfShell } from "../../ui/FnfShell.js";
 import { mountModPicker } from "../../ui/ModPicker.js";
 import { NoteStyleSet, NoteStyle, framesByPrefix } from "../../runtime/noteStyle.js";
 import { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } from "../stage/sparrowAtlas.js";
@@ -91,7 +92,18 @@ export function mountNoteEditor(state) {
       requestDraw();
     },
   });
-  new HudPanels(state.root, { storageKey: "note", defaults: ["files", "group"], narrowDefaults: ["group"], narrowExclusive: ["files", "group", "entry"] });
+  const panels = new HudPanels(state.root, { storageKey: "note", defaults: ["files", "group", "transport"], narrowDefaults: ["transport"], narrowExclusive: ["files", "group", "entry"] });
+  // FNF 本体のエディタ風: 上にメニューバー、パネルは浮動ツールボックス、下にバー
+  new FnfShell(state.root, panels, {
+    key: "note",
+    titles: { files: "File / ファイル", group: "Group（グループ）", entry: "Animations（アニメ）", scroll: "Hit / Scroll（判定・スクロール）" },
+    menus: [
+      { text: "File", items: [{ text: "新規 noteStyle", click: "#nteNew" }, { text: "noteStyle を開く…", toggle: "files" }, "-", { text: "mod zip に書き出す", click: "#nteSave" }] },
+      { text: "Edit", items: [{ text: "オフセットを 0, 0 に", click: "#nteOffZero" }] },
+      { text: "View", items: [{ text: "ズームイン", click: "#nteZoomIn" }, { text: "ズームアウト", click: "#nteZoomOut" }, { text: "全体を表示", key: "F", click: "#nteFit" }, { text: "原点へ", click: "#nteResetView" }, "-", { text: "移動ツール", click: "#ntePanTool", check: () => document.getElementById("ntePanTool").getAttribute("aria-pressed") === "true" }, { text: "アニメを再生", run: () => document.getElementById("ntePlay").click(), check: () => document.getElementById("ntePlay").checked }, { text: "ノーツの枠", run: () => document.getElementById("nteGuide").click(), check: () => document.getElementById("nteGuide").checked }] },
+      { text: "Windows", items: [{ text: "Group", toggle: "group" }, { text: "Animations", toggle: "entry" }, { text: "Hit / Scroll", toggle: "scroll" }, { text: "File", toggle: "files" }] },
+    ],
+  });
   $("nteZoom").oninput = () => vp.setZoom(Number($("nteZoom").value));
   $("nteZoomIn").onclick = () => vp.setZoom(vp.zoom * 1.25);
   $("nteZoomOut").onclick = () => vp.setZoom(vp.zoom / 1.25);
@@ -938,6 +950,17 @@ export function mountNoteEditor(state) {
   loadedOnce = true;
   loadAssets(); // 新規の既定は fallback の funkin（内蔵）を使うので、最初から絵を出す
   fit();
+  // 画面が隠れている間に fit しても枠の大きさが 0 なので、初めて表示されて大きさが付いたときにもう一度だけ合わせる
+  {
+    const ro = new ResizeObserver(() => {
+      if (canvas.clientWidth > 50 && canvas.clientHeight > 50) {
+        ro.disconnect();
+        fit();
+      }
+    });
+    ro.observe(canvas);
+    state.addDisposer(() => ro.disconnect());
+  }
   return {
     onShow() {
       resize();

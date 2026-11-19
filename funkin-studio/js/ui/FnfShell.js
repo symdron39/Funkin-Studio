@@ -170,7 +170,7 @@ export class FnfShell {
       const w = saved?.w ?? 340;
       el.style.width = w + "px";
       if (saved?.h) el.style.height = saved.h + "px";
-      el.style.left = (saved?.x ?? (right ? Math.max(10, W - w - 14 - (i % 3) * 22) : 14 + (i % 4) * 22)) + "px";
+      el.style.left = (saved?.x ?? (right ? Math.max(10, W - w - 14 - (i % 3) * 56) : 14 + (i % 4) * 22)) + "px";
       el.style.top = (saved?.y ?? 40 + (i % 4) * 26) + "px";
       i++;
       this.keepInside(el);

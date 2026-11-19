@@ -15,7 +15,7 @@ export function mountModPicker(state, host, spec) {
   box.innerHTML = `<summary>${spec.title || "読み込み済みの mod から選ぶ"}</summary>
     <div class="row"><select class="mpSel"></select><button type="button" class="mpGo primary">これを開く</button></div>
     <p class="tiny mpInfo"></p>`;
-  host.prepend(box);
+  (host.querySelector?.(":scope > .fnfBody") ?? host).prepend(box); // FNF 風の浮動ウィンドウ（FnfShell）のときは、中身の側へ入れる
   const sel = box.querySelector(".mpSel"),
     info = box.querySelector(".mpInfo");
   let items = [];

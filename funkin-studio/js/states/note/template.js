@@ -11,22 +11,11 @@ export const template = `
       <div class="hudLayer" data-all-hidden="false">
         <button id="nteHudEye" class="hudEye" type="button" data-hud-all title="Hud の表示 / 非表示 (H)" aria-label="Hud の表示 / 非表示">👁</button>
 
-        <div class="hudBar" data-hud-panel="bar" data-hud-always>
+        <div class="fnfLegacyBar" data-hud-panel="bar" data-hud-always hidden>
           <button type="button" data-hud-toggle="files" data-ja="📁 ファイル" data-en="📁 Files">📁 ファイル</button>
           <button type="button" data-hud-toggle="group" data-ja="🎯 グループ" data-en="🎯 Group">🎯 グループ</button>
           <button type="button" data-hud-toggle="entry" data-ja="🎞 アニメ" data-en="🎞 Anim">🎞 アニメ</button>
           <button type="button" data-hud-toggle="scroll" data-ja="🎯 判定・スクロール" data-en="🎯 Hit / Scroll">🎯 判定・スクロール</button>
-          <span class="hudSep"></span>
-          <button id="nteZoomOut" type="button" title="ズームアウト">−</button>
-          <input id="nteZoom" type="number" min=".05" max="16" step=".05" value="1" title="ズーム（ホイールでも可）" />
-          <button id="nteZoomIn" type="button" title="ズームイン">＋</button>
-          <button id="nteFit" type="button" title="全体を画面に収める (F)">⊡ 全体</button>
-          <button id="nteResetView" type="button" title="ズーム100%">⌖ 原点</button>
-          <button id="ntePanTool" type="button" title="左ドラッグでビューを動かす（Space長押し / 中・右ドラッグでも可）">✋ 移動</button>
-          <label class="hudCheck" title="アニメーションを再生する"><input id="ntePlay" type="checkbox" checked /><span>▶ 再生</span></label>
-          <label class="hudCheck" title="ノーツの大きさの目安（レーンの枠）"><input id="nteGuide" type="checkbox" checked /><span>枠</span></label>
-          <span class="hudSep"></span>
-          <span id="nteReadout" class="hudReadout"></span>
         </div>
 
         <div class="hudDock hudDockLeft">
@@ -117,7 +106,21 @@ export const template = `
           </aside>
         </div>
 
-        <div class="hudTransport" data-hud-panel="transport"><div id="nteStatus" class="tiny">noteStyle を開くか、「新規」で作り始めてください。</div></div>
+        <div class="hudTransport fnfPlaybar fnfStatusbar" data-hud-panel="transport">
+          <div class="fnfPlayRow">
+            <div class="fnfPlayL"><span id="nteReadout" class="fnfStat"></span><span id="nteStatus" class="tiny">noteStyle を開くか、「新規」で作り始めてください。</span></div>
+            <div class="fnfPlayR">
+              <button id="nteZoomOut" type="button" title="ズームアウト">−</button>
+              <input id="nteZoom" type="number" min=".05" max="16" step=".05" value="1" title="ズーム（ホイールでも可）" />
+              <button id="nteZoomIn" type="button" title="ズームイン">＋</button>
+              <button id="nteFit" type="button" title="全体を画面に収める (F)">⊡ 全体</button>
+              <button id="nteResetView" type="button" title="ズーム100%">⌖ 原点</button>
+              <button id="ntePanTool" type="button" title="左ドラッグでビューを動かす（Space長押し / 中・右ドラッグでも可）">✋ 移動</button>
+              <label class="hudCheck" title="アニメーションを再生する"><input id="ntePlay" type="checkbox" checked /><span>▶ 再生</span></label>
+              <label class="hudCheck" title="ノーツの大きさの目安（レーンの枠）"><input id="nteGuide" type="checkbox" checked /><span>枠</span></label>
+            </div>
+          </div>
+        </div>
         <div id="nteToast" class="hudToast" hidden></div>
       </div>
     </section>

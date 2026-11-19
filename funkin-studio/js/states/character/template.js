@@ -24,23 +24,13 @@ export const template = `
         >👁</button>
 
         <!-- 上のバー: パネルの切り替え・Undo/Redo・ビュー操作 -->
-        <div id="offHudBar" class="hudBar" data-hud-panel="bar" data-hud-always>
+        <div id="offHudBar" class="fnfLegacyBar" data-hud-panel="bar" data-hud-always hidden>
           <button type="button" data-hud-toggle="files" data-ja="📁 ファイル" data-en="📁 Files">📁 ファイル</button>
           <button type="button" data-hud-toggle="anim" data-ja="🎞 アニメ" data-en="🎞 Anim">🎞 アニメ</button>
           <button type="button" data-hud-toggle="char" data-ja="🧍 キャラ" data-en="🧍 Character">🧍 キャラ</button>
           <button type="button" data-hud-toggle="transport" data-ja="▶ 再生バー" data-en="▶ Playback">▶ 再生バー</button>
-          <span class="hudSep"></span>
           <button id="offUndo" type="button" title="元に戻す (Ctrl+Z)">↶ 戻す</button>
           <button id="offRedo" type="button" title="やり直す (Ctrl+Y)">↷ やり直す</button>
-          <span class="hudSep"></span>
-          <button id="offZoomOut" type="button" title="ズームアウト">−</button>
-          <input id="offZoom" type="number" min=".05" max="16" step=".1" value="1" title="ズーム（ホイールでも可）" />
-          <button id="offZoomIn" type="button" title="ズームイン">＋</button>
-          <button id="offFit" type="button" title="キャラ全体を画面に収める (F)" data-ja="⊡ 全体" data-en="⊡ Fit">⊡ 全体</button>
-          <button id="offResetView" type="button" title="ズーム100%・原点を中央へ" data-ja="⌖ 原点" data-en="⌖ Origin">⌖ 原点</button>
-          <button id="offPanTool" type="button" title="左ドラッグでビューを動かす（Space長押し / 中・右ドラッグでも可）" data-ja="✋ 移動" data-en="✋ Pan">✋ 移動</button>
-          <label class="hudCheck" title="フレームの枠を表示"><input id="offShowBox" type="checkbox" checked /><span data-ja="枠" data-en="Box">枠</span></label>
-          <span id="offReadout" class="hudReadout"></span>
         </div>
 
         <!-- 左: ファイル -->
@@ -253,22 +243,24 @@ export const template = `
         </div>
 
         <!-- 下: 再生バー + ステータス -->
-        <div class="hudTransport" data-hud-panel="transport">
-          <div class="row">
-            <button id="offPrev">◀ 1F</button><button id="offPlay">▶ 再生</button
-            ><button id="offNext">1F ▶</button
-            ><span id="offCounter" class="tiny">0 / 0</span>
-            <input
-              id="offTimeline"
-              type="range"
-              min="0"
-              max="0"
-              value="0"
-              style="flex: 1 1 140px; min-width: 100px"
-            />
-          </div>
-          <div id="offStatus" class="tiny">
-            character.json と画像・アトラス定義を選択してください。
+        <div class="hudTransport fnfPlaybar" data-hud-panel="transport">
+          <input id="offTimeline" class="fnfSeek" type="range" min="0" max="0" value="0" />
+          <div class="fnfPlayRow">
+            <div class="fnfPlayL">
+              <button id="offPrev">◀ 1F</button><button id="offPlay">▶ 再生</button><button id="offNext">1F ▶</button>
+              <span id="offCounter" class="fnfStat">0 / 0</span>
+            </div>
+            <div class="fnfPlayC"><span id="offStatus" class="tiny">character.json と画像・アトラス定義を選択してください。</span></div>
+            <div class="fnfPlayR">
+              <button id="offZoomOut" type="button" title="ズームアウト">−</button>
+              <input id="offZoom" type="number" min=".05" max="16" step=".1" value="1" title="ズーム（ホイールでも可）" />
+              <button id="offZoomIn" type="button" title="ズームイン">＋</button>
+              <button id="offFit" type="button" title="キャラ全体を画面に収める (F)" data-ja="⊡ 全体" data-en="⊡ Fit">⊡ 全体</button>
+              <button id="offResetView" type="button" title="ズーム100%・原点を中央へ" data-ja="⌖ 原点" data-en="⌖ Origin">⌖ 原点</button>
+              <button id="offPanTool" type="button" title="左ドラッグでビューを動かす（Space長押し / 中・右ドラッグでも可）" data-ja="✋ 移動" data-en="✋ Pan">✋ 移動</button>
+              <label class="hudCheck" title="フレームの枠を表示"><input id="offShowBox" type="checkbox" checked /><span data-ja="枠" data-en="Box">枠</span></label>
+              <span id="offReadout" class="hudReadout"></span>
+            </div>
           </div>
         </div>
 

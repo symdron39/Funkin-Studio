@@ -1848,6 +1848,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     getScripts: () => ({ ...Object.fromEntries(Object.entries(scripts).map(([k, v]) => [k, v.text])), ...modStageScripts() }),
     getStage: () => meta()?.playData?.stage ?? "",
     getSongId: () => songId,
+    getNoteStyleId: () => meta()?.playData?.noteStyle ?? "",
     getWorkspace: () => state.app.workspace,
     getCharacters: () => {
       const c = meta()?.playData?.characters ?? {};

@@ -95,6 +95,16 @@ class Actor {
 }
 
 // ------------------------------------------------------------------ キャラクター
+/** openfl.display.BlendMode の並び順（スクリプトは blend = 0 のように数で指定する。0 = ADD / 9 = MULTIPLY …） */
+const BLEND_NAMES = ["add", "alpha", "darken", "difference", "erase", "hardlight", "invert", "layer", "lighten", "multiply", "normal", "overlay", "screen", "shader", "subtract"];
+/** color（0xAARRGGBB）の明るさ。加算合成の薄い霧などは、色を絞る = 弱くする、で近似する（色味は付けない） */
+const tintFactor = (c) => {
+  if (c == null) return 1;
+  const n = Number(c) >>> 0;
+  return n === 0 || n === 0xffffffff ? 1 : (((n >> 16) & 255) + ((n >> 8) & 255) + (n & 255)) / 765;
+};
+const blendName = (v) => (typeof v === "number" ? (BLEND_NAMES[v] ?? "normal") : String(v ?? "normal"));
+
 class SceneChar {
   constructor(role) {
     this.role = role;
@@ -274,6 +284,7 @@ export class StageScene {
     this.bop = 0; // 4 拍ごとの一時的なズーム
     this.cam = { x: FRAME_W / 2, y: FRAME_H / 2 }; // 焦点（ワールド座標）
     this.extra = []; // スクリプトが stage.add したキャラ
+    this.tiled = []; // スクリプトが stage.add した FunkinTiledSprite
     this.charFiles = new Map();
     this.focusEvents = [];
     this.zoomEvents = [];
@@ -378,6 +389,52 @@ export class StageScene {
   }
   removeExtra(c) {
     this.extra = this.extra.filter((x) => x !== c);
+  }
+  /** FunkinTiledSprite（スクリプトが add したもの）。画像は非同期に読む */
+  addTiled(o) {
+    if (!o || this.tiled.includes(o)) return;
+    this.tiled.push(o);
+    o.ord = this.tiled.length;
+    const f = this.o.resolve("image", o.path, { origin: this.stageOrigin ?? this.o.origin, quiet: true });
+    if (!f) return this.warn(`画像「${o.path}」が見つかりません（FunkinTiledSprite）`);
+    loadImage(f).then((img) => (o.img = img), (e) => this.warn(`FunkinTiledSprite: ${e.message}`));
+  }
+  removeTiled(o) {
+    this.tiled = this.tiled.filter((x) => x !== o);
+  }
+  /** 敷き詰めて描く（FlxTiledSprite）。scale は中心を基準に、scrollX / scrollY は模様のずれ */
+  drawTiled(ctx, o) {
+    if (!o.img || !o.visible || !o.width || !o.height) return;
+    const sx = Math.abs(o.scale.x) || 1,
+      sy = Math.abs(o.scale.y) || 1;
+    const rep = o.repeatX && o.repeatY ? "repeat" : o.repeatX ? "repeat-x" : o.repeatY ? "repeat-y" : "no-repeat";
+    if (o.__backdrop) {
+      // FlxBackdrop: 指定の軸に無限に敷く。x / y が模様の基準（velocity で流れる）
+      const pat2 = (o.pattern ??= { img: null, p: null });
+      if (pat2.img !== o.img || pat2.rep !== rep) Object.assign(pat2, { img: o.img, rep, p: ctx.createPattern(o.img, rep) });
+      if (!pat2.p) return;
+      ctx.globalCompositeOperation = blendToCanvas(blendName(o.blend));
+      ctx.globalAlpha = Math.max(0, Math.min(1, o.alpha)) * tintFactor(o.color);
+      ctx.scale(sx, sy);
+      pat2.p.setTransform?.(new DOMMatrix().translate(o.x / sx, o.y / sy));
+      ctx.fillStyle = pat2.p;
+      ctx.fillRect(-12000, -12000, 24000, 24000);
+      return;
+    }
+    const pat = (o.pattern ??= { img: null, p: null });
+    if (pat.img !== o.img || pat.rep !== rep) Object.assign(pat, { img: o.img, rep, p: ctx.createPattern(o.img, rep) });
+    if (!pat.p) return;
+    ctx.translate(o.x + o.width / 2, o.y + o.height / 2);
+    ctx.scale(sx, sy);
+    ctx.translate(-o.width / 2, -o.height / 2);
+    ctx.globalCompositeOperation = blendToCanvas(blendName(o.blend));
+    ctx.globalAlpha = Math.max(0, Math.min(1, o.alpha)) * tintFactor(o.color);
+    ctx.beginPath();
+    ctx.rect(0, 0, o.width, o.height);
+    ctx.clip();
+    pat.p.setTransform?.(new DOMMatrix().translate(o.scrollX || 0, o.scrollY || 0));
+    ctx.fillStyle = pat.p;
+    ctx.fillRect(0, 0, o.width, o.height);
   }
   async loadStage(id) {
     let doc = null;
@@ -670,6 +727,7 @@ export class StageScene {
       } else c.holdTimer = 0;
     }
     for (const p of this.props) p.actor?.update(dt);
+    for (const t of this.tiled) if (t.active !== false) t.move?.(dt);
     // ズーム（イベント → 4 拍ごとの揺れ）
     if (this.tweenZoom) {
       const z = this.tweenZoom,
@@ -747,6 +805,7 @@ export class StageScene {
     const list = [
       ...this.props.map((p) => ({ z: p.z, ord: p.ord, prop: p })),
       ...[...ROLES.map((r) => this.chars[r]), ...this.extra].map((c, i) => ({ z: c.zIndex, ord: 1e6 + i, char: c })),
+      ...this.tiled.map((t, i) => ({ z: Number(t.zIndex) || 0, ord: 2e6 + i, tiled: t })),
     ].sort((a, b) => a.z - b.z || a.ord - b.ord);
     if (this.stageMissing) {
       ctx.save();
@@ -757,10 +816,15 @@ export class StageScene {
     }
     for (const o of list) {
       ctx.save();
-      const sf = o.char ? o.char.scroll : getScroll(o.prop.ref);
+      const sf = o.char ? o.char.scroll : o.tiled ? [o.tiled.scrollFactor.x, o.tiled.scrollFactor.y] : getScroll(o.prop.ref);
       this.world(ctx, z, scrollX, scrollY, sf);
-      if (o.char) {
-        if (o.char.visible) o.char.draw(ctx, (STAGE_KEY[o.char.role] ?? "CHAR").toUpperCase());
+      if (o.tiled) this.drawTiled(ctx, o.tiled);
+      else if (o.char) {
+        if (o.char.visible) {
+          const label = (STAGE_KEY[o.char.role] ?? "CHAR").toUpperCase();
+          if (o.char.shader?.glsl && o.char.sc?.view) this.drawCharShaded(ctx, o.char, label);
+          else o.char.draw(ctx, label);
+        }
       } else this.drawProp(ctx, o.prop);
       ctx.restore();
     }
@@ -771,6 +835,38 @@ export class StageScene {
     ctx.translate(FRAME_W / 2, FRAME_H / 2);
     ctx.scale(z, z);
     ctx.translate(-FRAME_W / 2 - sx * sf[0], -FRAME_H / 2 - sy * sf[1]);
+  }
+  /** シェーダー（AdjustColorShader など）つきのキャラ: 足元の周りの領域をいったん別のキャンバスに描き、WebGL で .frag を掛けてから置く（AnimateAtlas でもパーツごとではなく、できあがった絵に掛かる） */
+  drawCharShaded(ctx, c, label) {
+    const pl = c.place();
+    // 大きさが決まらない（画像が届く前など）ときは、シェーダーなしでそのまま描く
+    if (!(pl.w > 0 && pl.h > 0 && Number.isFinite(pl.feetX + pl.feetY))) return c.draw(ctx, label);
+    const W0 = Math.max(64, pl.w * 1.8),
+      H0 = Math.max(64, pl.h * 1.7);
+    const q = Math.min(1, 2048 / Math.max(W0, H0));
+    const W = Math.max(1, Math.ceil(W0 * q)),
+      H = Math.max(1, Math.ceil(H0 * q));
+    const ox = pl.feetX - W0 / 2,
+      oy = pl.feetY - H0 * 0.92; // 足元から上に 92%・下に 8%
+    if (!c.shadeTmp) c.shadeTmp = document.createElement("canvas");
+    if (c.shadeTmp.width !== W || c.shadeTmp.height !== H) {
+      c.shadeTmp.width = W;
+      c.shadeTmp.height = H;
+    }
+    const c2 = c.shadeTmp.getContext("2d");
+    c2.setTransform(1, 0, 0, 1, 0, 0);
+    c2.clearRect(0, 0, W, H);
+    c2.setTransform(q, 0, 0, q, -ox * q, -oy * q);
+    c.draw(c2, label);
+    this.gl ??= new GLPost();
+    const sh = c.shader;
+    sh.onError ??= (m) => this.warn(`シェーダー（キャラ ${c.role}）: ${m}`);
+    const res = this.gl.ok && (sh.active ? sh.active() : true) ? this.gl.apply(c.shadeTmp, sh) : null;
+    try {
+      ctx.drawImage(res || c.shadeTmp, ox, oy, W0, H0);
+    } catch (e) {
+      this.warn(`キャラ ${c.role}(${c.id}) の描画に失敗: ${e.message}（${W}x${H}）`);
+    }
   }
   /** シェーダー（FlxRuntimeShader）つきの prop: いったん別のキャンバスに描き、WebGL で .frag を掛けてから置く */
   drawPropShaded(ctx, e) {
@@ -864,10 +960,14 @@ export class StageScene {
       get shader() { return e.shader ?? null; },
       set shader(v) { e.shader = v || null; },
       scale,
+      get blend() { return p.blend; },
+      set blend(v) { p.blend = blendName(v); },
+      offset: (e.off ??= { x: 0, y: 0, set(x = 0, y = x) { this.x = Number(x); this.y = Number(y); } }), // FlxSprite.offset: 描く位置を (−x, −y) ずらす
       velocity: { x: 0, y: 0 }, // active = true のとき、毎フレーム位置に足される（FlxObject と同じ）
       acceleration: { x: 0, y: 0 },
       active: false,
-      animation: { play },
+      animation: { play, onFrameChange: { add() {}, remove() {}, removeAll() {} } }, // フレーム通知は使わない（シェーダーのフレーム範囲は、prop を別の絵にして掛けるので不要）
+      frame: null,
       playAnim: play,
       setPosition: (x, y) => (p.position = [Number(x), Number(y)]),
       destroy() { e.hidden = true; },
@@ -881,8 +981,8 @@ export class StageScene {
       [sx, sy] = getScale(p);
     const ex = e.w,
       eh = e.h;
-    const cx = p.position[0] + ex / 2,
-      cy = p.position[1] + eh / 2;
+    const cx = p.position[0] + ex / 2 - (e.off?.x || 0),
+      cy = p.position[1] + eh / 2 - (e.off?.y || 0);
     ctx.translate(cx, cy);
     if (p.angle) ctx.rotate((p.angle * Math.PI) / 180);
     ctx.globalAlpha = Math.max(0, Math.min(1, num(p.alpha, 1)));
@@ -993,7 +1093,26 @@ export class StageScene {
         c.zIndex = Number(v);
       },
       exists: true,
-      alive: true,
+      get alive() {
+        return c.alive !== false;
+      },
+      set alive(v) {
+        c.alive = !!v;
+      },
+      kill() {
+        c.alive = false;
+        c.visible = false;
+      },
+      revive() {
+        c.alive = true;
+        c.visible = true;
+      },
+      /** BaseCharacter.resetCharacter(resetCamera): アニメ・タイマーを初期状態へ（位置はそのまま） */
+      resetCharacter() {
+        c.canPlayOther = true;
+        c.holdTimer = 0;
+        c.dance?.(true);
+      },
       animation: {
         // FlxAnimationController.play(name, force, reversed, frame): 制限なしで直接再生
         play: (name, force = false, reversed = false) => void c.actor?.play(c.correct(String(name)) ?? String(name), !!force, !!reversed),
@@ -1001,7 +1120,7 @@ export class StageScene {
           return c.actor?.name ?? "";
         },
         get curAnim() {
-          return { name: c.actor?.name ?? "", finished: c.actor?.finished ?? true };
+          return { name: c.actor?.name ?? "", finished: c.actor?.finished ?? true, curFrame: 0 }; // curFrame の書き込みは無視（フレーム指定は未対応）
         },
         get finished() {
           return c.actor?.finished ?? true;
@@ -1023,6 +1142,10 @@ export class StageScene {
       set canPlayOtherAnims(v) { c.canPlayOther = !!v; },
       get ignoreExclusionPref() { return c.ignoreExclusion; },
       set ignoreExclusionPref(v) { c.ignoreExclusion = Array.isArray(v) ? v : []; },
+      get shader() { return c.shader ?? null; },
+      set shader(v) { c.shader = v || null; },
+      get useRenderTexture() { return true; },
+      set useRenderTexture(v) {},
       get danceEvery() { return c.danceEvery; },
       set danceEvery(v) { c.json = { ...(c.json ?? {}), danceEvery: Number(v) }; },
       get singTimeSteps() { return c.singTime; },
@@ -1056,14 +1179,17 @@ export class StageScene {
     const scene = this;
     return {
       stageId: this.stageId,
+      // Stage.characters（id → キャラ）。スクリプトが remove(id) などを呼んでもよいように、空の入れ物
+      characters: { remove() {}, set() {}, get: () => null, exists: () => false, keys: () => [] },
+      addCharacter: (c) => (c?.__char ? scene.addExtra(c.__char) : null),
       stageName: this.doc?.name ?? "",
       cameraZoom: this.zoomBase,
       getBoyfriend: () => scene.apiOf("player"),
       getDad: () => scene.apiOf("opponent"),
       getGirlfriend: () => scene.apiOf("girlfriend"),
-      add: (o) => (o?.__char ? scene.addExtra(o.__char) : null), // キャラ以外は Runtime.attachScene が PlayState 側へ振り分ける
-      remove: (o) => (o?.__char ? scene.removeExtra(o.__char) : null),
-      insert: (_i, o) => (o?.__char ? scene.addExtra(o.__char) : null),
+      add: (o) => (o?.__char ? scene.addExtra(o.__char) : o?.__tiled ? scene.addTiled(o) : null), // キャラ以外は Runtime.attachScene が PlayState 側へ振り分ける
+      remove: (o) => (o?.__char ? scene.removeExtra(o.__char) : o?.__tiled ? scene.removeTiled(o) : null),
+      insert: (_i, o) => (o?.__char ? scene.addExtra(o.__char) : o?.__tiled ? scene.addTiled(o) : null),
       refresh: () => {}, // 描画のたびに zIndex で並べ直すので何もしなくてよい
       getNamedProp: (name) => scene.propApi(String(name)),
       getProp: (name) => scene.props.find((p) => p.ref.name === name)?.ref ?? null,

@@ -35,6 +35,7 @@ import { exportMod } from "../../services/ModExport.js";
 import { registryPath } from "../../services/ModPack.js";
 import { Viewport, isTextEntry } from "../../ui/Viewport.js";
 import { HudPanels } from "../../ui/HudPanels.js";
+import { FnfShell } from "../../ui/FnfShell.js";
 import { parsePackerText } from "../stage/sparrowAtlas.js";
 import { GENERATED_BY } from "../../core/appInfo.js";
 
@@ -61,6 +62,18 @@ export function mountCharacterEditor(state) {
       narrowDefaults: ["anim", "transport"],
       narrowExclusive: ["files", "anim", "char"],
     });
+  // FNF 本体の Character Editor 風: 上にメニューバー、パネルは浮動ツールボックス、下に playbar
+  new FnfShell(state.root, panels, {
+    key: "character",
+    titles: { files: "File / ファイル", anim: "Animations（アニメーション）", char: "Character Data（キャラクター設定）" },
+    menus: [
+      { text: "File", items: [{ text: "ファイルを開く…", toggle: "files" }, { text: "JSON を解析 / 再読み込み", click: "#offLoad" }, "-", { text: "character.json 保存", click: "#offExport" }] },
+      { text: "Edit", items: [{ text: "元に戻す", key: "Ctrl+Z", click: "#offUndo" }, { text: "やり直す", key: "Ctrl+Y", click: "#offRedo" }, "-", { text: "アニメーション追加", click: "#offAddAnim" }, { text: "アニメ名を変更", click: "#offRenameAnim" }, { text: "アニメを削除", click: "#offDeleteAnim" }, "-", { text: "オフセットを 0, 0 に", click: "#offZero" }] },
+      { text: "View", items: [{ text: "ズームイン", click: "#offZoomIn" }, { text: "ズームアウト", click: "#offZoomOut" }, { text: "全体を表示", key: "F", click: "#offFit" }, { text: "原点へ", click: "#offResetView" }, "-", { text: "移動ツール", click: "#offPanTool", check: () => $("offPanTool").getAttribute("aria-pressed") === "true" }, { text: "フレームの枠", run: () => $("offShowBox").click(), check: () => $("offShowBox").checked }] },
+      { text: "Playback", items: [{ text: "再生 / 停止", click: "#offPlay" }, { text: "1 フレーム戻る", click: "#offPrev" }, { text: "1 フレーム進む", click: "#offNext" }] },
+      { text: "Windows", items: [{ text: "Animations", toggle: "anim" }, { text: "Character Data", toggle: "char" }, { text: "File", toggle: "files" }, "-", { text: "再生バー", toggle: "transport" }] },
+    ],
+  });
   // doc       : 読み込んだ character.json（編集対象。書き出すときはこれを出力）
   // image     : アトラス画像 / atlas : アトラス定義（Sparrow なら XML Document、AnimateAtlas なら spritemap JSON）
   // animation : Animation.json（AnimateAtlas のとき）/ sprites : Sparrow のスプライト一覧

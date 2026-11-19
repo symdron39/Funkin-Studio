@@ -266,7 +266,49 @@ export async function ensureAtlas(ws, assetPath) {
   if (!assetPath || /^#|^none$/i.test(String(assetPath).trim())) return 0;
   if (ws.atlasFor?.(assetPath)) return 0;
   const list = findAtlas(assetPath);
-  return list.length ? addToWorkspace(ws, list) : 0;
+  if (!list.length) return 0;
+  return addToWorkspace(ws, completeFromMod(ws, list));
+}
+
+/**
+ * 一部だけ mod にあるアトラス（Animation.json だけ / png だけ …）を、足りないファイルだけの補完にする。
+ *  ・mod に同じ相対パスのファイルがあれば、本体のものは足さない（mod のものが優先）
+ *  ・足すファイルは、mod の同じフォルダにあるものとして登録し直す（mod のファイルと同じ origin でないと、アトラスとして組み合わせられないため）
+ * mod に手がかり（同じ名前のファイル）が全く無ければ、そのまま全部足す
+ */
+function completeFromMod(ws, list) {
+  const mods = (ws.files ?? []).filter((f) => !f.remote);
+  const segs = (p) => String(p).replace(/\\/g, "/").split("/").filter(Boolean);
+  const low = (a) => a.map((x) => x.toLowerCase());
+  // 手がかり: 本体のファイルと「後ろ（ファイル名 + 親フォルダ…）が同じ」mod のファイル。後ろが長く合うものを選ぶ
+  let best = null;
+  for (const r of list) {
+    const rs = low(segs(r.repoPath));
+    for (const m of mods) {
+      const ms = low(segs(m.webkitRelativePath || m.name));
+      let k = 0;
+      while (k < rs.length && k < ms.length && rs[rs.length - 1 - k] === ms[ms.length - 1 - k]) k++;
+      if (k >= 2 && (!best || k > best.k)) best = { k, r, m };
+    }
+  }
+  if (!best) return list;
+  const rSegs = segs(best.r.repoPath),
+    mSegs = segs(best.m.webkitRelativePath || best.m.name);
+  const rBase = rSegs.slice(0, rSegs.length - best.k).join("/").toLowerCase(),
+    mBase = mSegs.slice(0, mSegs.length - best.k).join("/");
+  const have = new Set(mods.map((m) => segs(m.webkitRelativePath || m.name).join("/").toLowerCase()));
+  const out = [];
+  for (const f of list) {
+    const rp = segs(f.repoPath).join("/");
+    if (rBase && !rp.toLowerCase().startsWith(rBase + "/")) continue; // 別の場所のものは足さない
+    const rest = rBase ? rp.slice(rBase.length + 1) : rp;
+    const target = (mBase ? mBase + "/" : "") + rest;
+    if (have.has(target.toLowerCase())) continue; // mod にある
+    const c = new RemoteFile(f.repoPath, f.branch);
+    c.webkitRelativePath = target;
+    out.push(c);
+  }
+  return out;
 }
 
 /**
@@ -367,7 +409,7 @@ export async function noteKindScripts(kinds, have = []) {
 }
 
 /** 本体の Haxe シェーダークラスのうち、runtime 側で作ってあるもの → 使う .frag */
-const NATIVE_FRAGS = { AdjustColorShader: "adjust-color" };
+const NATIVE_FRAGS = { AdjustColorShader: "adjust-color", RuntimeRainShader: "rain", HSVShader: "hsv", Grayscale: "grayscale", GaussianBlurShader: "gaussian-blur", InverseDotsShader: "inverse-dots", MosaicEffect: "mosaic" };
 export async function stageScripts(stageId) {
   if (!isEnabled() || !stageId) return null;
   const branch = getBranch();
@@ -405,15 +447,24 @@ export async function stageScripts(stageId) {
   const list = [...main, ...picked];
   const texts = [...mainTexts, ...picked.map((f) => auxTexts.get(f))];
   const scripts = list.map((f, i) => ({ name: `funkin.assets/${f.repoPath}`, text: texts[i], main: i < main.length }));
+  const frags = await fragsFor(texts);
+  return { scripts, frags };
+}
+
+/** スクリプト（texts）が使う .frag を本体から取る: Paths.frag('名前') で名指ししたもの + ネイティブ実装のシェーダークラス（AdjustColorShader / RuntimeRainShader）が使うもの。{ <fragKey>: text } */
+export async function fragsFor(texts) {
+  if (!isEnabled() || !texts?.length) return {};
+  const branch = getBranch();
+  const is09 = layoutOf(branch) === "0.9";
+  const rp = (f) => f.repoPath.toLowerCase().replace(/^(preload|shared)\//, "");
   const wanted = new Set();
   for (const t of texts) for (const m of t.matchAll(/Paths\.frag\(\s*['"]([^'"]+)['"]\s*\)/g)) wanted.add(fragKey(m[1]));
-  // ネイティブ実装のシェーダークラスが使う .frag（スクリプトが名前で参照したときだけ）
   for (const [cls, frag] of Object.entries(NATIVE_FRAGS)) if (texts.some((t) => new RegExp(`\\b${cls}\\b`).test(t))) wanted.add(fragKey(frag));
-  const fragFiles = all.filter((f) => /\.frag$/i.test(f.name) && wanted.has(fragKey(f.name)) && (is09 ? rp(f).startsWith("ui/shaders/") : rp(f).startsWith("shaders/")));
+  const fragFiles = [...indexOf(branch).files.values()].filter((f) => /\.frag$/i.test(f.name) && wanted.has(fragKey(f.name)) && (is09 ? rp(f).startsWith("ui/shaders/") : rp(f).startsWith("shaders/")));
   const frags = {};
   await Promise.all(fragFiles.map(async (f) => (frags[fragKey(f.name)] = await f.text().catch(() => ""))));
   for (const k of Object.keys(frags)) if (!frags[k]) delete frags[k];
-  return { scripts, frags };
+  return frags;
 }
 
 // ---------------------------------------------------------------- ノートスタイル

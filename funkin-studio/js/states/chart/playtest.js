@@ -13,7 +13,7 @@ import { Runtime, easeByName } from "../../runtime/runtime.js";
 import { ScrollVelocityTimeline, VisualClock } from "../../runtime/scrollVelocity.js";
 import { openModZip } from "../../services/ModPack.js";
 import { drawNoteSprite } from "../../runtime/noteStyle.js";
-import { has as hasRemote, reset as resetRemote, refreshIndex as refreshRemoteIndex, stageScripts, noteKindScripts, fragKey } from "../../services/FunkinAssets.js";
+import { has as hasRemote, reset as resetRemote, refreshIndex as refreshRemoteIndex, stageScripts, noteKindScripts, ensureAtlas, fragsFor, fragKey } from "../../services/FunkinAssets.js";
 import { StageScene } from "../../runtime/stageScene.js";
 const PIXELS_PER_MS = 0.45;
 const WIN = { sick: 45, good: 90, bad: 135, shit: 160 };
@@ -104,14 +104,77 @@ export function createPlayTest(root, d) {
     } catch (e) {
       $("chtPlaySkinInfo").textContent = `標準ノートスタイルを取得できませんでした: ${e.message}`;
     }
+    await loadModSkins();
     fillSkins();
-    if (opts.skin === "funkin") optEls.skin.value = "funkin";
+    // 譜面（metadata）の noteStyle が選べるなら、その譜面を初めて開いたときに選んでおく
+    const cs = d.getNoteStyleId?.();
+    if (cs && cs !== lastChartSkin && d.noteStyles.get(cs)) {
+      opts.skin = cs;
+      lastChartSkin = cs;
+    }
+    if ([...optEls.skin.options].some((o) => o.value === opts.skin)) optEls.skin.value = opts.skin;
+  }
+  let lastChartSkin = null;
+  let modSkinSig = "";
+  const modSkinIds = new Set(); // mod から読んだノートスタイルの id（選択肢に「（mod）」と出す）
+  /**
+   * 読み込んだ mod の noteStyle（0.8: data/notestyles/*.json / 0.9: gameplay/notestyles/<id>/<id>.json）を、選べるスキンとして登録する。
+   * 画像・XML は JSON の assetPath から Workspace を引いて探す（mod の中の置き場所はどちらの配置でもよい）。
+   * mod のスキンが funkin など本体のスキンの画像を指していれば、そのスキンも本体から取る
+   */
+  async function loadModSkins() {
+    const ws = d.getWorkspace?.();
+    if (!ws) return;
+    const jsons = ws.files.filter((f) => !f.remote && /\.json$/i.test(f.name) && /(^|\/)notestyles\//i.test(f.webkitRelativePath || ""));
+    const sig = jsons.map((f) => f.webkitRelativePath + f.size).join("|") + "#" + ws.files.length;
+    const refs = new Set();
+    const texts = [];
+    for (const f of jsons) texts.push([f, await f.text().catch(() => "")]);
+    if (sig !== modSkinSig) {
+      const entries = [],
+        seen = new Set();
+      const add = (f) => f && !seen.has(f) && (seen.add(f), entries.push({ name: f.webkitRelativePath, file: f }));
+      for (const [f, t] of texts) {
+        let j;
+        try {
+          j = JSON.parse(t.replace(/^\uFEFF/, ""));
+        } catch {
+          continue;
+        }
+        if (!j?.assets || typeof j.assets !== "object") continue;
+        add(f);
+        const paths = new Set();
+        const walk = (o) => {
+          if (!o || typeof o !== "object") return;
+          if (typeof o.assetPath === "string" && o.assetPath.trim()) paths.add(o.assetPath);
+          for (const v of Object.values(o)) walk(v);
+        };
+        walk(j.assets);
+        for (const p of paths) {
+          const a = ws.atlasFor?.(p);
+          if (a?.png) {
+            add(a.png);
+            add(a.def);
+          } else add(ws.resolve("image", p, { quiet: true })); // XML の無い単体の画像（note-holds.png など）
+        }
+      }
+      modSkinSig = sig;
+      if (entries.length) {
+        const r = await d.noteStyles.addFiles(entries);
+        for (const id of r.added) modSkinIds.add(id);
+        if (r.added.length) $("chtPlaySkinInfo").textContent = `mod のノートスタイル: ${r.added.join(", ")}` + (r.warnings.length ? "\n" + r.warnings.join("\n") : "");
+      }
+    }
+    // 本体のスキンの画像（funkin など）を指しているものがあれば、そのスキンを本体から取る
+    for (const [f, t] of texts) for (const m of t.matchAll(/notestyles\/([\w-]+)\//g)) refs.add(m[1]);
+    for (const id of refs) if (!d.noteStyles.raw.has(id)) await d.noteStyles.loadBuiltin(id).catch(() => false);
   }
   function fillSkins() {
     const sel = optEls.skin;
     sel.textContent = "";
     sel.append(new Option("矢印（スキンなし）", ARROW));
-    for (const id of d.noteStyles.ids()) sel.append(new Option(id, id));
+    const chartSkin = d.getNoteStyleId?.();
+    for (const id of d.noteStyles.ids()) sel.append(new Option(`${id}${modSkinIds.has(id) ? "（mod）" : "（本体）"}${id === chartSkin ? " ★譜面の指定" : ""}`, id));
     if (opts.skin !== "funkin" && ![...sel.options].some((o) => o.value === opts.skin)) opts.skin = d.noteStyles.get("funkin") ? "funkin" : ARROW;
   }
   function fillOpts() {
@@ -134,6 +197,12 @@ export function createPlayTest(root, d) {
       if (c) opts.keys[i] = c;
       el.value = keyLabel(opts.keys[i]);
     });
+    // 遊んでいる最中にノートスキンを切り替えても、すぐ反映する
+    if (rt) {
+      const st = skinStyle();
+      rt.ps.playerStrumline.noteStyle = st;
+      rt.ps.opponentStrumline.noteStyle = st;
+    }
     save();
   }
   for (const el of [...Object.values(optEls), ...keyEls]) el.addEventListener("change", readOpts);
@@ -302,6 +371,16 @@ export function createPlayTest(root, d) {
       const used = [...new Set(notes.map((n) => n.k).filter(Boolean))];
       const have = used.filter((k) => modTexts.some((t) => new RegExp(`super\\(\\s*['"]${String(k).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}['"]`).test(t)));
       const kindScripts = await noteKindScripts(used, have);
+      // スクリプトが Paths.image('…') で名指ししている画像（FunkinTiledSprite など）も、mod に無ければ本体から足す
+      if (ws) {
+        const all = [...(stageRemote?.scripts ?? []).map((x) => x.text), ...kindScripts.map((x) => x.text), ...modTexts];
+        const imgs = new Set();
+        for (const t of all) for (const m of t.matchAll(/Paths\.image\(\s*['"]([^'"]+)['"]/g)) imgs.add(m[1]);
+        for (const im of imgs) await ensureAtlas(ws, im).catch(() => 0);
+      }
+      // mod のスクリプトが使う .frag（adjust-color など）も、mod に無ければ本体から取る
+      const modFragNeeds = await fragsFor(modTexts);
+      for (const [k, t] of Object.entries(modFragNeeds)) if (!(k in modFrags)) modFrags[k] = t;
       if (kindScripts.length) stageRemote = { scripts: [...(stageRemote?.scripts ?? []), ...kindScripts], frags: stageRemote?.frags ?? {} };
     } catch (e) {
       scene?.warn(`本体のステージスクリプトを取得できませんでした: ${e.message}`);

@@ -333,3 +333,23 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 - **文字間隔**: `theme-fnf.css` で全体の `letter-spacing: 2px`（canvas / 等幅 / 数値入力は 0）。
 - **カラーテスト削除**: `ColorLab.js` / `color-lab.css` と関連 CSS を撤去。
 - 修正: `StageScene` で `evs` を `start()` の外で参照していたバグ。
+
+## v3.28 — 未実装クラス・Character / Note Editor の FNF レイアウト
+
+- **FunkinTiledSprite / FlxTiledSprite / FunkinBackdrop / FlxBackdrop**（`runtime/runtime.js`）: スクリプトが `stage.add` すると `StageScene.addTiled()` で画像を読み、`drawTiled()` が zIndex 順の描画列に混ぜて敷き詰める（`scrollX/scrollY`・`velocity`・`scale`（中心基準）に対応。Backdrop は指定軸に無限に敷く。`color` / `blend` は未対応）。
+- **RuntimeRainShader**（`runtime/shader.js` の `makeRainShader`）: 本体の `ui/shaders/rain.frag` に `RuntimePostEffectShader` 相当の GLSL（`screenCoord` / `uCameraBounds` / `screenToWorld` …）を足してカメラのフィルター / prop の `shader` として使う。`FunkinAssets.NATIVE_FRAGS` に `rain` を追加。`mask` / `lightMap` / `blurredScreen` は未対応（本物でもコメントアウト）。
+- **BlurFilter**: new できるだけ（描画には使わない）。**MathUtil / FlxAngle / FlxG.console** の小さな互換、prop の `offset` と `animation.onFrameChange` を追加。
+- **スクリプトが名指しする画像**: `playtest.js` の `prepareStageScripts()` が `Paths.image('…')` を拾って、mod に無ければ本体から足す。
+- **Character / Note Editor**: `FnfShell`（メニューバー + 浮動ウィンドウ）と下の playbar に統一（上の旧バーは `fnfLegacyBar` で隠し、ボタンはメニューから `click` で呼ぶ）。`ModPicker` はウィンドウの中身側へ入れる。Note Editor は初めて表示された大きさで 1 回だけ fit する。
+- 既知の残り: `PlayState.resetCamera.apply` / `comboPopUps` / `Character.abot`（phillyBlazin）、キャラのスクリプト（nene / darnell-blazin）、Help メニュー・コマンドパレット・右クリックメニュー。
+
+## v3.29 — 部分欠損アセット / ノートスタイル選択 / シェーダー（One-Shot Collection で検証）
+
+- **部分欠損アセット**: `ensureAtlas` → `completeFromMod` が、mod にある一部（Darnell の `Animation.json` と `hey.png/xml` だけ、`spritemap1.json/png` が無い等）を手がかりに、足りないファイルだけを本体から mod の同じフォルダ扱いで足す。mod にあるファイルは常に優先。実 mod（One-Shot Collection feat.Reo）で、Darnell の spritemap が本体から補完されることを確認。
+- **ノートスタイル選択**: プレイテストのスキン選択に「（mod）/（本体）」と「★譜面の指定」を表示。mod のスキンが指す XML の無い単体画像（`note-holds.png`）も登録する。遊んでいる最中の切り替えもすぐ反映。
+- **ノートイベントをステージのスクリプトへも送る**（`Runtime.noteEvent` の送信先に stages を追加）。phillyStreetsOne の `onNoteHit`（HIGH の残像）が動く。
+- **FlxTypedSpriteGroup / CharacterRegistry.instance.fetchEntry / Stage.characters / addCharacter**、キャラの `kill / revive / alive / resetCharacter`、`FlxPoint.get / weak / put …`、`FlxTween.angle / quadPath / linearPath`。
+- **ブレンド**: prop の `blend = 0`（openfl.display.BlendMode の数値: 0 = ADD, 9 = MULTIPLY …）に対応。Backdrop / TiledSprite にも反映し、`color` は明るさ（加算合成での強さ）に反映。
+- **シェーダー**: `HSVShader / Grayscale / GaussianBlurShader / InverseDotsShader / MosaicEffect` を実ソースと同じ対応で追加（`makeNativeShader`）。`glslFrom` に GLSL ES 互換の直し（int / float 混在）と、RuntimePostEffectShader 向けの自動宣言を追加。本体の `ui/shaders/*.frag` 18 本すべてが WebGL でコンパイルできることを確認。
+- **描画の安全策**: シェーダーつきキャラの大きさが決まらないとき（画像が届く前）はシェーダーなしで描く。
+- 既知の残り: キャラのスクリプト（darnell.hxc の `onNoteHit` で lightCan など）、`Paths.sound` を `queryAssets` で名指しするキャラの効果音、`phillyBlazin` の 3 件。

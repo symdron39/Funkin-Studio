@@ -12,7 +12,7 @@
 import { findSound } from "../services/FunkinAssets.js";
 import { HScript, HMap, makeStub } from "./hscript.js";
 import { GLPost, GLSL_GRAYSCALE } from "./glpost.js";
-import { FlxRuntimeShader, shaderInit, shaderMethods, makeAdjustColorShader } from "./shader.js";
+import { FlxRuntimeShader, shaderInit, shaderMethods, makeAdjustColorShader, makeRainShader, makeNativeShader, NATIVE_SHADERS, makeMosaicEffect } from "./shader.js";
 import { loadImage, parseSparrowXml } from "../states/stage/sparrowAtlas.js";
 
 const LAYER_MAX_W = 1280; // フィルターを掛けるカメラの絵の最大幅(px)
@@ -120,6 +120,39 @@ class Pt {
     this.x = x;
     this.y = y;
     return this;
+  }
+  static get(x = 0, y = 0) {
+    return new Pt(x, y);
+  }
+  static weak(x = 0, y = 0) {
+    return new Pt(x, y);
+  }
+  put() {} // プール返却は何もしない
+  clone() {
+    return new Pt(this.x, this.y);
+  }
+  copyFrom(p) {
+    this.x = p.x;
+    this.y = p.y;
+    return this;
+  }
+  add(x = 0, y = 0) {
+    this.x += x;
+    this.y += y;
+    return this;
+  }
+  subtract(x = 0, y = 0) {
+    this.x -= x;
+    this.y -= y;
+    return this;
+  }
+  scale(a, b = a) {
+    this.x *= a;
+    this.y *= b;
+    return this;
+  }
+  distanceTo(p) {
+    return Math.hypot(this.x - p.x, this.y - p.y);
   }
 }
 class FlxBasic {
@@ -324,6 +357,54 @@ export class FlxTypedGroup extends FlxBasic {
     for (const m of this.members) m?.destroy?.();
     this.members = [];
     super.destroy();
+  }
+}
+
+/** funkin.graphics.FunkinTiledSprite（FlxTiledSprite）: 画像を width × height の範囲に敷き詰める。scrollX / scrollY で模様をずらす。描画はステージ（StageScene.drawTiled） */
+export class FunkinTiledSprite extends FlxObject {
+  constructor(graphic, width = 0, height = 0, repeatX = true, repeatY = true) {
+    super(0, 0);
+    this.__tiled = true;
+    this.path = graphic == null ? "" : String(graphic);
+    this.width = Number(width) || 0;
+    this.height = Number(height) || 0;
+    this.repeatX = repeatX !== false;
+    this.repeatY = repeatY !== false;
+    this.scrollX = 0;
+    this.scrollY = 0;
+    this.vcamPoint = null; // 本物は仮想カメラの位置。ここではカメラのスクロールをそのまま使う
+    this.zIndex = 0;
+    this.img = null;
+  }
+  setPosition(x = 0, y = 0) {
+    this.x = Number(x);
+    this.y = Number(y);
+    return this;
+  }
+  loadGraphic(g) {
+    this.path = String(g);
+    this.img = null;
+    return this;
+  }
+}
+/** funkin.graphics.FunkinBackdrop（FlxBackdrop）: 画像を指定の軸に無限に敷く。axes: X=0x01 / Y=0x10 / XY=0x11。tint(color) / blend は未対応 */
+export class FunkinBackdrop extends FunkinTiledSprite {
+  constructor(graphic, axes = 0x11) {
+    super(graphic, 0, 0, true, true);
+    this.__backdrop = true;
+    const a = typeof axes === "string" ? ({ x: 1, y: 16, xy: 17 }[axes.toLowerCase()] ?? 17) : Number(axes);
+    this.repeatX = !!(a & 1);
+    this.repeatY = !!(a & 16);
+    this.width = 1;
+    this.height = 1;
+    this.color = 0xffffffff;
+    this.blend = 0;
+  }
+}
+/** openfl.filters.BlurFilter（スクリプトで new するだけで、いまは描画に使わない） */
+export class BlurFilter {
+  constructor(blurX = 4, blurY = 4, quality = 1) {
+    Object.assign(this, { blurX, blurY, quality });
   }
 }
 
@@ -587,6 +668,7 @@ export class Runtime {
         {
           width: GAME_W,
           height: GAME_H,
+          console: { registerObject() {}, registerFunction() {} },
           elapsed: 1 / 60,
           signals: { postUpdate: { add: (f) => rt.postUpdate.push(f), remove: (f) => (rt.postUpdate = rt.postUpdate.filter((x) => x !== f)) }, preUpdate: { add() {}, remove() {} } },
           random: {
@@ -716,6 +798,37 @@ export class Runtime {
         getText: (p) => rt.fragText(p) ?? "",
       },
       FlxRuntimeShader,
+      CharacterType: { BF: "BF", DAD: "DAD", GF: "GF", OTHER: "OTHER" },
+      FunkinTiledSprite,
+      FunkinBackdrop,
+      FlxBackdrop: FunkinBackdrop,
+      FlxTiledSprite: FunkinTiledSprite,
+      BlurFilter,
+      FlxAngle: { asRadians: (d) => (Number(d) * Math.PI) / 180, asDegrees: (r) => (Number(r) * 180) / Math.PI, TO_RAD: Math.PI / 180, TO_DEG: 180 / Math.PI },
+      // funkin.util.MathUtil（実ソース MathUtil.hx と同じ式）
+      MathUtil: {
+        lerp: (a, b, t) => a + (b - a) * t,
+        smoothLerpPrecision: (base, target, dt, duration, precision = 0.01) => (dt === 0 ? base : base === target ? target : target + (base - target) * Math.pow(precision, dt / duration)),
+        smoothLerpDecay: (base, target, dt, halfLife) => (dt === 0 ? base : base === target ? target : target + (base - target) * Math.pow(2, -dt / halfLife)),
+        snap: (base, target, th) => (Math.abs(base - target) <= th ? target : base),
+      },
+      ...Object.fromEntries(
+        NATIVE_SHADERS.map((sp) => {
+          const C = makeNativeShader((k) => rt.fragText(k), sp);
+          for (const k of Object.keys(shaderMethods)) C.prototype[k] ??= shaderMethods[k];
+          return [sp.name, C];
+        }),
+      ),
+      MosaicEffect: (() => {
+        const C = makeMosaicEffect((k) => rt.fragText(k), Pt);
+        for (const k of Object.keys(shaderMethods)) C.prototype[k] ??= shaderMethods[k];
+        return C;
+      })(),
+      RuntimeRainShader: (() => {
+        const C = makeRainShader((k) => rt.fragText(k));
+        for (const k of ["setFloat", "setFloatArray", "setInt", "setIntArray", "setBool", "setBoolArray", "setSampler2D", "getFloat", "getFloatArray", "getInt", "getBool", "active"]) C.prototype[k] = shaderMethods[k];
+        return C;
+      })(),
       AdjustColorShader: (() => {
         const C = makeAdjustColorShader((k) => rt.fragText(k));
         Object.assign(C.prototype, shaderMethods);
@@ -734,7 +847,6 @@ export class Runtime {
       FlxAxes: { X: "x", Y: "y", XY: "xy" },
       FlxPoint: Pt,
       ShaderFilter: FlxCamFilter,
-      Grayscale,
       FlxTween: {
         tween(obj, props, duration, o = {}) {
           const from = {};
@@ -748,6 +860,68 @@ export class Runtime {
             loop: o.type === 2 || o.type === "looping",
             setup: (e) => {
               for (const k of Object.keys(props)) obj[k] = from[k] + (props[k] - from[k]) * e;
+            },
+          });
+          tw.target = obj;
+          rt.tweens.list.push(tw);
+          return tw;
+        },
+        /** angle(obj, from, to, duration, options): 回転角を from → to へ（NaN のときは今の角度から） */
+        angle(obj, from, to, duration, o) {
+          o ??= {};
+          const a0 = Number.isFinite(Number(from)) ? Number(from) : obj.angle || 0;
+          const tw = new Tween(rt.tweens, {
+            duration,
+            ease: o.ease,
+            delay: o.startDelay,
+            onUpdate: o.onUpdate,
+            onComplete: o.onComplete,
+            setup: (e) => (obj.angle = a0 + (Number(to) - a0) * e),
+          });
+          tw.target = obj;
+          rt.tweens.list.push(tw);
+          return tw;
+        },
+        /** linearPath / quadPath(obj, points, durationOrSpeed, useDuration, options): 点列に沿って x / y を動かす（quad は 始点, 制御点, 終点, 制御点, 終点… の二次ベジエ） */
+        linearPath(obj, points, d, useDuration = true, o) {
+          return this.quadPath(obj, points, d, useDuration, o, true);
+        },
+        quadPath(obj, points, d, useDuration = true, o, linear = false) {
+          o ??= {};
+          const P = (points || []).map((p) => [Number(p.x), Number(p.y)]);
+          if (P.length < 2) return null;
+          // 折れ線 / 曲線を細かく刻み、距離で進行度を決める
+          const pts = [P[0]];
+          if (linear) pts.push(...P.slice(1));
+          else
+            for (let i = 0; i + 2 < P.length + (P.length % 2 ? 0 : 1); i += 2) {
+              const a = P[i],
+                c = P[i + 1],
+                b = P[i + 2] ?? P[i + 1];
+              for (let k = 1; k <= 24; k++) {
+                const t = k / 24,
+                  u = 1 - t;
+                pts.push([u * u * a[0] + 2 * u * t * c[0] + t * t * b[0], u * u * a[1] + 2 * u * t * c[1] + t * t * b[1]]);
+              }
+            }
+          const acc = [0];
+          for (let i = 1; i < pts.length; i++) acc.push(acc[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+          const total = acc[acc.length - 1] || 1;
+          const duration = useDuration ? Number(d) : total / Math.max(1e-6, Number(d));
+          const tw = new Tween(rt.tweens, {
+            duration,
+            ease: o.ease,
+            delay: o.startDelay,
+            onUpdate: o.onUpdate,
+            onComplete: o.onComplete,
+            setup: (e) => {
+              const dist = total * Math.min(1, Math.max(0, e));
+              let i = 1;
+              while (i < acc.length - 1 && acc[i] < dist) i++;
+              const span = acc[i] - acc[i - 1] || 1,
+                f = (dist - acc[i - 1]) / span;
+              obj.x = pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f;
+              obj.y = pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f;
             },
           });
           tw.target = obj;
@@ -881,6 +1055,7 @@ export class Runtime {
       init(inst, args) {
         inst.stageId = String(args[0] ?? "");
         inst.stageName = inst.stageId;
+        inst.characters = { remove() {}, set() {}, get: () => null, exists: () => false, keys: () => [] }; // Stage.characters（id → キャラ）
         if (rt.scene && rt.scene.stageId.toLowerCase() === inst.stageId.toLowerCase()) rt.stages.push(inst);
       },
       methods: {
@@ -896,6 +1071,7 @@ export class Runtime {
         remove: (o) => rt.ps.currentStage?.remove?.(o),
         insert: (i, o) => rt.ps.currentStage?.insert?.(i, o),
         refresh: stageNoop,
+        addCharacter: (c) => c, // 本物は stage.add(character)。シーンが先にキャラを置いてあるので何もしない
         onScriptEvent: stageNoop, onCreate: stageNoop, onDestroy: stageNoop, onUpdate: stageNoop,
         onBeatHit: stageNoop, onStepHit: stageNoop, onSongStart: stageNoop, onSongEnd: stageNoop, onSongRetry: stageNoop,
         onCountdownStart: stageNoop, onCountdownStep: stageNoop, onCountdownEnd: stageNoop, onPause: stageNoop, onResume: stageNoop,
@@ -967,7 +1143,7 @@ export class Runtime {
       const orig = sApi[m];
       ps.currentStage[m] = (...a) => {
         const o = a[a.length - 1];
-        if (o?.__char) return orig(...a);
+        if (o?.__char || o?.__tiled) return orig(...a);
         return ps[m]?.(...a);
       };
     }
@@ -984,6 +1160,49 @@ export class Runtime {
       "CharacterDataParser",
       (p) => this.stub(p),
     );
+    // CharacterRegistry.instance.fetchEntry(id)（0.9 の新しいキャラ取得）は、fetchCharacter と同じ
+    this.G.CharacterRegistry = { instance: withStubs({ fetchEntry: (id) => scene.fetchCharacter(String(id)), hasEntry: (id) => scene.charFiles.has(String(id)), listEntryIds: () => [...scene.charFiles.keys()] }, "CharacterRegistry", (p) => this.stub(p)) };
+    // FlxTypedSpriteGroup: キャラを入れる入れ物。入れたキャラはステージに出し、グループの zIndex を使う（kill / revive はまとめて）
+    this.G.FlxTypedSpriteGroup = this.G.FlxSpriteGroup = class {
+      constructor() {
+        this.members = [];
+        this.zIndex = 0;
+        this.exists = true;
+        this.alive = true;
+        this.visible = true;
+        this.alpha = 1;
+      }
+      get length() {
+        return this.members.length;
+      }
+      add(o) {
+        if (o && !this.members.includes(o)) this.members.push(o);
+        if (o?.__char) {
+          o.__char.zIndex = this.zIndex;
+          scene.addExtra(o.__char);
+        }
+        return o;
+      }
+      remove(o) {
+        this.members = this.members.filter((x) => x !== o);
+        if (o?.__char) scene.removeExtra(o.__char);
+        return o;
+      }
+      forEach(fn) {
+        for (const m of [...this.members]) fn(m);
+      }
+      kill() {
+        this.alive = false;
+        for (const m of this.members) m?.kill?.();
+      }
+      revive() {
+        this.alive = true;
+      }
+      destroy() {
+        this.kill();
+        this.members = [];
+      }
+    };
     ps.currentStage.getBoyfriend = ps.getBoyfriend;
     ps.currentStage.getDad = ps.getDad;
     ps.currentStage.getGirlfriend = ps.getGirlfriend;
@@ -1194,6 +1413,7 @@ export class Runtime {
     const targets = [];
     if (kind) targets.push(kind);
     for (const m of this.modules.values()) targets.push(m);
+    for (const st of this.stages) targets.push(st); // ステージのスクリプトにも届く（本物のイベント送信は、ステージやキャラも対象）
     for (const inst of targets) {
       try {
         if (inst.native) inst.native[hook]?.(ev);
@@ -1297,9 +1517,16 @@ export class Runtime {
   /** ステージスクリプトを動かし始める（buildStage → onCreate）。スクリプトを全部読み込み、シーンをつないだあとに 1 回 */
   startStages() {
     for (const inst of this.stages) {
-      for (const hook of ["buildStage", "onCreate"]) {
+      for (const hook of ["buildStage", "addCharacters", "onCreate"]) {
         try {
-          this.hs.call(inst, hook, hook === "onCreate" ? [{}] : []);
+          if (hook === "addCharacters") {
+            // PlayState がキャラを足すたびに呼ぶ stage.addCharacter(character, type)（スクリプトが override して、キャラにシェーダーを付けるなど）
+            if (this.hs.has(inst, "addCharacter"))
+              for (const [fn, type] of [["getGirlfriend", "GF"], ["getDad", "DAD"], ["getBoyfriend", "BF"]]) {
+                const c = this.ps[fn]?.();
+                if (c) this.hs.call(inst, "addCharacter", [c, type]);
+              }
+          } else this.hs.call(inst, hook, hook === "onCreate" ? [{}] : []);
         } catch (e) {
           this.fail(`ステージ「${inst.stageId}」.${hook}`, e);
         }

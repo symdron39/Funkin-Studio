@@ -3606,7 +3606,49 @@ async function ensureAtlas(ws, assetPath) {
   if (!assetPath || /^#|^none$/i.test(String(assetPath).trim())) return 0;
   if (ws.atlasFor?.(assetPath)) return 0;
   const list = findAtlas(assetPath);
-  return list.length ? addToWorkspace(ws, list) : 0;
+  if (!list.length) return 0;
+  return addToWorkspace(ws, completeFromMod(ws, list));
+}
+
+/**
+ * 一部だけ mod にあるアトラス（Animation.json だけ / png だけ …）を、足りないファイルだけの補完にする。
+ *  ・mod に同じ相対パスのファイルがあれば、本体のものは足さない（mod のものが優先）
+ *  ・足すファイルは、mod の同じフォルダにあるものとして登録し直す（mod のファイルと同じ origin でないと、アトラスとして組み合わせられないため）
+ * mod に手がかり（同じ名前のファイル）が全く無ければ、そのまま全部足す
+ */
+function completeFromMod(ws, list) {
+  const mods = (ws.files ?? []).filter((f) => !f.remote);
+  const segs = (p) => String(p).replace(/\\/g, "/").split("/").filter(Boolean);
+  const low = (a) => a.map((x) => x.toLowerCase());
+  // 手がかり: 本体のファイルと「後ろ（ファイル名 + 親フォルダ…）が同じ」mod のファイル。後ろが長く合うものを選ぶ
+  let best = null;
+  for (const r of list) {
+    const rs = low(segs(r.repoPath));
+    for (const m of mods) {
+      const ms = low(segs(m.webkitRelativePath || m.name));
+      let k = 0;
+      while (k < rs.length && k < ms.length && rs[rs.length - 1 - k] === ms[ms.length - 1 - k]) k++;
+      if (k >= 2 && (!best || k > best.k)) best = { k, r, m };
+    }
+  }
+  if (!best) return list;
+  const rSegs = segs(best.r.repoPath),
+    mSegs = segs(best.m.webkitRelativePath || best.m.name);
+  const rBase = rSegs.slice(0, rSegs.length - best.k).join("/").toLowerCase(),
+    mBase = mSegs.slice(0, mSegs.length - best.k).join("/");
+  const have = new Set(mods.map((m) => segs(m.webkitRelativePath || m.name).join("/").toLowerCase()));
+  const out = [];
+  for (const f of list) {
+    const rp = segs(f.repoPath).join("/");
+    if (rBase && !rp.toLowerCase().startsWith(rBase + "/")) continue; // 別の場所のものは足さない
+    const rest = rBase ? rp.slice(rBase.length + 1) : rp;
+    const target = (mBase ? mBase + "/" : "") + rest;
+    if (have.has(target.toLowerCase())) continue; // mod にある
+    const c = new RemoteFile(f.repoPath, f.branch);
+    c.webkitRelativePath = target;
+    out.push(c);
+  }
+  return out;
 }
 
 /**
@@ -3707,7 +3749,7 @@ async function noteKindScripts(kinds, have = []) {
 }
 
 /** 本体の Haxe シェーダークラスのうち、runtime 側で作ってあるもの → 使う .frag */
-const NATIVE_FRAGS = { AdjustColorShader: "adjust-color" };
+const NATIVE_FRAGS = { AdjustColorShader: "adjust-color", RuntimeRainShader: "rain", HSVShader: "hsv", Grayscale: "grayscale", GaussianBlurShader: "gaussian-blur", InverseDotsShader: "inverse-dots", MosaicEffect: "mosaic" };
 async function stageScripts(stageId) {
   if (!isEnabled() || !stageId) return null;
   const branch = getBranch();
@@ -3745,15 +3787,24 @@ async function stageScripts(stageId) {
   const list = [...main, ...picked];
   const texts = [...mainTexts, ...picked.map((f) => auxTexts.get(f))];
   const scripts = list.map((f, i) => ({ name: `funkin.assets/${f.repoPath}`, text: texts[i], main: i < main.length }));
+  const frags = await fragsFor(texts);
+  return { scripts, frags };
+}
+
+/** スクリプト（texts）が使う .frag を本体から取る: Paths.frag('名前') で名指ししたもの + ネイティブ実装のシェーダークラス（AdjustColorShader / RuntimeRainShader）が使うもの。{ <fragKey>: text } */
+async function fragsFor(texts) {
+  if (!isEnabled() || !texts?.length) return {};
+  const branch = getBranch();
+  const is09 = layoutOf(branch) === "0.9";
+  const rp = (f) => f.repoPath.toLowerCase().replace(/^(preload|shared)\//, "");
   const wanted = new Set();
   for (const t of texts) for (const m of t.matchAll(/Paths\.frag\(\s*['"]([^'"]+)['"]\s*\)/g)) wanted.add(fragKey(m[1]));
-  // ネイティブ実装のシェーダークラスが使う .frag（スクリプトが名前で参照したときだけ）
   for (const [cls, frag] of Object.entries(NATIVE_FRAGS)) if (texts.some((t) => new RegExp(`\\b${cls}\\b`).test(t))) wanted.add(fragKey(frag));
-  const fragFiles = all.filter((f) => /\.frag$/i.test(f.name) && wanted.has(fragKey(f.name)) && (is09 ? rp(f).startsWith("ui/shaders/") : rp(f).startsWith("shaders/")));
+  const fragFiles = [...indexOf(branch).files.values()].filter((f) => /\.frag$/i.test(f.name) && wanted.has(fragKey(f.name)) && (is09 ? rp(f).startsWith("ui/shaders/") : rp(f).startsWith("shaders/")));
   const frags = {};
   await Promise.all(fragFiles.map(async (f) => (frags[fragKey(f.name)] = await f.text().catch(() => ""))));
   for (const k of Object.keys(frags)) if (!frags[k]) delete frags[k];
-  return { scripts, frags };
+  return frags;
 }
 
 // ---------------------------------------------------------------- ノートスタイル
@@ -3791,7 +3842,7 @@ async function noteStyle(id) {
 /** 画面に出す短い説明 */
 const describe = () => `本体アセット: ${isEnabled() ? `GitHub（FunkinCrew/Funkin.assets の ${getBranch()}）から毎回取得` : "オフ"}（一覧 ${indexOf().files.size} 件）`;
 
-return { ORIGIN, BRANCHES, isEnabled, setEnabled, getBranchMode, getBranch, setBranch, syncLayout, RemoteFile, refreshIndex, reset, findData, has, findSound, findAtlas, ensureAtlas, ensureCharacter, ensureStage, ensureFor, fragKey, noteKindScripts, stageScripts, noteStyle, describe };
+return { ORIGIN, BRANCHES, isEnabled, setEnabled, getBranchMode, getBranch, setBranch, syncLayout, RemoteFile, refreshIndex, reset, findData, has, findSound, findAtlas, ensureAtlas, ensureCharacter, ensureStage, ensureFor, fragKey, noteKindScripts, stageScripts, fragsFor, noteStyle, describe };
 })();
 
 /* ===== funkin-studio/js/services/uiFont.js ===== */
@@ -4540,7 +4591,7 @@ function mountModPicker(state, host, spec) {
   box.innerHTML = `<summary>${spec.title || "読み込み済みの mod から選ぶ"}</summary>
     <div class="row"><select class="mpSel"></select><button type="button" class="mpGo primary">これを開く</button></div>
     <p class="tiny mpInfo"></p>`;
-  host.prepend(box);
+  (host.querySelector?.(":scope > .fnfBody") ?? host).prepend(box); // FNF 風の浮動ウィンドウ（FnfShell）のときは、中身の側へ入れる
   const sel = box.querySelector(".mpSel"),
     info = box.querySelector(".mpInfo");
   let items = [];
@@ -9433,23 +9484,13 @@ const template = `
         >👁</button>
 
         <!-- 上のバー: パネルの切り替え・Undo/Redo・ビュー操作 -->
-        <div id="offHudBar" class="hudBar" data-hud-panel="bar" data-hud-always>
+        <div id="offHudBar" class="fnfLegacyBar" data-hud-panel="bar" data-hud-always hidden>
           <button type="button" data-hud-toggle="files" data-ja="📁 ファイル" data-en="📁 Files">📁 ファイル</button>
           <button type="button" data-hud-toggle="anim" data-ja="🎞 アニメ" data-en="🎞 Anim">🎞 アニメ</button>
           <button type="button" data-hud-toggle="char" data-ja="🧍 キャラ" data-en="🧍 Character">🧍 キャラ</button>
           <button type="button" data-hud-toggle="transport" data-ja="▶ 再生バー" data-en="▶ Playback">▶ 再生バー</button>
-          <span class="hudSep"></span>
           <button id="offUndo" type="button" title="元に戻す (Ctrl+Z)">↶ 戻す</button>
           <button id="offRedo" type="button" title="やり直す (Ctrl+Y)">↷ やり直す</button>
-          <span class="hudSep"></span>
-          <button id="offZoomOut" type="button" title="ズームアウト">−</button>
-          <input id="offZoom" type="number" min=".05" max="16" step=".1" value="1" title="ズーム（ホイールでも可）" />
-          <button id="offZoomIn" type="button" title="ズームイン">＋</button>
-          <button id="offFit" type="button" title="キャラ全体を画面に収める (F)" data-ja="⊡ 全体" data-en="⊡ Fit">⊡ 全体</button>
-          <button id="offResetView" type="button" title="ズーム100%・原点を中央へ" data-ja="⌖ 原点" data-en="⌖ Origin">⌖ 原点</button>
-          <button id="offPanTool" type="button" title="左ドラッグでビューを動かす（Space長押し / 中・右ドラッグでも可）" data-ja="✋ 移動" data-en="✋ Pan">✋ 移動</button>
-          <label class="hudCheck" title="フレームの枠を表示"><input id="offShowBox" type="checkbox" checked /><span data-ja="枠" data-en="Box">枠</span></label>
-          <span id="offReadout" class="hudReadout"></span>
         </div>
 
         <!-- 左: ファイル -->
@@ -9662,22 +9703,24 @@ const template = `
         </div>
 
         <!-- 下: 再生バー + ステータス -->
-        <div class="hudTransport" data-hud-panel="transport">
-          <div class="row">
-            <button id="offPrev">◀ 1F</button><button id="offPlay">▶ 再生</button
-            ><button id="offNext">1F ▶</button
-            ><span id="offCounter" class="tiny">0 / 0</span>
-            <input
-              id="offTimeline"
-              type="range"
-              min="0"
-              max="0"
-              value="0"
-              style="flex: 1 1 140px; min-width: 100px"
-            />
-          </div>
-          <div id="offStatus" class="tiny">
-            character.json と画像・アトラス定義を選択してください。
+        <div class="hudTransport fnfPlaybar" data-hud-panel="transport">
+          <input id="offTimeline" class="fnfSeek" type="range" min="0" max="0" value="0" />
+          <div class="fnfPlayRow">
+            <div class="fnfPlayL">
+              <button id="offPrev">◀ 1F</button><button id="offPlay">▶ 再生</button><button id="offNext">1F ▶</button>
+              <span id="offCounter" class="fnfStat">0 / 0</span>
+            </div>
+            <div class="fnfPlayC"><span id="offStatus" class="tiny">character.json と画像・アトラス定義を選択してください。</span></div>
+            <div class="fnfPlayR">
+              <button id="offZoomOut" type="button" title="ズームアウト">−</button>
+              <input id="offZoom" type="number" min=".05" max="16" step=".1" value="1" title="ズーム（ホイールでも可）" />
+              <button id="offZoomIn" type="button" title="ズームイン">＋</button>
+              <button id="offFit" type="button" title="キャラ全体を画面に収める (F)" data-ja="⊡ 全体" data-en="⊡ Fit">⊡ 全体</button>
+              <button id="offResetView" type="button" title="ズーム100%・原点を中央へ" data-ja="⌖ 原点" data-en="⌖ Origin">⌖ 原点</button>
+              <button id="offPanTool" type="button" title="左ドラッグでビューを動かす（Space長押し / 中・右ドラッグでも可）" data-ja="✋ 移動" data-en="✋ Pan">✋ 移動</button>
+              <label class="hudCheck" title="フレームの枠を表示"><input id="offShowBox" type="checkbox" checked /><span data-ja="枠" data-en="Box">枠</span></label>
+              <span id="offReadout" class="hudReadout"></span>
+            </div>
           </div>
         </div>
 
@@ -10065,8 +10108,242 @@ class HudPanels {
 return { HudPanels };
 })();
 
-/* ===== funkin-studio/js/states/stage/sparrowAtlas.js ===== */
+/* ===== funkin-studio/js/ui/FnfShell.js ===== */
 const __m37 = (() => {
+/* ============================================================
+   ui/FnfShell.js — FNF 本体のエディタ（V-Slice の Chart / Stage Editor）風の画面枠
+   ------------------------------------------------------------
+   本物は main-view.xml が「上: メニューバー / 中: 空き / 下: バー」、操作パネルは「ツールボックス」という
+   ドラッグできる小さなウィンドウ。これを、既存の Hud 画面（HudPanels）に後から被せる。
+     1. メニューバー … 上に全幅で置く。項目は { text, run | click | toggle } の配列で渡す
+     2. ツールボックス … .hudPanel を「タイトルバー付きの浮動ウィンドウ」にする（ドラッグ / 前面へ / 閉じる / サイズ変更 / 位置を記憶）
+     3. 下のバー … 各エディタのテンプレートが .hudTransport を FNF の playbar の形で持つ（ここでは枠のスタイルだけ）
+   既存のボタンやパネルの id・イベントはそのまま（要素を動かすだけ）。HudPanels の表示/非表示とも連動する。
+   ============================================================ */
+
+const LS = "funkinStudio.fnf.";
+const lsGet = (k) => {
+  try {
+    return JSON.parse(localStorage.getItem(LS + k) || "null");
+  } catch {
+    return null;
+  }
+};
+const lsSet = (k, v) => {
+  try {
+    localStorage.setItem(LS + k, JSON.stringify(v));
+  } catch {
+    /* 保存できなくても動く */
+  }
+};
+
+class FnfShell {
+  /**
+   * @param root  State の root
+   * @param hud   HudPanels のインスタンス
+   * @param opts  { key: 保存名, menus: [{ text, items: [項目 | "-"] }], titles: { panel名: 見出し } }
+   *   項目: { text, run: () => void } / { text, click: "#id" } / { text, toggle: "panel名" } / { text, check: () => bool, run }
+   *         key: 右に出すショートカット表示（飾り）
+   */
+  constructor(root, hud, opts = {}) {
+    this.root = root;
+    this.hud = hud;
+    this.key = opts.key || "default";
+    this.layer = root.querySelector(".hudLayer");
+    this.z = 20;
+    this.wins = new Map();
+    root.classList.add("fnfShell");
+    if (opts.menus) this.buildMenubar(opts.menus);
+    this.buildWindows(opts.titles || {});
+    // 閉じたパネルは開き直したとき最前面へ。表示状態は HudPanels の hidden に従う
+    const apply = hud._apply.bind(hud);
+    hud._apply = () => {
+      apply();
+      this.syncChecks();
+      for (const [name, w] of this.wins) if (!w.hidden) this.keepInside(w);
+    };
+    addEventListener("resize", () => this.wins.forEach((w) => this.keepInside(w)));
+    this.syncChecks();
+  }
+
+  /* ---------- メニューバー ---------- */
+  buildMenubar(menus) {
+    const nav = document.createElement("nav");
+    nav.className = "fnfMenubar";
+    nav.setAttribute("role", "menubar");
+    this.menus = [];
+    for (const m of menus) {
+      const wrap = document.createElement("div");
+      wrap.className = "fnfMenu";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "fnfMenuBtn";
+      btn.textContent = m.text;
+      const drop = document.createElement("div");
+      drop.className = "fnfDrop";
+      drop.hidden = true;
+      for (const it of m.items) drop.append(this.menuItem(it));
+      wrap.append(btn, drop);
+      nav.append(wrap);
+      const menu = { wrap, btn, drop };
+      this.menus.push(menu);
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.openMenu(drop.hidden ? menu : null);
+      });
+      // 1つ開いている間は、ほかのメニューにカーソルを乗せるだけで切り替わる（本物と同じ）
+      btn.addEventListener("pointerenter", () => {
+        if (this.menus.some((x) => !x.drop.hidden) && drop.hidden) this.openMenu(menu);
+      });
+    }
+    this.layer.prepend(nav);
+    document.addEventListener("pointerdown", (e) => {
+      if (!nav.contains(e.target)) this.openMenu(null);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") this.openMenu(null);
+    });
+    this.nav = nav;
+    // 一括トグル（👁）は右端へ
+    const eye = this.layer.querySelector(".hudEye");
+    if (eye) nav.append(eye);
+  }
+  menuItem(it) {
+    if (it === "-") {
+      const hr = document.createElement("div");
+      hr.className = "fnfSep";
+      return hr;
+    }
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "fnfItem";
+    b.innerHTML = `<span class="fnfTick"></span><span class="fnfLabel"></span><span class="fnfKey"></span>`;
+    b.querySelector(".fnfLabel").textContent = it.text;
+    b.querySelector(".fnfKey").textContent = it.key || "";
+    if (it.toggle) b.dataset.toggle = it.toggle;
+    if (it.check) b._check = it.check;
+    b.addEventListener("click", () => {
+      this.openMenu(null);
+      if (it.toggle) this.hud.toggle(it.toggle);
+      else if (it.click) this.root.querySelector(it.click)?.click();
+      if (it.run) it.run();
+      this.syncChecks();
+    });
+    return b;
+  }
+  openMenu(menu) {
+    for (const m of this.menus) {
+      m.drop.hidden = m !== menu;
+      m.btn.classList.toggle("on", m === menu);
+    }
+    if (menu) this.syncChecks();
+  }
+  /** ✓ の表示を、パネルの開閉・各項目の check() に合わせる */
+  syncChecks() {
+    if (!this.nav) return;
+    for (const b of this.nav.querySelectorAll(".fnfItem")) {
+      let on = null;
+      if (b.dataset.toggle) on = this.hud.isVisible(b.dataset.toggle);
+      else if (b._check) on = !!b._check();
+      if (on !== null) b.querySelector(".fnfTick").textContent = on ? "✓" : "";
+    }
+  }
+
+  /* ---------- ツールボックス（浮動ウィンドウ） ---------- */
+  buildWindows(titles) {
+    const panels = [...this.root.querySelectorAll(".hudDock > .hudPanel[data-hud-panel]")];
+    let i = 0;
+    for (const el of panels) {
+      const name = el.dataset.hudPanel;
+      const right = !!el.closest(".hudDockRight");
+      const h2 = el.querySelector(":scope > h2");
+      if (h2) h2.remove(); // 本体に取り込まれないよう一旦外す（下でタイトルバーへ）
+      const title = titles[name] || h2?.textContent || name;
+      // 中身をスクロールする本体に、上にタイトルバーを固定する
+      const body = document.createElement("div");
+      body.className = "fnfBody";
+      while (el.firstChild) body.append(el.firstChild);
+      const bar = document.createElement("div");
+      bar.className = "fnfTitle";
+      bar.innerHTML = `<span class="fnfTitleText"></span><button type="button" class="fnfClose" title="閉じる" aria-label="閉じる">×</button>`;
+      const tt = bar.querySelector(".fnfTitleText");
+      // id 付きの見出し（エディタが文字を書き換えるもの）は、その要素ごとタイトルバーへ移す。ほかは見出しを捨てて指定の題にする
+      if (h2?.id) {
+        h2.classList.add("fnfTitleText");
+        tt.replaceWith(h2);
+      } else tt.textContent = title;
+      el.append(bar, body);
+      el.classList.add("fnfWin");
+      this.layer.append(el);
+      this.wins.set(name, el);
+
+      const saved = lsGet(`${this.key}.${name}`);
+      const W = this.layer.clientWidth || innerWidth;
+      const w = saved?.w ?? 340;
+      el.style.width = w + "px";
+      if (saved?.h) el.style.height = saved.h + "px";
+      el.style.left = (saved?.x ?? (right ? Math.max(10, W - w - 14 - (i % 3) * 56) : 14 + (i % 4) * 22)) + "px";
+      el.style.top = (saved?.y ?? 40 + (i % 4) * 26) + "px";
+      i++;
+      this.keepInside(el);
+
+      bar.querySelector(".fnfClose").addEventListener("click", () => this.hud.hide(name));
+      el.addEventListener("pointerdown", () => this.front(el), true);
+      this.dragSetup(el, bar, name);
+      new ResizeObserver(() => this.remember(el, name)).observe(el);
+    }
+  }
+  front(el) {
+    el.style.zIndex = String(++this.z);
+  }
+  remember(el, name) {
+    if (el.hidden) return;
+    lsSet(`${this.key}.${name}`, { x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.style.height ? el.offsetHeight : null });
+  }
+  /** 画面の外に出てしまったウィンドウを、タイトルバーが掴める範囲へ戻す */
+  keepInside(el) {
+    const W = this.layer.clientWidth,
+      H = this.layer.clientHeight;
+    if (!W || !H) return;
+    const x = Math.min(Math.max(el.offsetLeft, 60 - el.offsetWidth), W - 60);
+    const y = Math.min(Math.max(el.offsetTop, 30), H - 40);
+    if (x !== el.offsetLeft) el.style.left = x + "px";
+    if (y !== el.offsetTop) el.style.top = y + "px";
+    // 下にはみ出さない高さに（playbar の分を残す）
+    el.style.maxHeight = Math.max(120, H - y - 70) + "px";
+  }
+  dragSetup(el, bar, name) {
+    bar.addEventListener("pointerdown", (e) => {
+      if (e.target.closest("button") || e.button > 0) return;
+      e.preventDefault();
+      const sx = e.clientX,
+        sy = e.clientY,
+        ox = el.offsetLeft,
+        oy = el.offsetTop;
+      bar.setPointerCapture(e.pointerId);
+      const move = (ev) => {
+        el.style.left = ox + ev.clientX - sx + "px";
+        el.style.top = oy + ev.clientY - sy + "px";
+      };
+      const up = () => {
+        bar.removeEventListener("pointermove", move);
+        bar.removeEventListener("pointerup", up);
+        bar.removeEventListener("pointercancel", up);
+        this.keepInside(el);
+        this.remember(el, name);
+      };
+      bar.addEventListener("pointermove", move);
+      bar.addEventListener("pointerup", up);
+      bar.addEventListener("pointercancel", up);
+    });
+  }
+}
+
+return { FnfShell };
+})();
+
+/* ===== funkin-studio/js/states/stage/sparrowAtlas.js ===== */
+const __m38 = (() => {
 /* ============================================================
    stage/sparrowAtlas.js — Sparrow アトラス（PNG + XML）の読み込みと切り出し描画
    ------------------------------------------------------------
@@ -10233,7 +10510,7 @@ return { getImageCap, setImageCap, loadImage, parseSparrowXml, parsePackerText, 
 })();
 
 /* ===== funkin-studio/js/states/character/editor.js ===== */
-const __m38 = (() => {
+const __m39 = (() => {
 /* ============================================================
    states/character/editor.js — Character Editor（V-Slice の character.json / Offset 編集）のロジック
    ------------------------------------------------------------
@@ -10271,7 +10548,8 @@ const { exportMod } = __m17;
 const { registryPath } = __m13;
 const { Viewport, isTextEntry } = __m35;
 const { HudPanels } = __m36;
-const { parsePackerText } = __m37;
+const { FnfShell } = __m37;
+const { parsePackerText } = __m38;
 const { GENERATED_BY } = __m9;
 
 function mountCharacterEditor(state) {
@@ -10297,6 +10575,18 @@ function mountCharacterEditor(state) {
       narrowDefaults: ["anim", "transport"],
       narrowExclusive: ["files", "anim", "char"],
     });
+  // FNF 本体の Character Editor 風: 上にメニューバー、パネルは浮動ツールボックス、下に playbar
+  new FnfShell(state.root, panels, {
+    key: "character",
+    titles: { files: "File / ファイル", anim: "Animations（アニメーション）", char: "Character Data（キャラクター設定）" },
+    menus: [
+      { text: "File", items: [{ text: "ファイルを開く…", toggle: "files" }, { text: "JSON を解析 / 再読み込み", click: "#offLoad" }, "-", { text: "character.json 保存", click: "#offExport" }] },
+      { text: "Edit", items: [{ text: "元に戻す", key: "Ctrl+Z", click: "#offUndo" }, { text: "やり直す", key: "Ctrl+Y", click: "#offRedo" }, "-", { text: "アニメーション追加", click: "#offAddAnim" }, { text: "アニメ名を変更", click: "#offRenameAnim" }, { text: "アニメを削除", click: "#offDeleteAnim" }, "-", { text: "オフセットを 0, 0 に", click: "#offZero" }] },
+      { text: "View", items: [{ text: "ズームイン", click: "#offZoomIn" }, { text: "ズームアウト", click: "#offZoomOut" }, { text: "全体を表示", key: "F", click: "#offFit" }, { text: "原点へ", click: "#offResetView" }, "-", { text: "移動ツール", click: "#offPanTool", check: () => $("offPanTool").getAttribute("aria-pressed") === "true" }, { text: "フレームの枠", run: () => $("offShowBox").click(), check: () => $("offShowBox").checked }] },
+      { text: "Playback", items: [{ text: "再生 / 停止", click: "#offPlay" }, { text: "1 フレーム戻る", click: "#offPrev" }, { text: "1 フレーム進む", click: "#offNext" }] },
+      { text: "Windows", items: [{ text: "Animations", toggle: "anim" }, { text: "Character Data", toggle: "char" }, { text: "File", toggle: "files" }, "-", { text: "再生バー", toggle: "transport" }] },
+    ],
+  });
   // doc       : 読み込んだ character.json（編集対象。書き出すときはこれを出力）
   // image     : アトラス画像 / atlas : アトラス定義（Sparrow なら XML Document、AnimateAtlas なら spritemap JSON）
   // animation : Animation.json（AnimateAtlas のとき）/ sprites : Sparrow のスプライト一覧
@@ -11454,7 +11744,7 @@ return { mountCharacterEditor };
 })();
 
 /* ===== funkin-studio/js/states/CharacterEditorState.js ===== */
-const __m39 = (() => {
+const __m40 = (() => {
 /* ============================================================
    states/CharacterEditorState.js — Character Editor（V-Slice の character.json / Offset 編集）の画面
    ------------------------------------------------------------
@@ -11465,7 +11755,7 @@ const { mountModPicker } = __m24;
 const { characterList } = __m25;
 const { EditorState } = __m26;
 const { template } = __m34;
-const { mountCharacterEditor } = __m38;
+const { mountCharacterEditor } = __m39;
 
 class CharacterEditorState extends EditorState {
   static id = "character";
@@ -11489,7 +11779,7 @@ return { CharacterEditorState };
 })();
 
 /* ===== funkin-studio/js/states/stage/template.js ===== */
-const __m40 = (() => {
+const __m41 = (() => {
 /* ============================================================
    stage/template.js — Stage Editor 画面の HTML
    ------------------------------------------------------------
@@ -11701,240 +11991,6 @@ const template = `
 `;
 
 return { template };
-})();
-
-/* ===== funkin-studio/js/ui/FnfShell.js ===== */
-const __m41 = (() => {
-/* ============================================================
-   ui/FnfShell.js — FNF 本体のエディタ（V-Slice の Chart / Stage Editor）風の画面枠
-   ------------------------------------------------------------
-   本物は main-view.xml が「上: メニューバー / 中: 空き / 下: バー」、操作パネルは「ツールボックス」という
-   ドラッグできる小さなウィンドウ。これを、既存の Hud 画面（HudPanels）に後から被せる。
-     1. メニューバー … 上に全幅で置く。項目は { text, run | click | toggle } の配列で渡す
-     2. ツールボックス … .hudPanel を「タイトルバー付きの浮動ウィンドウ」にする（ドラッグ / 前面へ / 閉じる / サイズ変更 / 位置を記憶）
-     3. 下のバー … 各エディタのテンプレートが .hudTransport を FNF の playbar の形で持つ（ここでは枠のスタイルだけ）
-   既存のボタンやパネルの id・イベントはそのまま（要素を動かすだけ）。HudPanels の表示/非表示とも連動する。
-   ============================================================ */
-
-const LS = "funkinStudio.fnf.";
-const lsGet = (k) => {
-  try {
-    return JSON.parse(localStorage.getItem(LS + k) || "null");
-  } catch {
-    return null;
-  }
-};
-const lsSet = (k, v) => {
-  try {
-    localStorage.setItem(LS + k, JSON.stringify(v));
-  } catch {
-    /* 保存できなくても動く */
-  }
-};
-
-class FnfShell {
-  /**
-   * @param root  State の root
-   * @param hud   HudPanels のインスタンス
-   * @param opts  { key: 保存名, menus: [{ text, items: [項目 | "-"] }], titles: { panel名: 見出し } }
-   *   項目: { text, run: () => void } / { text, click: "#id" } / { text, toggle: "panel名" } / { text, check: () => bool, run }
-   *         key: 右に出すショートカット表示（飾り）
-   */
-  constructor(root, hud, opts = {}) {
-    this.root = root;
-    this.hud = hud;
-    this.key = opts.key || "default";
-    this.layer = root.querySelector(".hudLayer");
-    this.z = 20;
-    this.wins = new Map();
-    root.classList.add("fnfShell");
-    if (opts.menus) this.buildMenubar(opts.menus);
-    this.buildWindows(opts.titles || {});
-    // 閉じたパネルは開き直したとき最前面へ。表示状態は HudPanels の hidden に従う
-    const apply = hud._apply.bind(hud);
-    hud._apply = () => {
-      apply();
-      this.syncChecks();
-      for (const [name, w] of this.wins) if (!w.hidden) this.keepInside(w);
-    };
-    addEventListener("resize", () => this.wins.forEach((w) => this.keepInside(w)));
-    this.syncChecks();
-  }
-
-  /* ---------- メニューバー ---------- */
-  buildMenubar(menus) {
-    const nav = document.createElement("nav");
-    nav.className = "fnfMenubar";
-    nav.setAttribute("role", "menubar");
-    this.menus = [];
-    for (const m of menus) {
-      const wrap = document.createElement("div");
-      wrap.className = "fnfMenu";
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "fnfMenuBtn";
-      btn.textContent = m.text;
-      const drop = document.createElement("div");
-      drop.className = "fnfDrop";
-      drop.hidden = true;
-      for (const it of m.items) drop.append(this.menuItem(it));
-      wrap.append(btn, drop);
-      nav.append(wrap);
-      const menu = { wrap, btn, drop };
-      this.menus.push(menu);
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        this.openMenu(drop.hidden ? menu : null);
-      });
-      // 1つ開いている間は、ほかのメニューにカーソルを乗せるだけで切り替わる（本物と同じ）
-      btn.addEventListener("pointerenter", () => {
-        if (this.menus.some((x) => !x.drop.hidden) && drop.hidden) this.openMenu(menu);
-      });
-    }
-    this.layer.prepend(nav);
-    document.addEventListener("pointerdown", (e) => {
-      if (!nav.contains(e.target)) this.openMenu(null);
-    });
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") this.openMenu(null);
-    });
-    this.nav = nav;
-    // 一括トグル（👁）は右端へ
-    const eye = this.layer.querySelector(".hudEye");
-    if (eye) nav.append(eye);
-  }
-  menuItem(it) {
-    if (it === "-") {
-      const hr = document.createElement("div");
-      hr.className = "fnfSep";
-      return hr;
-    }
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "fnfItem";
-    b.innerHTML = `<span class="fnfTick"></span><span class="fnfLabel"></span><span class="fnfKey"></span>`;
-    b.querySelector(".fnfLabel").textContent = it.text;
-    b.querySelector(".fnfKey").textContent = it.key || "";
-    if (it.toggle) b.dataset.toggle = it.toggle;
-    if (it.check) b._check = it.check;
-    b.addEventListener("click", () => {
-      this.openMenu(null);
-      if (it.toggle) this.hud.toggle(it.toggle);
-      else if (it.click) this.root.querySelector(it.click)?.click();
-      if (it.run) it.run();
-      this.syncChecks();
-    });
-    return b;
-  }
-  openMenu(menu) {
-    for (const m of this.menus) {
-      m.drop.hidden = m !== menu;
-      m.btn.classList.toggle("on", m === menu);
-    }
-    if (menu) this.syncChecks();
-  }
-  /** ✓ の表示を、パネルの開閉・各項目の check() に合わせる */
-  syncChecks() {
-    if (!this.nav) return;
-    for (const b of this.nav.querySelectorAll(".fnfItem")) {
-      let on = null;
-      if (b.dataset.toggle) on = this.hud.isVisible(b.dataset.toggle);
-      else if (b._check) on = !!b._check();
-      if (on !== null) b.querySelector(".fnfTick").textContent = on ? "✓" : "";
-    }
-  }
-
-  /* ---------- ツールボックス（浮動ウィンドウ） ---------- */
-  buildWindows(titles) {
-    const panels = [...this.root.querySelectorAll(".hudDock > .hudPanel[data-hud-panel]")];
-    let i = 0;
-    for (const el of panels) {
-      const name = el.dataset.hudPanel;
-      const right = !!el.closest(".hudDockRight");
-      const h2 = el.querySelector(":scope > h2");
-      if (h2) h2.remove(); // 本体に取り込まれないよう一旦外す（下でタイトルバーへ）
-      const title = titles[name] || h2?.textContent || name;
-      // 中身をスクロールする本体に、上にタイトルバーを固定する
-      const body = document.createElement("div");
-      body.className = "fnfBody";
-      while (el.firstChild) body.append(el.firstChild);
-      const bar = document.createElement("div");
-      bar.className = "fnfTitle";
-      bar.innerHTML = `<span class="fnfTitleText"></span><button type="button" class="fnfClose" title="閉じる" aria-label="閉じる">×</button>`;
-      const tt = bar.querySelector(".fnfTitleText");
-      // id 付きの見出し（エディタが文字を書き換えるもの）は、その要素ごとタイトルバーへ移す。ほかは見出しを捨てて指定の題にする
-      if (h2?.id) {
-        h2.classList.add("fnfTitleText");
-        tt.replaceWith(h2);
-      } else tt.textContent = title;
-      el.append(bar, body);
-      el.classList.add("fnfWin");
-      this.layer.append(el);
-      this.wins.set(name, el);
-
-      const saved = lsGet(`${this.key}.${name}`);
-      const W = this.layer.clientWidth || innerWidth;
-      const w = saved?.w ?? 340;
-      el.style.width = w + "px";
-      if (saved?.h) el.style.height = saved.h + "px";
-      el.style.left = (saved?.x ?? (right ? Math.max(10, W - w - 14 - (i % 3) * 22) : 14 + (i % 4) * 22)) + "px";
-      el.style.top = (saved?.y ?? 40 + (i % 4) * 26) + "px";
-      i++;
-      this.keepInside(el);
-
-      bar.querySelector(".fnfClose").addEventListener("click", () => this.hud.hide(name));
-      el.addEventListener("pointerdown", () => this.front(el), true);
-      this.dragSetup(el, bar, name);
-      new ResizeObserver(() => this.remember(el, name)).observe(el);
-    }
-  }
-  front(el) {
-    el.style.zIndex = String(++this.z);
-  }
-  remember(el, name) {
-    if (el.hidden) return;
-    lsSet(`${this.key}.${name}`, { x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.style.height ? el.offsetHeight : null });
-  }
-  /** 画面の外に出てしまったウィンドウを、タイトルバーが掴める範囲へ戻す */
-  keepInside(el) {
-    const W = this.layer.clientWidth,
-      H = this.layer.clientHeight;
-    if (!W || !H) return;
-    const x = Math.min(Math.max(el.offsetLeft, 60 - el.offsetWidth), W - 60);
-    const y = Math.min(Math.max(el.offsetTop, 30), H - 40);
-    if (x !== el.offsetLeft) el.style.left = x + "px";
-    if (y !== el.offsetTop) el.style.top = y + "px";
-    // 下にはみ出さない高さに（playbar の分を残す）
-    el.style.maxHeight = Math.max(120, H - y - 70) + "px";
-  }
-  dragSetup(el, bar, name) {
-    bar.addEventListener("pointerdown", (e) => {
-      if (e.target.closest("button") || e.button > 0) return;
-      e.preventDefault();
-      const sx = e.clientX,
-        sy = e.clientY,
-        ox = el.offsetLeft,
-        oy = el.offsetTop;
-      bar.setPointerCapture(e.pointerId);
-      const move = (ev) => {
-        el.style.left = ox + ev.clientX - sx + "px";
-        el.style.top = oy + ev.clientY - sy + "px";
-      };
-      const up = () => {
-        bar.removeEventListener("pointermove", move);
-        bar.removeEventListener("pointerup", up);
-        bar.removeEventListener("pointercancel", up);
-        this.keepInside(el);
-        this.remember(el, name);
-      };
-      bar.addEventListener("pointermove", move);
-      bar.addEventListener("pointerup", up);
-      bar.addEventListener("pointercancel", up);
-    });
-  }
-}
-
-return { FnfShell };
 })();
 
 /* ===== funkin-studio/js/states/stage/stageData.js ===== */
@@ -12150,7 +12206,7 @@ const __m43 = (() => {
           MultiSparrowCharacter / MultiAnimateAtlasCharacter（アニメごとの assetPath と renderType）
    ※ AnimateAtlas の描画ロジックは Character Editor（states/character/editor.js）と同じ。あちらは触らない方針のため重複している。
    ============================================================ */
-const { loadImage, parseSparrowXml, parsePackerText, sparrowSequenceOf, paintSparrow } = __m37;
+const { loadImage, parseSparrowXml, parsePackerText, sparrowSequenceOf, paintSparrow } = __m38;
 const { rankFiles, topTies, assetNote, infoOf, infoOfDir, scorePath, originOf } = __m13;
 
 // ============================================================
@@ -12876,9 +12932,9 @@ const { exportMod } = __m17;
 const { registryPath } = __m13;
 const { Viewport, isTextEntry } = __m35;
 const { HudPanels } = __m36;
-const { FnfShell } = __m41;
+const { FnfShell } = __m37;
 const { defaultStage, normalizeStage, newProp, newRect, serializeStage, clone, round3, CHAR_IDS, CHAR_LABEL, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas } = __m42;
-const { loadImage, parseSparrowXml, parsePackerText, getImageCap, setImageCap } = __m37;
+const { loadImage, parseSparrowXml, parsePackerText, getImageCap, setImageCap } = __m38;
 const { normAsset, infoOf, infoOfDir, setAssetNoteSink, openModZip, summarize } = __m13;
 const { SpriteAtlas, animateGroups, buildAnimateAtlas, isSpritemapPng, matchFile, relPath, findAnimateAtlas } = __m43;
 const { StageCharacter } = __m44;
@@ -14405,7 +14461,7 @@ const __m46 = (() => {
    Character Editor と違い、HUD の Undo / Redo ボタンをそのまま使う（undo() / redo() を持つ画面は HUD のボタンが押せる）。
    ============================================================ */
 const { EditorState } = __m26;
-const { template } = __m40;
+const { template } = __m41;
 const { mountStageEditor } = __m45;
 
 class StageEditorState extends EditorState {
@@ -17278,9 +17334,19 @@ uniform vec2 openfl_TextureSize;
 `;
 /** OpenFL 形式の .frag → GLPost 用の GLSL */
 function glslFrom(frag) {
-  const src = String(frag ?? "");
-  if (/#pragma\s+header/.test(src)) return src.replace(/#pragma\s+header/, HEADER);
-  return HEADER + src;
+  let src = compat(String(frag ?? ""));
+  // RuntimePostEffectShader 向けの .frag（screenCoord など）には、その分の宣言を足す（custom-blend / rain）
+  const head = /\b(screenCoord|uCameraBounds|uFrameBounds|uScreenResolution|screenToWorld|worldToScreen)\b/.test(src) && !/uniform\s+vec4\s+uCameraBounds/.test(src) ? HEADER + POST_HEAD : HEADER;
+  if (/#pragma\s+header/.test(src)) return src.replace(/#pragma\s+header/, head);
+  return head + src;
+}
+/** デスクトップの GLSL では通るが、WebGL（GLSL ES 1.00）では通らない書き方の直し（int と float の混在）。見つけた分だけ */
+function compat(src) {
+  // 整数定数 / 整数ループ変数 を float の演算に混ぜている: `N / openfl_TextureSize[0]` → `float(N) / …`
+  src = src.replace(/\b([A-Za-z_]\w*)\s*\/\s*(openfl_TextureSize)/g, "float($1) / $2");
+  // `x /= INT_CONST;`
+  for (const m of src.matchAll(/\bconst\s+int\s+(\w+)\s*=/g)) src = src.replace(new RegExp(`/=\\s*${m[1]}\\b`, "g"), `/= float(${m[1]})`);
+  return src;
 }
 const arr = (a) => Array.from(a ?? [], Number);
 /** メソッドの表（スクリプトの class X extends FlxRuntimeShader から super で届く分と、new FlxRuntimeShader(...) の分で共有） */
@@ -17402,7 +17468,131 @@ function makeAdjustColorShader(getFrag) {
   };
 }
 
-return { glslFrom, shaderMethods, shaderInit, FlxRuntimeShader, makeAdjustColorShader };
+/** RuntimePostEffectShader の GLSL 側（screenCoord / uCameraBounds / screenToWorld など）。ポストエフェクトは画面全体に掛けるので screenCoord = uv */
+const POST_HEAD = `
+#define screenCoord uv
+uniform vec2 uScreenResolution;
+uniform vec4 uCameraBounds;
+uniform vec4 uFrameBounds;
+vec2 screenToWorld(vec2 sc) { return sc * vec2(uCameraBounds.z - uCameraBounds.x, uCameraBounds.w - uCameraBounds.y) + uCameraBounds.xy; }
+vec2 worldToScreen(vec2 wc) { return (wc - uCameraBounds.xy) / vec2(uCameraBounds.z - uCameraBounds.x, uCameraBounds.w - uCameraBounds.y); }
+vec2 screenToFrame(vec2 sc) {
+  float w = uFrameBounds.z - uFrameBounds.x, h = uFrameBounds.w - uFrameBounds.y;
+  return vec2((clamp(sc.x, uFrameBounds.x, uFrameBounds.z) - uFrameBounds.x) / w, (clamp(sc.y, uFrameBounds.y, uFrameBounds.w) - uFrameBounds.y) / h);
+}
+vec2 bitmapCoordScale() { return vec2(1.0); }
+vec2 screenToBitmap(vec2 sc) { return sc; }
+vec4 sampleBitmapScreen(vec2 sc) { return texture2D(bitmap, sc); }
+vec4 sampleBitmapWorld(vec2 wc) { return sampleBitmapScreen(worldToScreen(wc)); }
+`;
+/** funkin.graphics.shaders.RuntimeRainShader（雨 + 水たまり）。.frag は ui/shaders/rain.frag（getFrag("rain")）。mask / lightMap / blurredScreen は未対応（本物でもコメントアウトされている） */
+function makeRainShader(getFrag) {
+  return class RuntimeRainShader {
+    constructor() {
+      shaderInit(this, getFrag("rain"));
+      this.glsl = this.glsl.replace(/precision mediump float;/, "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif");
+      this.uniforms.uScreenResolution = [1280, 720];
+      this.uniforms.uCameraBounds = [0, 0, 1280, 720];
+      this.uniforms.uFrameBounds = [0, 0, 1, 1];
+      this.time = 1;
+      this.spriteMode = false;
+      this.scale = 1;
+      this.intensity = 0.5;
+      this.puddleY = 0;
+      this.puddleScaleY = 0;
+      this.rainColor = 0xff6680cc;
+      this.numLightsSwag = 0;
+    }
+    set time(v) { this._time = Number(v); this.uniforms.uTime = this._time; }
+    get time() { return this._time; }
+    set spriteMode(v) { this._sm = !!v; this.uniforms.uSpriteMode = this._sm ? 1 : 0; this.types.uSpriteMode = "i"; }
+    get spriteMode() { return this._sm; }
+    set scale(v) { this._scale = Number(v); this.uniforms.uScale = this._scale; }
+    get scale() { return this._scale; }
+    set intensity(v) { this._int = Number(v); this.uniforms.uIntensity = this._int; }
+    get intensity() { return this._int; }
+    set puddleY(v) { this._py = Number(v); this.uniforms.uPuddleY = this._py; }
+    get puddleY() { return this._py; }
+    set puddleScaleY(v) { this._ps = Number(v); this.uniforms.uPuddleScaleY = this._ps; }
+    get puddleScaleY() { return this._ps; }
+    set rainColor(c) { this._rc = c; const n = Number(c) >>> 0; this.uniforms.uRainColor = [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; }
+    get rainColor() { return this._rc; }
+    set numLightsSwag(v) { this._nl = Math.trunc(Number(v)); this.uniforms.numLights = this._nl; this.types.numLights = "i"; }
+    get numLightsSwag() { return this._nl; }
+    set mask(v) { this._mask = v; }
+    get mask() { return this._mask; }
+    set lightMap(v) { this._lm = v; }
+    get lightMap() { return this._lm; }
+    set blurredScreen(v) { this._bs = v; }
+    get blurredScreen() { return this._bs; }
+    update(elapsed) { this.time = this._time + Number(elapsed); }
+    /** updateViewInfo(FlxG.width, FlxG.height, FlxG.camera): カメラの見ている範囲（world px） */
+    updateViewInfo(w, h, cam) {
+      const sx = Number(cam?.scroll?.x) || 0, sy = Number(cam?.scroll?.y) || 0;
+      this.uniforms.uScreenResolution = [Number(w) || 1280, Number(h) || 720];
+      this.uniforms.uCameraBounds = [sx, sy, sx + (Number(w) || 1280), sy + (Number(h) || 720)];
+    }
+    updateFrameInfo() {}
+    toString() { return "RuntimeRainShader"; }
+  };
+}
+
+/**
+ * 本体の「FlxRuntimeShader を継承した小さなシェーダークラス」（HSVShader / Grayscale / MosaicEffect / GaussianBlurShader / InverseDotsShader）。
+ * 値をプロパティで受け取り、決まった uniform に流す（実ソース funkin/graphics/shaders/*.hx と同じ対応）。
+ *   spec = { frag: "hsv", name, props: [[プロパティ名, uniform 名, 既定値]], methods: { setAmount: "amount" } }
+ */
+function makeNativeShader(getFrag, spec) {
+  const C = class {
+    constructor(...args) {
+      shaderInit(this, getFrag(spec.frag));
+      spec.props.forEach(([prop, uni, def], i) => {
+        this[prop] = args[i] ?? def;
+      });
+    }
+    toString() {
+      return spec.name;
+    }
+  };
+  for (const [prop, uni] of spec.props)
+    Object.defineProperty(C.prototype, prop, {
+      get() {
+        return this["_" + prop];
+      },
+      set(v) {
+        this["_" + prop] = Number(v);
+        this.uniforms[uni] = Number(v);
+      },
+    });
+  for (const [m, prop] of Object.entries(spec.methods ?? {})) C.prototype[m] = function (v) { this[prop] = v; };
+  Object.defineProperty(C, "name", { value: spec.name });
+  return C;
+}
+const NATIVE_SHADERS = [
+  { name: "HSVShader", frag: "hsv", props: [["hue", "_hue", 1], ["saturation", "_sat", 1], ["value", "_val", 1]] },
+  { name: "Grayscale", frag: "grayscale", props: [["amount", "_amount", 1]], methods: { setAmount: "amount" } },
+  { name: "GaussianBlurShader", frag: "gaussian-blur", props: [["amount", "_amount", 1]], methods: { setAmount: "amount" } },
+  { name: "InverseDotsShader", frag: "inverse-dots", props: [["amount", "_amount", 1]], methods: { setAmount: "amount" } },
+];
+/** MosaicEffect: blockSize（FlxPoint）→ uBlocksize [w, h] */
+function makeMosaicEffect(getFrag, Pt) {
+  return class MosaicEffect {
+    constructor() {
+      shaderInit(this, getFrag("mosaic"));
+      this.blockSize = new Pt(1, 1);
+      this.setBlockSize(1, 1);
+    }
+    setBlockSize(w, h) {
+      this.blockSize.set(Number(w), Number(h));
+      this.uniforms.uBlocksize = [Number(w), Number(h)];
+    }
+    toString() {
+      return "MosaicEffect";
+    }
+  };
+}
+
+return { glslFrom, shaderMethods, shaderInit, FlxRuntimeShader, makeAdjustColorShader, makeRainShader, makeNativeShader, NATIVE_SHADERS, makeMosaicEffect };
 })();
 
 /* ===== funkin-studio/js/runtime/runtime.js ===== */
@@ -17421,8 +17611,8 @@ const __m54 = (() => {
 const { findSound } = __m14;
 const { HScript, HMap, makeStub } = __m51;
 const { GLPost, GLSL_GRAYSCALE } = __m52;
-const { FlxRuntimeShader, shaderInit, shaderMethods, makeAdjustColorShader } = __m53;
-const { loadImage, parseSparrowXml } = __m37;
+const { FlxRuntimeShader, shaderInit, shaderMethods, makeAdjustColorShader, makeRainShader, makeNativeShader, NATIVE_SHADERS, makeMosaicEffect } = __m53;
+const { loadImage, parseSparrowXml } = __m38;
 
 const LAYER_MAX_W = 1280; // フィルターを掛けるカメラの絵の最大幅(px)
 const GAME_W = 1280,
@@ -17529,6 +17719,39 @@ class Pt {
     this.x = x;
     this.y = y;
     return this;
+  }
+  static get(x = 0, y = 0) {
+    return new Pt(x, y);
+  }
+  static weak(x = 0, y = 0) {
+    return new Pt(x, y);
+  }
+  put() {} // プール返却は何もしない
+  clone() {
+    return new Pt(this.x, this.y);
+  }
+  copyFrom(p) {
+    this.x = p.x;
+    this.y = p.y;
+    return this;
+  }
+  add(x = 0, y = 0) {
+    this.x += x;
+    this.y += y;
+    return this;
+  }
+  subtract(x = 0, y = 0) {
+    this.x -= x;
+    this.y -= y;
+    return this;
+  }
+  scale(a, b = a) {
+    this.x *= a;
+    this.y *= b;
+    return this;
+  }
+  distanceTo(p) {
+    return Math.hypot(this.x - p.x, this.y - p.y);
   }
 }
 class FlxBasic {
@@ -17733,6 +17956,54 @@ class FlxTypedGroup extends FlxBasic {
     for (const m of this.members) m?.destroy?.();
     this.members = [];
     super.destroy();
+  }
+}
+
+/** funkin.graphics.FunkinTiledSprite（FlxTiledSprite）: 画像を width × height の範囲に敷き詰める。scrollX / scrollY で模様をずらす。描画はステージ（StageScene.drawTiled） */
+class FunkinTiledSprite extends FlxObject {
+  constructor(graphic, width = 0, height = 0, repeatX = true, repeatY = true) {
+    super(0, 0);
+    this.__tiled = true;
+    this.path = graphic == null ? "" : String(graphic);
+    this.width = Number(width) || 0;
+    this.height = Number(height) || 0;
+    this.repeatX = repeatX !== false;
+    this.repeatY = repeatY !== false;
+    this.scrollX = 0;
+    this.scrollY = 0;
+    this.vcamPoint = null; // 本物は仮想カメラの位置。ここではカメラのスクロールをそのまま使う
+    this.zIndex = 0;
+    this.img = null;
+  }
+  setPosition(x = 0, y = 0) {
+    this.x = Number(x);
+    this.y = Number(y);
+    return this;
+  }
+  loadGraphic(g) {
+    this.path = String(g);
+    this.img = null;
+    return this;
+  }
+}
+/** funkin.graphics.FunkinBackdrop（FlxBackdrop）: 画像を指定の軸に無限に敷く。axes: X=0x01 / Y=0x10 / XY=0x11。tint(color) / blend は未対応 */
+class FunkinBackdrop extends FunkinTiledSprite {
+  constructor(graphic, axes = 0x11) {
+    super(graphic, 0, 0, true, true);
+    this.__backdrop = true;
+    const a = typeof axes === "string" ? ({ x: 1, y: 16, xy: 17 }[axes.toLowerCase()] ?? 17) : Number(axes);
+    this.repeatX = !!(a & 1);
+    this.repeatY = !!(a & 16);
+    this.width = 1;
+    this.height = 1;
+    this.color = 0xffffffff;
+    this.blend = 0;
+  }
+}
+/** openfl.filters.BlurFilter（スクリプトで new するだけで、いまは描画に使わない） */
+class BlurFilter {
+  constructor(blurX = 4, blurY = 4, quality = 1) {
+    Object.assign(this, { blurX, blurY, quality });
   }
 }
 
@@ -17996,6 +18267,7 @@ class Runtime {
         {
           width: GAME_W,
           height: GAME_H,
+          console: { registerObject() {}, registerFunction() {} },
           elapsed: 1 / 60,
           signals: { postUpdate: { add: (f) => rt.postUpdate.push(f), remove: (f) => (rt.postUpdate = rt.postUpdate.filter((x) => x !== f)) }, preUpdate: { add() {}, remove() {} } },
           random: {
@@ -18125,6 +18397,37 @@ class Runtime {
         getText: (p) => rt.fragText(p) ?? "",
       },
       FlxRuntimeShader,
+      CharacterType: { BF: "BF", DAD: "DAD", GF: "GF", OTHER: "OTHER" },
+      FunkinTiledSprite,
+      FunkinBackdrop,
+      FlxBackdrop: FunkinBackdrop,
+      FlxTiledSprite: FunkinTiledSprite,
+      BlurFilter,
+      FlxAngle: { asRadians: (d) => (Number(d) * Math.PI) / 180, asDegrees: (r) => (Number(r) * 180) / Math.PI, TO_RAD: Math.PI / 180, TO_DEG: 180 / Math.PI },
+      // funkin.util.MathUtil（実ソース MathUtil.hx と同じ式）
+      MathUtil: {
+        lerp: (a, b, t) => a + (b - a) * t,
+        smoothLerpPrecision: (base, target, dt, duration, precision = 0.01) => (dt === 0 ? base : base === target ? target : target + (base - target) * Math.pow(precision, dt / duration)),
+        smoothLerpDecay: (base, target, dt, halfLife) => (dt === 0 ? base : base === target ? target : target + (base - target) * Math.pow(2, -dt / halfLife)),
+        snap: (base, target, th) => (Math.abs(base - target) <= th ? target : base),
+      },
+      ...Object.fromEntries(
+        NATIVE_SHADERS.map((sp) => {
+          const C = makeNativeShader((k) => rt.fragText(k), sp);
+          for (const k of Object.keys(shaderMethods)) C.prototype[k] ??= shaderMethods[k];
+          return [sp.name, C];
+        }),
+      ),
+      MosaicEffect: (() => {
+        const C = makeMosaicEffect((k) => rt.fragText(k), Pt);
+        for (const k of Object.keys(shaderMethods)) C.prototype[k] ??= shaderMethods[k];
+        return C;
+      })(),
+      RuntimeRainShader: (() => {
+        const C = makeRainShader((k) => rt.fragText(k));
+        for (const k of ["setFloat", "setFloatArray", "setInt", "setIntArray", "setBool", "setBoolArray", "setSampler2D", "getFloat", "getFloatArray", "getInt", "getBool", "active"]) C.prototype[k] = shaderMethods[k];
+        return C;
+      })(),
       AdjustColorShader: (() => {
         const C = makeAdjustColorShader((k) => rt.fragText(k));
         Object.assign(C.prototype, shaderMethods);
@@ -18143,7 +18446,6 @@ class Runtime {
       FlxAxes: { X: "x", Y: "y", XY: "xy" },
       FlxPoint: Pt,
       ShaderFilter: FlxCamFilter,
-      Grayscale,
       FlxTween: {
         tween(obj, props, duration, o = {}) {
           const from = {};
@@ -18157,6 +18459,68 @@ class Runtime {
             loop: o.type === 2 || o.type === "looping",
             setup: (e) => {
               for (const k of Object.keys(props)) obj[k] = from[k] + (props[k] - from[k]) * e;
+            },
+          });
+          tw.target = obj;
+          rt.tweens.list.push(tw);
+          return tw;
+        },
+        /** angle(obj, from, to, duration, options): 回転角を from → to へ（NaN のときは今の角度から） */
+        angle(obj, from, to, duration, o) {
+          o ??= {};
+          const a0 = Number.isFinite(Number(from)) ? Number(from) : obj.angle || 0;
+          const tw = new Tween(rt.tweens, {
+            duration,
+            ease: o.ease,
+            delay: o.startDelay,
+            onUpdate: o.onUpdate,
+            onComplete: o.onComplete,
+            setup: (e) => (obj.angle = a0 + (Number(to) - a0) * e),
+          });
+          tw.target = obj;
+          rt.tweens.list.push(tw);
+          return tw;
+        },
+        /** linearPath / quadPath(obj, points, durationOrSpeed, useDuration, options): 点列に沿って x / y を動かす（quad は 始点, 制御点, 終点, 制御点, 終点… の二次ベジエ） */
+        linearPath(obj, points, d, useDuration = true, o) {
+          return this.quadPath(obj, points, d, useDuration, o, true);
+        },
+        quadPath(obj, points, d, useDuration = true, o, linear = false) {
+          o ??= {};
+          const P = (points || []).map((p) => [Number(p.x), Number(p.y)]);
+          if (P.length < 2) return null;
+          // 折れ線 / 曲線を細かく刻み、距離で進行度を決める
+          const pts = [P[0]];
+          if (linear) pts.push(...P.slice(1));
+          else
+            for (let i = 0; i + 2 < P.length + (P.length % 2 ? 0 : 1); i += 2) {
+              const a = P[i],
+                c = P[i + 1],
+                b = P[i + 2] ?? P[i + 1];
+              for (let k = 1; k <= 24; k++) {
+                const t = k / 24,
+                  u = 1 - t;
+                pts.push([u * u * a[0] + 2 * u * t * c[0] + t * t * b[0], u * u * a[1] + 2 * u * t * c[1] + t * t * b[1]]);
+              }
+            }
+          const acc = [0];
+          for (let i = 1; i < pts.length; i++) acc.push(acc[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+          const total = acc[acc.length - 1] || 1;
+          const duration = useDuration ? Number(d) : total / Math.max(1e-6, Number(d));
+          const tw = new Tween(rt.tweens, {
+            duration,
+            ease: o.ease,
+            delay: o.startDelay,
+            onUpdate: o.onUpdate,
+            onComplete: o.onComplete,
+            setup: (e) => {
+              const dist = total * Math.min(1, Math.max(0, e));
+              let i = 1;
+              while (i < acc.length - 1 && acc[i] < dist) i++;
+              const span = acc[i] - acc[i - 1] || 1,
+                f = (dist - acc[i - 1]) / span;
+              obj.x = pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f;
+              obj.y = pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f;
             },
           });
           tw.target = obj;
@@ -18290,6 +18654,7 @@ class Runtime {
       init(inst, args) {
         inst.stageId = String(args[0] ?? "");
         inst.stageName = inst.stageId;
+        inst.characters = { remove() {}, set() {}, get: () => null, exists: () => false, keys: () => [] }; // Stage.characters（id → キャラ）
         if (rt.scene && rt.scene.stageId.toLowerCase() === inst.stageId.toLowerCase()) rt.stages.push(inst);
       },
       methods: {
@@ -18305,6 +18670,7 @@ class Runtime {
         remove: (o) => rt.ps.currentStage?.remove?.(o),
         insert: (i, o) => rt.ps.currentStage?.insert?.(i, o),
         refresh: stageNoop,
+        addCharacter: (c) => c, // 本物は stage.add(character)。シーンが先にキャラを置いてあるので何もしない
         onScriptEvent: stageNoop, onCreate: stageNoop, onDestroy: stageNoop, onUpdate: stageNoop,
         onBeatHit: stageNoop, onStepHit: stageNoop, onSongStart: stageNoop, onSongEnd: stageNoop, onSongRetry: stageNoop,
         onCountdownStart: stageNoop, onCountdownStep: stageNoop, onCountdownEnd: stageNoop, onPause: stageNoop, onResume: stageNoop,
@@ -18376,7 +18742,7 @@ class Runtime {
       const orig = sApi[m];
       ps.currentStage[m] = (...a) => {
         const o = a[a.length - 1];
-        if (o?.__char) return orig(...a);
+        if (o?.__char || o?.__tiled) return orig(...a);
         return ps[m]?.(...a);
       };
     }
@@ -18393,6 +18759,49 @@ class Runtime {
       "CharacterDataParser",
       (p) => this.stub(p),
     );
+    // CharacterRegistry.instance.fetchEntry(id)（0.9 の新しいキャラ取得）は、fetchCharacter と同じ
+    this.G.CharacterRegistry = { instance: withStubs({ fetchEntry: (id) => scene.fetchCharacter(String(id)), hasEntry: (id) => scene.charFiles.has(String(id)), listEntryIds: () => [...scene.charFiles.keys()] }, "CharacterRegistry", (p) => this.stub(p)) };
+    // FlxTypedSpriteGroup: キャラを入れる入れ物。入れたキャラはステージに出し、グループの zIndex を使う（kill / revive はまとめて）
+    this.G.FlxTypedSpriteGroup = this.G.FlxSpriteGroup = class {
+      constructor() {
+        this.members = [];
+        this.zIndex = 0;
+        this.exists = true;
+        this.alive = true;
+        this.visible = true;
+        this.alpha = 1;
+      }
+      get length() {
+        return this.members.length;
+      }
+      add(o) {
+        if (o && !this.members.includes(o)) this.members.push(o);
+        if (o?.__char) {
+          o.__char.zIndex = this.zIndex;
+          scene.addExtra(o.__char);
+        }
+        return o;
+      }
+      remove(o) {
+        this.members = this.members.filter((x) => x !== o);
+        if (o?.__char) scene.removeExtra(o.__char);
+        return o;
+      }
+      forEach(fn) {
+        for (const m of [...this.members]) fn(m);
+      }
+      kill() {
+        this.alive = false;
+        for (const m of this.members) m?.kill?.();
+      }
+      revive() {
+        this.alive = true;
+      }
+      destroy() {
+        this.kill();
+        this.members = [];
+      }
+    };
     ps.currentStage.getBoyfriend = ps.getBoyfriend;
     ps.currentStage.getDad = ps.getDad;
     ps.currentStage.getGirlfriend = ps.getGirlfriend;
@@ -18603,6 +19012,7 @@ class Runtime {
     const targets = [];
     if (kind) targets.push(kind);
     for (const m of this.modules.values()) targets.push(m);
+    for (const st of this.stages) targets.push(st); // ステージのスクリプトにも届く（本物のイベント送信は、ステージやキャラも対象）
     for (const inst of targets) {
       try {
         if (inst.native) inst.native[hook]?.(ev);
@@ -18706,9 +19116,16 @@ class Runtime {
   /** ステージスクリプトを動かし始める（buildStage → onCreate）。スクリプトを全部読み込み、シーンをつないだあとに 1 回 */
   startStages() {
     for (const inst of this.stages) {
-      for (const hook of ["buildStage", "onCreate"]) {
+      for (const hook of ["buildStage", "addCharacters", "onCreate"]) {
         try {
-          this.hs.call(inst, hook, hook === "onCreate" ? [{}] : []);
+          if (hook === "addCharacters") {
+            // PlayState がキャラを足すたびに呼ぶ stage.addCharacter(character, type)（スクリプトが override して、キャラにシェーダーを付けるなど）
+            if (this.hs.has(inst, "addCharacter"))
+              for (const [fn, type] of [["getGirlfriend", "GF"], ["getDad", "DAD"], ["getBoyfriend", "BF"]]) {
+                const c = this.ps[fn]?.();
+                if (c) this.hs.call(inst, "addCharacter", [c, type]);
+              }
+          } else this.hs.call(inst, hook, hook === "onCreate" ? [{}] : []);
         } catch (e) {
           this.fail(`ステージ「${inst.stageId}」.${hook}`, e);
         }
@@ -18858,7 +19275,7 @@ class Runtime {
   }
 }
 
-return { GAME_W, FlxEase, easeByName, FlxColor, FlxSprite, FlxText, FlxTypedGroup, FlxCamera, FlxCamFilter, Grayscale, Runtime };
+return { GAME_W, FlxEase, easeByName, FlxColor, FlxSprite, FlxText, FlxTypedGroup, FunkinTiledSprite, FunkinBackdrop, BlurFilter, FlxCamera, FlxCamFilter, Grayscale, Runtime };
 })();
 
 /* ===== funkin-studio/js/runtime/scrollVelocity.js ===== */
@@ -19043,7 +19460,7 @@ const __m56 = (() => {
    ・描画の大きさは「1 レーン = 112px の 720p」を基準にした倍率 k で縮尺する（プレイテストのレーン幅に合わせる）。
    ・軽量化: 画像は ImageBitmap（デコード済み）で保持し、フレーム検索は prefix ごとにキャッシュする。
    ============================================================ */
-const { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } = __m37;
+const { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } = __m38;
 const { noteStyle: noteStyleFromRemote } = __m14;
 const { infoOfPath, normAsset, scorePath, assetNote, openModZip } = __m13;
 
@@ -19499,7 +19916,7 @@ const __m57 = (() => {
 const { GLPost } = __m52;
 const { findSpriteAtlas, findAnimateAtlas } = __m43;
 const { StageCharacter, atlasKindOf } = __m44;
-const { loadImage } = __m37;
+const { loadImage } = __m38;
 const { normalizeStage, isSolid, isAnimated, getScale, getScroll, parseColor, toRgbaCss, blendToCanvas, defaultCharacter } = __m42;
 const { originOf, infoOf } = __m13;
 const { easeByName } = __m54;
@@ -19578,6 +19995,16 @@ class Actor {
 }
 
 // ------------------------------------------------------------------ キャラクター
+/** openfl.display.BlendMode の並び順（スクリプトは blend = 0 のように数で指定する。0 = ADD / 9 = MULTIPLY …） */
+const BLEND_NAMES = ["add", "alpha", "darken", "difference", "erase", "hardlight", "invert", "layer", "lighten", "multiply", "normal", "overlay", "screen", "shader", "subtract"];
+/** color（0xAARRGGBB）の明るさ。加算合成の薄い霧などは、色を絞る = 弱くする、で近似する（色味は付けない） */
+const tintFactor = (c) => {
+  if (c == null) return 1;
+  const n = Number(c) >>> 0;
+  return n === 0 || n === 0xffffffff ? 1 : (((n >> 16) & 255) + ((n >> 8) & 255) + (n & 255)) / 765;
+};
+const blendName = (v) => (typeof v === "number" ? (BLEND_NAMES[v] ?? "normal") : String(v ?? "normal"));
+
 class SceneChar {
   constructor(role) {
     this.role = role;
@@ -19757,6 +20184,7 @@ class StageScene {
     this.bop = 0; // 4 拍ごとの一時的なズーム
     this.cam = { x: FRAME_W / 2, y: FRAME_H / 2 }; // 焦点（ワールド座標）
     this.extra = []; // スクリプトが stage.add したキャラ
+    this.tiled = []; // スクリプトが stage.add した FunkinTiledSprite
     this.charFiles = new Map();
     this.focusEvents = [];
     this.zoomEvents = [];
@@ -19861,6 +20289,52 @@ class StageScene {
   }
   removeExtra(c) {
     this.extra = this.extra.filter((x) => x !== c);
+  }
+  /** FunkinTiledSprite（スクリプトが add したもの）。画像は非同期に読む */
+  addTiled(o) {
+    if (!o || this.tiled.includes(o)) return;
+    this.tiled.push(o);
+    o.ord = this.tiled.length;
+    const f = this.o.resolve("image", o.path, { origin: this.stageOrigin ?? this.o.origin, quiet: true });
+    if (!f) return this.warn(`画像「${o.path}」が見つかりません（FunkinTiledSprite）`);
+    loadImage(f).then((img) => (o.img = img), (e) => this.warn(`FunkinTiledSprite: ${e.message}`));
+  }
+  removeTiled(o) {
+    this.tiled = this.tiled.filter((x) => x !== o);
+  }
+  /** 敷き詰めて描く（FlxTiledSprite）。scale は中心を基準に、scrollX / scrollY は模様のずれ */
+  drawTiled(ctx, o) {
+    if (!o.img || !o.visible || !o.width || !o.height) return;
+    const sx = Math.abs(o.scale.x) || 1,
+      sy = Math.abs(o.scale.y) || 1;
+    const rep = o.repeatX && o.repeatY ? "repeat" : o.repeatX ? "repeat-x" : o.repeatY ? "repeat-y" : "no-repeat";
+    if (o.__backdrop) {
+      // FlxBackdrop: 指定の軸に無限に敷く。x / y が模様の基準（velocity で流れる）
+      const pat2 = (o.pattern ??= { img: null, p: null });
+      if (pat2.img !== o.img || pat2.rep !== rep) Object.assign(pat2, { img: o.img, rep, p: ctx.createPattern(o.img, rep) });
+      if (!pat2.p) return;
+      ctx.globalCompositeOperation = blendToCanvas(blendName(o.blend));
+      ctx.globalAlpha = Math.max(0, Math.min(1, o.alpha)) * tintFactor(o.color);
+      ctx.scale(sx, sy);
+      pat2.p.setTransform?.(new DOMMatrix().translate(o.x / sx, o.y / sy));
+      ctx.fillStyle = pat2.p;
+      ctx.fillRect(-12000, -12000, 24000, 24000);
+      return;
+    }
+    const pat = (o.pattern ??= { img: null, p: null });
+    if (pat.img !== o.img || pat.rep !== rep) Object.assign(pat, { img: o.img, rep, p: ctx.createPattern(o.img, rep) });
+    if (!pat.p) return;
+    ctx.translate(o.x + o.width / 2, o.y + o.height / 2);
+    ctx.scale(sx, sy);
+    ctx.translate(-o.width / 2, -o.height / 2);
+    ctx.globalCompositeOperation = blendToCanvas(blendName(o.blend));
+    ctx.globalAlpha = Math.max(0, Math.min(1, o.alpha)) * tintFactor(o.color);
+    ctx.beginPath();
+    ctx.rect(0, 0, o.width, o.height);
+    ctx.clip();
+    pat.p.setTransform?.(new DOMMatrix().translate(o.scrollX || 0, o.scrollY || 0));
+    ctx.fillStyle = pat.p;
+    ctx.fillRect(0, 0, o.width, o.height);
   }
   async loadStage(id) {
     let doc = null;
@@ -20153,6 +20627,7 @@ class StageScene {
       } else c.holdTimer = 0;
     }
     for (const p of this.props) p.actor?.update(dt);
+    for (const t of this.tiled) if (t.active !== false) t.move?.(dt);
     // ズーム（イベント → 4 拍ごとの揺れ）
     if (this.tweenZoom) {
       const z = this.tweenZoom,
@@ -20230,6 +20705,7 @@ class StageScene {
     const list = [
       ...this.props.map((p) => ({ z: p.z, ord: p.ord, prop: p })),
       ...[...ROLES.map((r) => this.chars[r]), ...this.extra].map((c, i) => ({ z: c.zIndex, ord: 1e6 + i, char: c })),
+      ...this.tiled.map((t, i) => ({ z: Number(t.zIndex) || 0, ord: 2e6 + i, tiled: t })),
     ].sort((a, b) => a.z - b.z || a.ord - b.ord);
     if (this.stageMissing) {
       ctx.save();
@@ -20240,10 +20716,15 @@ class StageScene {
     }
     for (const o of list) {
       ctx.save();
-      const sf = o.char ? o.char.scroll : getScroll(o.prop.ref);
+      const sf = o.char ? o.char.scroll : o.tiled ? [o.tiled.scrollFactor.x, o.tiled.scrollFactor.y] : getScroll(o.prop.ref);
       this.world(ctx, z, scrollX, scrollY, sf);
-      if (o.char) {
-        if (o.char.visible) o.char.draw(ctx, (STAGE_KEY[o.char.role] ?? "CHAR").toUpperCase());
+      if (o.tiled) this.drawTiled(ctx, o.tiled);
+      else if (o.char) {
+        if (o.char.visible) {
+          const label = (STAGE_KEY[o.char.role] ?? "CHAR").toUpperCase();
+          if (o.char.shader?.glsl && o.char.sc?.view) this.drawCharShaded(ctx, o.char, label);
+          else o.char.draw(ctx, label);
+        }
       } else this.drawProp(ctx, o.prop);
       ctx.restore();
     }
@@ -20254,6 +20735,38 @@ class StageScene {
     ctx.translate(FRAME_W / 2, FRAME_H / 2);
     ctx.scale(z, z);
     ctx.translate(-FRAME_W / 2 - sx * sf[0], -FRAME_H / 2 - sy * sf[1]);
+  }
+  /** シェーダー（AdjustColorShader など）つきのキャラ: 足元の周りの領域をいったん別のキャンバスに描き、WebGL で .frag を掛けてから置く（AnimateAtlas でもパーツごとではなく、できあがった絵に掛かる） */
+  drawCharShaded(ctx, c, label) {
+    const pl = c.place();
+    // 大きさが決まらない（画像が届く前など）ときは、シェーダーなしでそのまま描く
+    if (!(pl.w > 0 && pl.h > 0 && Number.isFinite(pl.feetX + pl.feetY))) return c.draw(ctx, label);
+    const W0 = Math.max(64, pl.w * 1.8),
+      H0 = Math.max(64, pl.h * 1.7);
+    const q = Math.min(1, 2048 / Math.max(W0, H0));
+    const W = Math.max(1, Math.ceil(W0 * q)),
+      H = Math.max(1, Math.ceil(H0 * q));
+    const ox = pl.feetX - W0 / 2,
+      oy = pl.feetY - H0 * 0.92; // 足元から上に 92%・下に 8%
+    if (!c.shadeTmp) c.shadeTmp = document.createElement("canvas");
+    if (c.shadeTmp.width !== W || c.shadeTmp.height !== H) {
+      c.shadeTmp.width = W;
+      c.shadeTmp.height = H;
+    }
+    const c2 = c.shadeTmp.getContext("2d");
+    c2.setTransform(1, 0, 0, 1, 0, 0);
+    c2.clearRect(0, 0, W, H);
+    c2.setTransform(q, 0, 0, q, -ox * q, -oy * q);
+    c.draw(c2, label);
+    this.gl ??= new GLPost();
+    const sh = c.shader;
+    sh.onError ??= (m) => this.warn(`シェーダー（キャラ ${c.role}）: ${m}`);
+    const res = this.gl.ok && (sh.active ? sh.active() : true) ? this.gl.apply(c.shadeTmp, sh) : null;
+    try {
+      ctx.drawImage(res || c.shadeTmp, ox, oy, W0, H0);
+    } catch (e) {
+      this.warn(`キャラ ${c.role}(${c.id}) の描画に失敗: ${e.message}（${W}x${H}）`);
+    }
   }
   /** シェーダー（FlxRuntimeShader）つきの prop: いったん別のキャンバスに描き、WebGL で .frag を掛けてから置く */
   drawPropShaded(ctx, e) {
@@ -20347,10 +20860,14 @@ class StageScene {
       get shader() { return e.shader ?? null; },
       set shader(v) { e.shader = v || null; },
       scale,
+      get blend() { return p.blend; },
+      set blend(v) { p.blend = blendName(v); },
+      offset: (e.off ??= { x: 0, y: 0, set(x = 0, y = x) { this.x = Number(x); this.y = Number(y); } }), // FlxSprite.offset: 描く位置を (−x, −y) ずらす
       velocity: { x: 0, y: 0 }, // active = true のとき、毎フレーム位置に足される（FlxObject と同じ）
       acceleration: { x: 0, y: 0 },
       active: false,
-      animation: { play },
+      animation: { play, onFrameChange: { add() {}, remove() {}, removeAll() {} } }, // フレーム通知は使わない（シェーダーのフレーム範囲は、prop を別の絵にして掛けるので不要）
+      frame: null,
       playAnim: play,
       setPosition: (x, y) => (p.position = [Number(x), Number(y)]),
       destroy() { e.hidden = true; },
@@ -20364,8 +20881,8 @@ class StageScene {
       [sx, sy] = getScale(p);
     const ex = e.w,
       eh = e.h;
-    const cx = p.position[0] + ex / 2,
-      cy = p.position[1] + eh / 2;
+    const cx = p.position[0] + ex / 2 - (e.off?.x || 0),
+      cy = p.position[1] + eh / 2 - (e.off?.y || 0);
     ctx.translate(cx, cy);
     if (p.angle) ctx.rotate((p.angle * Math.PI) / 180);
     ctx.globalAlpha = Math.max(0, Math.min(1, num(p.alpha, 1)));
@@ -20476,7 +20993,26 @@ class StageScene {
         c.zIndex = Number(v);
       },
       exists: true,
-      alive: true,
+      get alive() {
+        return c.alive !== false;
+      },
+      set alive(v) {
+        c.alive = !!v;
+      },
+      kill() {
+        c.alive = false;
+        c.visible = false;
+      },
+      revive() {
+        c.alive = true;
+        c.visible = true;
+      },
+      /** BaseCharacter.resetCharacter(resetCamera): アニメ・タイマーを初期状態へ（位置はそのまま） */
+      resetCharacter() {
+        c.canPlayOther = true;
+        c.holdTimer = 0;
+        c.dance?.(true);
+      },
       animation: {
         // FlxAnimationController.play(name, force, reversed, frame): 制限なしで直接再生
         play: (name, force = false, reversed = false) => void c.actor?.play(c.correct(String(name)) ?? String(name), !!force, !!reversed),
@@ -20484,7 +21020,7 @@ class StageScene {
           return c.actor?.name ?? "";
         },
         get curAnim() {
-          return { name: c.actor?.name ?? "", finished: c.actor?.finished ?? true };
+          return { name: c.actor?.name ?? "", finished: c.actor?.finished ?? true, curFrame: 0 }; // curFrame の書き込みは無視（フレーム指定は未対応）
         },
         get finished() {
           return c.actor?.finished ?? true;
@@ -20506,6 +21042,10 @@ class StageScene {
       set canPlayOtherAnims(v) { c.canPlayOther = !!v; },
       get ignoreExclusionPref() { return c.ignoreExclusion; },
       set ignoreExclusionPref(v) { c.ignoreExclusion = Array.isArray(v) ? v : []; },
+      get shader() { return c.shader ?? null; },
+      set shader(v) { c.shader = v || null; },
+      get useRenderTexture() { return true; },
+      set useRenderTexture(v) {},
       get danceEvery() { return c.danceEvery; },
       set danceEvery(v) { c.json = { ...(c.json ?? {}), danceEvery: Number(v) }; },
       get singTimeSteps() { return c.singTime; },
@@ -20539,14 +21079,17 @@ class StageScene {
     const scene = this;
     return {
       stageId: this.stageId,
+      // Stage.characters（id → キャラ）。スクリプトが remove(id) などを呼んでもよいように、空の入れ物
+      characters: { remove() {}, set() {}, get: () => null, exists: () => false, keys: () => [] },
+      addCharacter: (c) => (c?.__char ? scene.addExtra(c.__char) : null),
       stageName: this.doc?.name ?? "",
       cameraZoom: this.zoomBase,
       getBoyfriend: () => scene.apiOf("player"),
       getDad: () => scene.apiOf("opponent"),
       getGirlfriend: () => scene.apiOf("girlfriend"),
-      add: (o) => (o?.__char ? scene.addExtra(o.__char) : null), // キャラ以外は Runtime.attachScene が PlayState 側へ振り分ける
-      remove: (o) => (o?.__char ? scene.removeExtra(o.__char) : null),
-      insert: (_i, o) => (o?.__char ? scene.addExtra(o.__char) : null),
+      add: (o) => (o?.__char ? scene.addExtra(o.__char) : o?.__tiled ? scene.addTiled(o) : null), // キャラ以外は Runtime.attachScene が PlayState 側へ振り分ける
+      remove: (o) => (o?.__char ? scene.removeExtra(o.__char) : o?.__tiled ? scene.removeTiled(o) : null),
+      insert: (_i, o) => (o?.__char ? scene.addExtra(o.__char) : o?.__tiled ? scene.addTiled(o) : null),
       refresh: () => {}, // 描画のたびに zIndex で並べ直すので何もしなくてよい
       getNamedProp: (name) => scene.propApi(String(name)),
       getProp: (name) => scene.props.find((p) => p.ref.name === name)?.ref ?? null,
@@ -20574,7 +21117,7 @@ const { Runtime, easeByName } = __m54;
 const { ScrollVelocityTimeline, VisualClock } = __m55;
 const { openModZip } = __m13;
 const { drawNoteSprite } = __m56;
-const { has: hasRemote, reset: resetRemote, refreshIndex: refreshRemoteIndex, stageScripts, noteKindScripts, fragKey } = __m14;
+const { has: hasRemote, reset: resetRemote, refreshIndex: refreshRemoteIndex, stageScripts, noteKindScripts, ensureAtlas, fragsFor, fragKey } = __m14;
 const { StageScene } = __m57;
 const PIXELS_PER_MS = 0.45;
 const WIN = { sick: 45, good: 90, bad: 135, shit: 160 };
@@ -20665,14 +21208,77 @@ function createPlayTest(root, d) {
     } catch (e) {
       $("chtPlaySkinInfo").textContent = `標準ノートスタイルを取得できませんでした: ${e.message}`;
     }
+    await loadModSkins();
     fillSkins();
-    if (opts.skin === "funkin") optEls.skin.value = "funkin";
+    // 譜面（metadata）の noteStyle が選べるなら、その譜面を初めて開いたときに選んでおく
+    const cs = d.getNoteStyleId?.();
+    if (cs && cs !== lastChartSkin && d.noteStyles.get(cs)) {
+      opts.skin = cs;
+      lastChartSkin = cs;
+    }
+    if ([...optEls.skin.options].some((o) => o.value === opts.skin)) optEls.skin.value = opts.skin;
+  }
+  let lastChartSkin = null;
+  let modSkinSig = "";
+  const modSkinIds = new Set(); // mod から読んだノートスタイルの id（選択肢に「（mod）」と出す）
+  /**
+   * 読み込んだ mod の noteStyle（0.8: data/notestyles/*.json / 0.9: gameplay/notestyles/<id>/<id>.json）を、選べるスキンとして登録する。
+   * 画像・XML は JSON の assetPath から Workspace を引いて探す（mod の中の置き場所はどちらの配置でもよい）。
+   * mod のスキンが funkin など本体のスキンの画像を指していれば、そのスキンも本体から取る
+   */
+  async function loadModSkins() {
+    const ws = d.getWorkspace?.();
+    if (!ws) return;
+    const jsons = ws.files.filter((f) => !f.remote && /\.json$/i.test(f.name) && /(^|\/)notestyles\//i.test(f.webkitRelativePath || ""));
+    const sig = jsons.map((f) => f.webkitRelativePath + f.size).join("|") + "#" + ws.files.length;
+    const refs = new Set();
+    const texts = [];
+    for (const f of jsons) texts.push([f, await f.text().catch(() => "")]);
+    if (sig !== modSkinSig) {
+      const entries = [],
+        seen = new Set();
+      const add = (f) => f && !seen.has(f) && (seen.add(f), entries.push({ name: f.webkitRelativePath, file: f }));
+      for (const [f, t] of texts) {
+        let j;
+        try {
+          j = JSON.parse(t.replace(/^\uFEFF/, ""));
+        } catch {
+          continue;
+        }
+        if (!j?.assets || typeof j.assets !== "object") continue;
+        add(f);
+        const paths = new Set();
+        const walk = (o) => {
+          if (!o || typeof o !== "object") return;
+          if (typeof o.assetPath === "string" && o.assetPath.trim()) paths.add(o.assetPath);
+          for (const v of Object.values(o)) walk(v);
+        };
+        walk(j.assets);
+        for (const p of paths) {
+          const a = ws.atlasFor?.(p);
+          if (a?.png) {
+            add(a.png);
+            add(a.def);
+          } else add(ws.resolve("image", p, { quiet: true })); // XML の無い単体の画像（note-holds.png など）
+        }
+      }
+      modSkinSig = sig;
+      if (entries.length) {
+        const r = await d.noteStyles.addFiles(entries);
+        for (const id of r.added) modSkinIds.add(id);
+        if (r.added.length) $("chtPlaySkinInfo").textContent = `mod のノートスタイル: ${r.added.join(", ")}` + (r.warnings.length ? "\n" + r.warnings.join("\n") : "");
+      }
+    }
+    // 本体のスキンの画像（funkin など）を指しているものがあれば、そのスキンを本体から取る
+    for (const [f, t] of texts) for (const m of t.matchAll(/notestyles\/([\w-]+)\//g)) refs.add(m[1]);
+    for (const id of refs) if (!d.noteStyles.raw.has(id)) await d.noteStyles.loadBuiltin(id).catch(() => false);
   }
   function fillSkins() {
     const sel = optEls.skin;
     sel.textContent = "";
     sel.append(new Option("矢印（スキンなし）", ARROW));
-    for (const id of d.noteStyles.ids()) sel.append(new Option(id, id));
+    const chartSkin = d.getNoteStyleId?.();
+    for (const id of d.noteStyles.ids()) sel.append(new Option(`${id}${modSkinIds.has(id) ? "（mod）" : "（本体）"}${id === chartSkin ? " ★譜面の指定" : ""}`, id));
     if (opts.skin !== "funkin" && ![...sel.options].some((o) => o.value === opts.skin)) opts.skin = d.noteStyles.get("funkin") ? "funkin" : ARROW;
   }
   function fillOpts() {
@@ -20695,6 +21301,12 @@ function createPlayTest(root, d) {
       if (c) opts.keys[i] = c;
       el.value = keyLabel(opts.keys[i]);
     });
+    // 遊んでいる最中にノートスキンを切り替えても、すぐ反映する
+    if (rt) {
+      const st = skinStyle();
+      rt.ps.playerStrumline.noteStyle = st;
+      rt.ps.opponentStrumline.noteStyle = st;
+    }
     save();
   }
   for (const el of [...Object.values(optEls), ...keyEls]) el.addEventListener("change", readOpts);
@@ -20863,6 +21475,16 @@ function createPlayTest(root, d) {
       const used = [...new Set(notes.map((n) => n.k).filter(Boolean))];
       const have = used.filter((k) => modTexts.some((t) => new RegExp(`super\\(\\s*['"]${String(k).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}['"]`).test(t)));
       const kindScripts = await noteKindScripts(used, have);
+      // スクリプトが Paths.image('…') で名指ししている画像（FunkinTiledSprite など）も、mod に無ければ本体から足す
+      if (ws) {
+        const all = [...(stageRemote?.scripts ?? []).map((x) => x.text), ...kindScripts.map((x) => x.text), ...modTexts];
+        const imgs = new Set();
+        for (const t of all) for (const m of t.matchAll(/Paths\.image\(\s*['"]([^'"]+)['"]/g)) imgs.add(m[1]);
+        for (const im of imgs) await ensureAtlas(ws, im).catch(() => 0);
+      }
+      // mod のスクリプトが使う .frag（adjust-color など）も、mod に無ければ本体から取る
+      const modFragNeeds = await fragsFor(modTexts);
+      for (const [k, t] of Object.entries(modFragNeeds)) if (!(k in modFrags)) modFrags[k] = t;
       if (kindScripts.length) stageRemote = { scripts: [...(stageRemote?.scripts ?? []), ...kindScripts], frags: stageRemote?.frags ?? {} };
     } catch (e) {
       scene?.warn(`本体のステージスクリプトを取得できませんでした: ${e.message}`);
@@ -21487,7 +22109,7 @@ const { exportMod } = __m17;
 const { detectLayout, songDirOf, songAudioDirOf } = __m13;
 const { isTextEntry } = __m35;
 const { HudPanels } = __m36;
-const { FnfShell } = __m41;
+const { FnfShell } = __m37;
 const { DEFAULT_VARIATION, SNAP_QUANTS, BASE_QUANT_INDEX, STRUMLINE_SIZE, STEPS_PER_BEAT, DIR_NAMES, EVENT_SCHEMAS, eventKinds, isCustomEvent, registerEventSchema, unregisterEventSchema, eventTitle, defaultEventValue, defaultMetadata, defaultChart, normalizeMetadata, normalizeChart, serializeMetadata, serializeChart, Timing, clone, round3 } = __m48;
 const { AudioEngine, PEAK_MS } = __m49;
 const { readZip, writeZip } = __m12;
@@ -23315,6 +23937,7 @@ const HEAD_Y = 84; // 見出しの高さ（上の Hud バーの下）
     getScripts: () => ({ ...Object.fromEntries(Object.entries(scripts).map(([k, v]) => [k, v.text])), ...modStageScripts() }),
     getStage: () => meta()?.playData?.stage ?? "",
     getSongId: () => songId,
+    getNoteStyleId: () => meta()?.playData?.noteStyle ?? "",
     getWorkspace: () => state.app.workspace,
     getCharacters: () => {
       const c = meta()?.playData?.characters ?? {};
@@ -23426,22 +24049,11 @@ const template = `
       <div class="hudLayer" data-all-hidden="false">
         <button id="nteHudEye" class="hudEye" type="button" data-hud-all title="Hud の表示 / 非表示 (H)" aria-label="Hud の表示 / 非表示">👁</button>
 
-        <div class="hudBar" data-hud-panel="bar" data-hud-always>
+        <div class="fnfLegacyBar" data-hud-panel="bar" data-hud-always hidden>
           <button type="button" data-hud-toggle="files" data-ja="📁 ファイル" data-en="📁 Files">📁 ファイル</button>
           <button type="button" data-hud-toggle="group" data-ja="🎯 グループ" data-en="🎯 Group">🎯 グループ</button>
           <button type="button" data-hud-toggle="entry" data-ja="🎞 アニメ" data-en="🎞 Anim">🎞 アニメ</button>
           <button type="button" data-hud-toggle="scroll" data-ja="🎯 判定・スクロール" data-en="🎯 Hit / Scroll">🎯 判定・スクロール</button>
-          <span class="hudSep"></span>
-          <button id="nteZoomOut" type="button" title="ズームアウト">−</button>
-          <input id="nteZoom" type="number" min=".05" max="16" step=".05" value="1" title="ズーム（ホイールでも可）" />
-          <button id="nteZoomIn" type="button" title="ズームイン">＋</button>
-          <button id="nteFit" type="button" title="全体を画面に収める (F)">⊡ 全体</button>
-          <button id="nteResetView" type="button" title="ズーム100%">⌖ 原点</button>
-          <button id="ntePanTool" type="button" title="左ドラッグでビューを動かす（Space長押し / 中・右ドラッグでも可）">✋ 移動</button>
-          <label class="hudCheck" title="アニメーションを再生する"><input id="ntePlay" type="checkbox" checked /><span>▶ 再生</span></label>
-          <label class="hudCheck" title="ノーツの大きさの目安（レーンの枠）"><input id="nteGuide" type="checkbox" checked /><span>枠</span></label>
-          <span class="hudSep"></span>
-          <span id="nteReadout" class="hudReadout"></span>
         </div>
 
         <div class="hudDock hudDockLeft">
@@ -23532,7 +24144,21 @@ const template = `
           </aside>
         </div>
 
-        <div class="hudTransport" data-hud-panel="transport"><div id="nteStatus" class="tiny">noteStyle を開くか、「新規」で作り始めてください。</div></div>
+        <div class="hudTransport fnfPlaybar fnfStatusbar" data-hud-panel="transport">
+          <div class="fnfPlayRow">
+            <div class="fnfPlayL"><span id="nteReadout" class="fnfStat"></span><span id="nteStatus" class="tiny">noteStyle を開くか、「新規」で作り始めてください。</span></div>
+            <div class="fnfPlayR">
+              <button id="nteZoomOut" type="button" title="ズームアウト">−</button>
+              <input id="nteZoom" type="number" min=".05" max="16" step=".05" value="1" title="ズーム（ホイールでも可）" />
+              <button id="nteZoomIn" type="button" title="ズームイン">＋</button>
+              <button id="nteFit" type="button" title="全体を画面に収める (F)">⊡ 全体</button>
+              <button id="nteResetView" type="button" title="ズーム100%">⌖ 原点</button>
+              <button id="ntePanTool" type="button" title="左ドラッグでビューを動かす（Space長押し / 中・右ドラッグでも可）">✋ 移動</button>
+              <label class="hudCheck" title="アニメーションを再生する"><input id="ntePlay" type="checkbox" checked /><span>▶ 再生</span></label>
+              <label class="hudCheck" title="ノーツの大きさの目安（レーンの枠）"><input id="nteGuide" type="checkbox" checked /><span>枠</span></label>
+            </div>
+          </div>
+        </div>
         <div id="nteToast" class="hudToast" hidden></div>
       </div>
     </section>
@@ -23554,9 +24180,10 @@ const __m62 = (() => {
    ============================================================ */
 const { Viewport } = __m35;
 const { HudPanels } = __m36;
+const { FnfShell } = __m37;
 const { mountModPicker } = __m24;
 const { NoteStyleSet, NoteStyle, framesByPrefix } = __m56;
-const { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } = __m37;
+const { loadImage, parseSparrowXml, sparrowFrames, paintSparrow } = __m38;
 const { infoOf } = __m13;
 const { exportMod } = __m17;
 const { registryPath } = __m13;
@@ -23636,7 +24263,18 @@ function mountNoteEditor(state) {
       requestDraw();
     },
   });
-  new HudPanels(state.root, { storageKey: "note", defaults: ["files", "group"], narrowDefaults: ["group"], narrowExclusive: ["files", "group", "entry"] });
+  const panels = new HudPanels(state.root, { storageKey: "note", defaults: ["files", "group", "transport"], narrowDefaults: ["transport"], narrowExclusive: ["files", "group", "entry"] });
+  // FNF 本体のエディタ風: 上にメニューバー、パネルは浮動ツールボックス、下にバー
+  new FnfShell(state.root, panels, {
+    key: "note",
+    titles: { files: "File / ファイル", group: "Group（グループ）", entry: "Animations（アニメ）", scroll: "Hit / Scroll（判定・スクロール）" },
+    menus: [
+      { text: "File", items: [{ text: "新規 noteStyle", click: "#nteNew" }, { text: "noteStyle を開く…", toggle: "files" }, "-", { text: "mod zip に書き出す", click: "#nteSave" }] },
+      { text: "Edit", items: [{ text: "オフセットを 0, 0 に", click: "#nteOffZero" }] },
+      { text: "View", items: [{ text: "ズームイン", click: "#nteZoomIn" }, { text: "ズームアウト", click: "#nteZoomOut" }, { text: "全体を表示", key: "F", click: "#nteFit" }, { text: "原点へ", click: "#nteResetView" }, "-", { text: "移動ツール", click: "#ntePanTool", check: () => document.getElementById("ntePanTool").getAttribute("aria-pressed") === "true" }, { text: "アニメを再生", run: () => document.getElementById("ntePlay").click(), check: () => document.getElementById("ntePlay").checked }, { text: "ノーツの枠", run: () => document.getElementById("nteGuide").click(), check: () => document.getElementById("nteGuide").checked }] },
+      { text: "Windows", items: [{ text: "Group", toggle: "group" }, { text: "Animations", toggle: "entry" }, { text: "Hit / Scroll", toggle: "scroll" }, { text: "File", toggle: "files" }] },
+    ],
+  });
   $("nteZoom").oninput = () => vp.setZoom(Number($("nteZoom").value));
   $("nteZoomIn").onclick = () => vp.setZoom(vp.zoom * 1.25);
   $("nteZoomOut").onclick = () => vp.setZoom(vp.zoom / 1.25);
@@ -24483,6 +25121,17 @@ function mountNoteEditor(state) {
   loadedOnce = true;
   loadAssets(); // 新規の既定は fallback の funkin（内蔵）を使うので、最初から絵を出す
   fit();
+  // 画面が隠れている間に fit しても枠の大きさが 0 なので、初めて表示されて大きさが付いたときにもう一度だけ合わせる
+  {
+    const ro = new ResizeObserver(() => {
+      if (canvas.clientWidth > 50 && canvas.clientHeight > 50) {
+        ro.disconnect();
+        fit();
+      }
+    });
+    ro.observe(canvas);
+    state.addDisposer(() => ro.disconnect());
+  }
   return {
     onShow() {
       resize();
@@ -24570,7 +25219,7 @@ const { OtherMenuState } = __m21;
 const { ContributorsState } = __m23;
 const { AnimateEditorState } = __m30;
 const { SparrowEditorState } = __m33;
-const { CharacterEditorState } = __m39;
+const { CharacterEditorState } = __m40;
 const { StageEditorState } = __m46;
 const { ChartEditorState } = __m60;
 const { NoteEditorState } = __m63;
