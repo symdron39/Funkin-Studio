@@ -66,7 +66,11 @@ export class GLPost {
     this.progs.set(pk, prog);
     return prog;
   }
-  /** src(2D キャンバス)にシェーダーを掛けた結果の canvas を返す。失敗時は null（呼び出し側は素通し） */
+  /**
+   * src(2D キャンバス)にシェーダーを掛けた結果の canvas を返す。失敗時は null（呼び出し側は素通し）。
+   * 結果は GL キャンバスの「左下から src と同じ大きさ」の領域に入る（キャンバス自体は大きくなる一方で作り直さない = 毎回のバッファ再確保を避ける）。
+   * 読むときは必ず blit()（領域を切り出して描く）を使うこと。
+   */
   apply(src, shader) {
     const gl = this.gl;
     if (!gl) return null;
@@ -79,37 +83,114 @@ export class GLPost {
       }
       return null;
     }
-    if (this.canvas.width !== src.width || this.canvas.height !== src.height) {
-      this.canvas.width = src.width;
-      this.canvas.height = src.height;
+    const w = src.width,
+      h = src.height;
+    if (this.canvas.width < w || this.canvas.height < h) {
+      this.canvas.width = Math.max(this.canvas.width, w);
+      this.canvas.height = Math.max(this.canvas.height, h);
     }
-    gl.viewport(0, 0, src.width, src.height);
+    const ch = this.canvas.height;
+    this.sub = { x: 0, y: ch - h, w, h };
+    gl.viewport(0, 0, w, h);
+    gl.disable(gl.SCISSOR_TEST);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.useProgram(prog);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.tex);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, !shader.topLeft);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
-    gl.uniform1i(gl.getUniformLocation(prog, "tex"), 0);
-    const ts = gl.getUniformLocation(prog, "openfl_TextureSize");
-    if (ts) gl.uniform2f(ts, src.width, src.height);
-    for (const [k, v] of Object.entries(shader.uniforms ?? {})) {
-      const loc = gl.getUniformLocation(prog, k);
-      if (!loc) continue;
-      const isInt = shader.types?.[k] === "i";
-      if (Array.isArray(v)) {
-        if (isInt) [null, gl.uniform1iv, gl.uniform2iv, gl.uniform3iv, gl.uniform4iv][v.length]?.call(gl, loc, v);
-        else if (v.length === 9) gl.uniformMatrix3fv(loc, false, v);
-        else if (v.length === 16) gl.uniformMatrix4fv(loc, false, v);
-        else [null, gl.uniform1fv, gl.uniform2fv, gl.uniform3fv, gl.uniform4fv][v.length]?.call(gl, loc, v);
-      } else if (isInt) gl.uniform1i(loc, Number(v) | 0);
-      else gl.uniform1f(loc, Number(v) || 0);
+    if (this.cur !== prog) {
+      gl.useProgram(prog);
+      this.cur = prog;
+      if (!prog.locs) prog.locs = new Map();
+      if (!prog.last) prog.last = new Map();
     }
+    if (!this.attrib) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+      this.attrib = true;
+    }
+    const loc = (n) => {
+      let l = prog.locs.get(n);
+      if (l === undefined) prog.locs.set(n, (l = gl.getUniformLocation(prog, n)));
+      return l;
+    };
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    const flip = !shader.topLeft;
+    if (this.flip !== flip) {
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flip);
+      this.flip = flip;
+    }
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+    // 変わっていない uniform は送り直さない（texture のサンプラー番号は最初の 1 回だけ）
+    const last = prog.last;
+    const setOnce = (k, v, fn) => {
+      const key = Array.isArray(v) ? v.join(",") : v;
+      if (last.get(k) === key) return;
+      last.set(k, key);
+      fn();
+    };
+    const lt = loc("tex");
+    if (lt) setOnce("tex", 0, () => gl.uniform1i(lt, 0));
+    const ts = loc("openfl_TextureSize");
+    if (ts) setOnce("openfl_TextureSize", `${w},${h}`, () => gl.uniform2f(ts, w, h));
+    const u = shader.uniforms;
+    if (u)
+      for (const k in u) {
+        const l = loc(k);
+        if (!l) continue;
+        const v = u[k];
+        const isInt = shader.types?.[k] === "i";
+        setOnce(k, v, () => {
+          if (Array.isArray(v)) {
+            if (isInt) [null, gl.uniform1iv, gl.uniform2iv, gl.uniform3iv, gl.uniform4iv][v.length]?.call(gl, l, v);
+            else if (v.length === 9) gl.uniformMatrix3fv(l, false, v);
+            else if (v.length === 16) gl.uniformMatrix4fv(l, false, v);
+            else [null, gl.uniform1fv, gl.uniform2fv, gl.uniform3fv, gl.uniform4fv][v.length]?.call(gl, l, v);
+          } else if (isInt) gl.uniform1i(l, Number(v) | 0);
+          else gl.uniform1f(l, Number(v) || 0);
+        });
+      }
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     return this.canvas;
   }
+  /** apply() の結果（左下の領域）を ctx に描く。(dx, dy, dw, dh) は描き先。res が GL の出力でなければ普通の drawImage */
+  blit(res, ctx, dx, dy, dw, dh) {
+    if (res === this.canvas && this.sub) {
+      const s = this.sub;
+      ctx.drawImage(res, s.x, s.y, s.w, s.h, dx, dy, dw ?? s.w, dh ?? s.h);
+    } else ctx.drawImage(res, dx, dy, dw ?? res.width, dh ?? res.height);
+  }
 }
+
+/**
+ * 描画の品質の自動調整（シェーダーまわり）。フレームの間隔が長引いたらシェーダーに掛ける絵を縮小し、余裕があれば戻す。
+ *   mode: "auto" | 1 | 0.75 | 0.5 | 0.35（固定）。scale が実際に使う倍率。
+ */
+export const Quality = {
+  mode: "auto",
+  scale: 1,
+  _last: 0,
+  _slow: 0,
+  _fast: 0,
+  /** フレームごとに 1 回呼ぶ（draw の先頭）。dt が極端に長い（タブ復帰・一時停止）ものは無視する */
+  tick(now = performance.now()) {
+    const dt = now - this._last;
+    this._last = now;
+    if (this.mode !== "auto") {
+      this.scale = Number(this.mode) || 1;
+      return;
+    }
+    if (dt > 250 || dt <= 0) return;
+    if (dt > 26) {
+      this._fast = 0;
+      if (++this._slow >= 12) {
+        this._slow = 0;
+        this.scale = Math.max(0.35, this.scale * 0.8);
+      }
+    } else if (dt < 19) {
+      this._slow = 0;
+      if (++this._fast >= 150) {
+        this._fast = 0;
+        this.scale = Math.min(1, this.scale * 1.15);
+      }
+    }
+  },
+};

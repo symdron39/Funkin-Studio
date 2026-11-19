@@ -353,3 +353,13 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 - **シェーダー**: `HSVShader / Grayscale / GaussianBlurShader / InverseDotsShader / MosaicEffect` を実ソースと同じ対応で追加（`makeNativeShader`）。`glslFrom` に GLSL ES 互換の直し（int / float 混在）と、RuntimePostEffectShader 向けの自動宣言を追加。本体の `ui/shaders/*.frag` 18 本すべてが WebGL でコンパイルできることを確認。
 - **描画の安全策**: シェーダーつきキャラの大きさが決まらないとき（画像が届く前）はシェーダーなしで描く。
 - 既知の残り: キャラのスクリプト（darnell.hxc の `onNoteHit` で lightCan など）、`Paths.sound` を `queryAssets` で名指しするキャラの効果音、`phillyBlazin` の 3 件。
+
+## v3.30 — シェーダー描画の軽量化（ラグ修正）
+
+- **原因**: シェーダーつきの描画は「2D キャンバス → GL テクスチャ転送」と「GL → 2D の読み戻し」が重く、キャラは毎フレーム描き直し・転送・読み戻しをしていた。カメラフィルターは GL キャンバス全体を描いており（キャンバスは大きくなる一方）、領域外まで読んでいた。
+- **キャラのシェーダー結果を使い回し**（`StageScene.drawCharShaded`）: フレーム・向き・不透明度・位置・uniform・大きさが前回と同じなら前回の出力を描くだけ。毎フレーム変わる場合は 3 回続けて外れた時点で使い回しをやめ、コピーも作らない。
+- **読み戻しは必ず `GLPost.blit()`**（apply() の結果の領域だけを切り出す）。prop / キャラ / カメラフィルターの全経路で統一。
+- **自動解像度（`Quality`）を接続**: `Runtime.render()` の先頭で `Quality.tick()`。フレーム間隔が長引くとカメラフィルター用レイヤーとキャラのバッファを縮小（最小 0.35）、余裕があれば戻す。キャラのバッファ上限も 2048→1024px。
+- 計測（ヘッドレス Chromium = ソフトウェア GL、相対比較）: 3.4Mpx→1.0Mpx/フレーム、約 4〜5fps → 約 8fps。実機の GPU ではさらに差が出る見込み。
+- 既知の残り: カメラフィルター（rain など）は毎フレーム変わるため転送は避けられない。品質を固定する UI は未実装（`Quality.mode` で指定可能）。
+- **FPS カウンター / シェーダー画質**（`playtest.js` の `drawFps`）: プレイテストのオプションに「FPS を表示」と「シェーダー画質（自動 / 100・75・50・35%）」。右上に FPS・平均フレーム時間・1%low・現在の画質を出す（直近 120 フレーム、250ms ごとに更新）。画質は `Quality.mode` に反映。

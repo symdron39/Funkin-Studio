@@ -11,7 +11,7 @@
    ============================================================ */
 import { findSound } from "../services/FunkinAssets.js";
 import { HScript, HMap, makeStub } from "./hscript.js";
-import { GLPost, GLSL_GRAYSCALE } from "./glpost.js";
+import { GLPost, GLSL_GRAYSCALE, Quality } from "./glpost.js";
 import { FlxRuntimeShader, shaderInit, shaderMethods, makeAdjustColorShader, makeRainShader, makeNativeShader, NATIVE_SHADERS, makeMosaicEffect } from "./shader.js";
 import { loadImage, parseSparrowXml } from "../states/stage/sparrowAtlas.js";
 
@@ -1598,6 +1598,7 @@ export class Runtime {
     const k = Math.min(W / GAME_W, H / GAME_H),
       ox = (W - GAME_W * k) / 2,
       oy = (H - GAME_H * k) / 2;
+    Quality.tick(); // フレーム間隔が長引いたらシェーダー用の絵を縮小（自動）
     for (const cam of [this.cams.camGame, this.cams.camHUD, this.cams.camCutscene]) {
       const shaders = cam.filters.map((f) => f.shader).filter((s) => s && (s.active ? s.active() : true));
       let ctx = mainCtx;
@@ -1606,7 +1607,7 @@ export class Runtime {
         ctx = L.getContext("2d");
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.clearRect(0, 0, L.width, L.height);
-        const q = Math.min(1, LAYER_MAX_W / Math.max(1, W * dpr)); // 高解像度の画面ではフィルター用の絵を縮小（GPU への転送量を減らす）
+        const q = Math.min(1, LAYER_MAX_W / Math.max(1, W * dpr)) * Quality.scale; // 高解像度の画面ではフィルター用の絵を縮小（GPU への転送量を減らす）
         ctx.setTransform(dpr * q, 0, 0, dpr * q, 0, 0);
       }
       const shk = cam.shakeOffset(W, H);
@@ -1658,13 +1659,14 @@ export class Runtime {
         mainCtx.save();
         mainCtx.setTransform(1, 0, 0, 1, 0, 0);
         mainCtx.globalAlpha = cam.alpha;
-        mainCtx.drawImage(src, 0, 0, Math.round(W * dpr), Math.round(H * dpr));
+        if (src === this.gl?.canvas) this.gl.blit(src, mainCtx, 0, 0, Math.round(W * dpr), Math.round(H * dpr));
+        else mainCtx.drawImage(src, 0, 0, Math.round(W * dpr), Math.round(H * dpr));
         mainCtx.restore();
       }
     }
   }
   layerFor(cam, W, H, dpr) {
-    const q = Math.min(1, LAYER_MAX_W / Math.max(1, W * dpr));
+    const q = Math.min(1, LAYER_MAX_W / Math.max(1, W * dpr)) * Quality.scale;
     const w = Math.max(1, Math.round(W * dpr * q)),
       h = Math.max(1, Math.round(H * dpr * q));
     if (!cam.layer) cam.layer = document.createElement("canvas");

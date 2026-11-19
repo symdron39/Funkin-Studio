@@ -14750,6 +14750,12 @@ const template = `
             <div class="row">
               <label><input id="chtPlayDown" type="checkbox" /> ダウンスクロール</label>
               <label><input id="chtPlayOpp" type="checkbox" /> 相手ノーツを表示</label>
+              <label><input id="chtPlayFps" type="checkbox" /> FPS を表示</label>
+              <label>シェーダー画質
+                <select id="chtPlayQuality">
+                  <option value="auto">自動</option><option value="1">100%</option><option value="0.75">75%</option><option value="0.5">50%</option><option value="0.35">35%</option>
+                </select>
+              </label>
               <label><input id="chtPlayBot" type="checkbox" /> ボット</label>
               <label><input id="chtPlayHit" type="checkbox" /> ヒット音</label>
             </div>
@@ -17260,7 +17266,11 @@ class GLPost {
     this.progs.set(pk, prog);
     return prog;
   }
-  /** src(2D キャンバス)にシェーダーを掛けた結果の canvas を返す。失敗時は null（呼び出し側は素通し） */
+  /**
+   * src(2D キャンバス)にシェーダーを掛けた結果の canvas を返す。失敗時は null（呼び出し側は素通し）。
+   * 結果は GL キャンバスの「左下から src と同じ大きさ」の領域に入る（キャンバス自体は大きくなる一方で作り直さない = 毎回のバッファ再確保を避ける）。
+   * 読むときは必ず blit()（領域を切り出して描く）を使うこと。
+   */
   apply(src, shader) {
     const gl = this.gl;
     if (!gl) return null;
@@ -17273,42 +17283,119 @@ class GLPost {
       }
       return null;
     }
-    if (this.canvas.width !== src.width || this.canvas.height !== src.height) {
-      this.canvas.width = src.width;
-      this.canvas.height = src.height;
+    const w = src.width,
+      h = src.height;
+    if (this.canvas.width < w || this.canvas.height < h) {
+      this.canvas.width = Math.max(this.canvas.width, w);
+      this.canvas.height = Math.max(this.canvas.height, h);
     }
-    gl.viewport(0, 0, src.width, src.height);
+    const ch = this.canvas.height;
+    this.sub = { x: 0, y: ch - h, w, h };
+    gl.viewport(0, 0, w, h);
+    gl.disable(gl.SCISSOR_TEST);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.useProgram(prog);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.tex);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, !shader.topLeft);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
-    gl.uniform1i(gl.getUniformLocation(prog, "tex"), 0);
-    const ts = gl.getUniformLocation(prog, "openfl_TextureSize");
-    if (ts) gl.uniform2f(ts, src.width, src.height);
-    for (const [k, v] of Object.entries(shader.uniforms ?? {})) {
-      const loc = gl.getUniformLocation(prog, k);
-      if (!loc) continue;
-      const isInt = shader.types?.[k] === "i";
-      if (Array.isArray(v)) {
-        if (isInt) [null, gl.uniform1iv, gl.uniform2iv, gl.uniform3iv, gl.uniform4iv][v.length]?.call(gl, loc, v);
-        else if (v.length === 9) gl.uniformMatrix3fv(loc, false, v);
-        else if (v.length === 16) gl.uniformMatrix4fv(loc, false, v);
-        else [null, gl.uniform1fv, gl.uniform2fv, gl.uniform3fv, gl.uniform4fv][v.length]?.call(gl, loc, v);
-      } else if (isInt) gl.uniform1i(loc, Number(v) | 0);
-      else gl.uniform1f(loc, Number(v) || 0);
+    if (this.cur !== prog) {
+      gl.useProgram(prog);
+      this.cur = prog;
+      if (!prog.locs) prog.locs = new Map();
+      if (!prog.last) prog.last = new Map();
     }
+    if (!this.attrib) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+      this.attrib = true;
+    }
+    const loc = (n) => {
+      let l = prog.locs.get(n);
+      if (l === undefined) prog.locs.set(n, (l = gl.getUniformLocation(prog, n)));
+      return l;
+    };
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    const flip = !shader.topLeft;
+    if (this.flip !== flip) {
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flip);
+      this.flip = flip;
+    }
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+    // 変わっていない uniform は送り直さない（texture のサンプラー番号は最初の 1 回だけ）
+    const last = prog.last;
+    const setOnce = (k, v, fn) => {
+      const key = Array.isArray(v) ? v.join(",") : v;
+      if (last.get(k) === key) return;
+      last.set(k, key);
+      fn();
+    };
+    const lt = loc("tex");
+    if (lt) setOnce("tex", 0, () => gl.uniform1i(lt, 0));
+    const ts = loc("openfl_TextureSize");
+    if (ts) setOnce("openfl_TextureSize", `${w},${h}`, () => gl.uniform2f(ts, w, h));
+    const u = shader.uniforms;
+    if (u)
+      for (const k in u) {
+        const l = loc(k);
+        if (!l) continue;
+        const v = u[k];
+        const isInt = shader.types?.[k] === "i";
+        setOnce(k, v, () => {
+          if (Array.isArray(v)) {
+            if (isInt) [null, gl.uniform1iv, gl.uniform2iv, gl.uniform3iv, gl.uniform4iv][v.length]?.call(gl, l, v);
+            else if (v.length === 9) gl.uniformMatrix3fv(l, false, v);
+            else if (v.length === 16) gl.uniformMatrix4fv(l, false, v);
+            else [null, gl.uniform1fv, gl.uniform2fv, gl.uniform3fv, gl.uniform4fv][v.length]?.call(gl, l, v);
+          } else if (isInt) gl.uniform1i(l, Number(v) | 0);
+          else gl.uniform1f(l, Number(v) || 0);
+        });
+      }
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     return this.canvas;
   }
+  /** apply() の結果（左下の領域）を ctx に描く。(dx, dy, dw, dh) は描き先。res が GL の出力でなければ普通の drawImage */
+  blit(res, ctx, dx, dy, dw, dh) {
+    if (res === this.canvas && this.sub) {
+      const s = this.sub;
+      ctx.drawImage(res, s.x, s.y, s.w, s.h, dx, dy, dw ?? s.w, dh ?? s.h);
+    } else ctx.drawImage(res, dx, dy, dw ?? res.width, dh ?? res.height);
+  }
 }
 
-return { GLSL_GRAYSCALE, GLPost };
+/**
+ * 描画の品質の自動調整（シェーダーまわり）。フレームの間隔が長引いたらシェーダーに掛ける絵を縮小し、余裕があれば戻す。
+ *   mode: "auto" | 1 | 0.75 | 0.5 | 0.35（固定）。scale が実際に使う倍率。
+ */
+const Quality = {
+  mode: "auto",
+  scale: 1,
+  _last: 0,
+  _slow: 0,
+  _fast: 0,
+  /** フレームごとに 1 回呼ぶ（draw の先頭）。dt が極端に長い（タブ復帰・一時停止）ものは無視する */
+  tick(now = performance.now()) {
+    const dt = now - this._last;
+    this._last = now;
+    if (this.mode !== "auto") {
+      this.scale = Number(this.mode) || 1;
+      return;
+    }
+    if (dt > 250 || dt <= 0) return;
+    if (dt > 26) {
+      this._fast = 0;
+      if (++this._slow >= 12) {
+        this._slow = 0;
+        this.scale = Math.max(0.35, this.scale * 0.8);
+      }
+    } else if (dt < 19) {
+      this._slow = 0;
+      if (++this._fast >= 150) {
+        this._fast = 0;
+        this.scale = Math.min(1, this.scale * 1.15);
+      }
+    }
+  },
+};
+
+return { GLSL_GRAYSCALE, GLPost, Quality };
 })();
 
 /* ===== funkin-studio/js/runtime/shader.js ===== */
@@ -17610,7 +17697,7 @@ const __m54 = (() => {
    ============================================================ */
 const { findSound } = __m14;
 const { HScript, HMap, makeStub } = __m51;
-const { GLPost, GLSL_GRAYSCALE } = __m52;
+const { GLPost, GLSL_GRAYSCALE, Quality } = __m52;
 const { FlxRuntimeShader, shaderInit, shaderMethods, makeAdjustColorShader, makeRainShader, makeNativeShader, NATIVE_SHADERS, makeMosaicEffect } = __m53;
 const { loadImage, parseSparrowXml } = __m38;
 
@@ -19197,6 +19284,7 @@ class Runtime {
     const k = Math.min(W / GAME_W, H / GAME_H),
       ox = (W - GAME_W * k) / 2,
       oy = (H - GAME_H * k) / 2;
+    Quality.tick(); // フレーム間隔が長引いたらシェーダー用の絵を縮小（自動）
     for (const cam of [this.cams.camGame, this.cams.camHUD, this.cams.camCutscene]) {
       const shaders = cam.filters.map((f) => f.shader).filter((s) => s && (s.active ? s.active() : true));
       let ctx = mainCtx;
@@ -19205,7 +19293,7 @@ class Runtime {
         ctx = L.getContext("2d");
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.clearRect(0, 0, L.width, L.height);
-        const q = Math.min(1, LAYER_MAX_W / Math.max(1, W * dpr)); // 高解像度の画面ではフィルター用の絵を縮小（GPU への転送量を減らす）
+        const q = Math.min(1, LAYER_MAX_W / Math.max(1, W * dpr)) * Quality.scale; // 高解像度の画面ではフィルター用の絵を縮小（GPU への転送量を減らす）
         ctx.setTransform(dpr * q, 0, 0, dpr * q, 0, 0);
       }
       const shk = cam.shakeOffset(W, H);
@@ -19257,13 +19345,14 @@ class Runtime {
         mainCtx.save();
         mainCtx.setTransform(1, 0, 0, 1, 0, 0);
         mainCtx.globalAlpha = cam.alpha;
-        mainCtx.drawImage(src, 0, 0, Math.round(W * dpr), Math.round(H * dpr));
+        if (src === this.gl?.canvas) this.gl.blit(src, mainCtx, 0, 0, Math.round(W * dpr), Math.round(H * dpr));
+        else mainCtx.drawImage(src, 0, 0, Math.round(W * dpr), Math.round(H * dpr));
         mainCtx.restore();
       }
     }
   }
   layerFor(cam, W, H, dpr) {
-    const q = Math.min(1, LAYER_MAX_W / Math.max(1, W * dpr));
+    const q = Math.min(1, LAYER_MAX_W / Math.max(1, W * dpr)) * Quality.scale;
     const w = Math.max(1, Math.round(W * dpr * q)),
       h = Math.max(1, Math.round(H * dpr * q));
     if (!cam.layer) cam.layer = document.createElement("canvas");
@@ -19913,7 +20002,7 @@ const __m57 = (() => {
      ・カメラの追従の速さ（lerp 0.04 / 60fps 相当） ・4 拍ごとのズーム量(0.015)と戻り方 ・sing から idle へ戻る時刻
      ・FocusCamera の ease（CLASSIC 以外は簡易な補間）   ・反転したキャラのアニメオフセットの符号
    ============================================================ */
-const { GLPost } = __m52;
+const { GLPost, Quality } = __m52;
 const { findSpriteAtlas, findAnimateAtlas } = __m43;
 const { StageCharacter, atlasKindOf } = __m44;
 const { loadImage } = __m38;
@@ -20743,27 +20832,63 @@ class StageScene {
     if (!(pl.w > 0 && pl.h > 0 && Number.isFinite(pl.feetX + pl.feetY))) return c.draw(ctx, label);
     const W0 = Math.max(64, pl.w * 1.8),
       H0 = Math.max(64, pl.h * 1.7);
-    const q = Math.min(1, 2048 / Math.max(W0, H0));
+    const q = Math.min(1, 1024 / Math.max(W0, H0)) * Quality.scale;
     const W = Math.max(1, Math.ceil(W0 * q)),
       H = Math.max(1, Math.ceil(H0 * q));
     const ox = pl.feetX - W0 / 2,
       oy = pl.feetY - H0 * 0.92; // 足元から上に 92%・下に 8%
-    if (!c.shadeTmp) c.shadeTmp = document.createElement("canvas");
-    if (c.shadeTmp.width !== W || c.shadeTmp.height !== H) {
-      c.shadeTmp.width = W;
-      c.shadeTmp.height = H;
-    }
-    const c2 = c.shadeTmp.getContext("2d");
-    c2.setTransform(1, 0, 0, 1, 0, 0);
-    c2.clearRect(0, 0, W, H);
-    c2.setTransform(q, 0, 0, q, -ox * q, -oy * q);
-    c.draw(c2, label);
-    this.gl ??= new GLPost();
     const sh = c.shader;
-    sh.onError ??= (m) => this.warn(`シェーダー（キャラ ${c.role}）: ${m}`);
-    const res = this.gl.ok && (sh.active ? sh.active() : true) ? this.gl.apply(c.shadeTmp, sh) : null;
+    // 結果の使い回し: 絵（フレーム）・向き・不透明度・大きさ・uniform が前回と同じなら、前回のシェーダー出力をそのまま描く
+    // （待機中や同じコマの間は、描き直しも GPU への転送も読み戻しも要らない。毎フレーム変わるなら 3 回続けて外れた時点で使い回しをやめる）
+    const frame = pl.loaded ? c.actor.frame() || c.sc.view.frame : null;
+    const sig = `${W}|${H}|${pl.flip ? 1 : 0}|${pl.k}|${c.alpha}|${pl.feetX},${pl.feetY}|${JSON.stringify(sh.uniforms ?? null)}|${sh.glsl?.length}`;
+    const memo = (c.shadeMemo ??= { sig: "", frame: null, out: null, miss: 0 });
+    let out = null;
+    if (memo.out && memo.sig === sig && memo.frame === frame && frame !== null) {
+      out = memo.out;
+      memo.miss = 0;
+    } else {
+      if (!c.shadeTmp) c.shadeTmp = document.createElement("canvas");
+      if (c.shadeTmp.width !== W || c.shadeTmp.height !== H) {
+        c.shadeTmp.width = W;
+        c.shadeTmp.height = H;
+      }
+      const c2 = c.shadeTmp.getContext("2d");
+      c2.setTransform(1, 0, 0, 1, 0, 0);
+      c2.clearRect(0, 0, W, H);
+      c2.setTransform(q, 0, 0, q, -ox * q, -oy * q);
+      c.draw(c2, label);
+      this.gl ??= new GLPost();
+      sh.onError ??= (m) => this.warn(`シェーダー（キャラ ${c.role}）: ${m}`);
+      const res = this.gl.ok && (sh.active ? sh.active() : true) ? this.gl.apply(c.shadeTmp, sh) : null;
+      const same = memo.sig === sig && memo.frame === frame;
+      memo.sig = sig;
+      memo.frame = frame;
+      memo.miss = same ? 0 : memo.miss + 1;
+      memo.out = null;
+      if (res && frame !== null && memo.miss < 3) {
+        // GL の出力は次に上書きされるので、使い回す分はコピーを持つ
+        if (!memo.copy) memo.copy = document.createElement("canvas");
+        if (memo.copy.width !== W || memo.copy.height !== H) {
+          memo.copy.width = W;
+          memo.copy.height = H;
+        }
+        const cc = memo.copy.getContext("2d");
+        cc.clearRect(0, 0, W, H);
+        this.gl.blit(res, cc, 0, 0, W, H);
+        memo.out = memo.copy;
+        out = memo.copy;
+      } else if (res) {
+        try {
+          this.gl.blit(res, ctx, ox, oy, W0, H0);
+        } catch (e) {
+          this.warn(`キャラ ${c.role}(${c.id}) の描画に失敗: ${e.message}（${W}x${H}）`);
+        }
+        return;
+      } else out = c.shadeTmp;
+    }
     try {
-      ctx.drawImage(res || c.shadeTmp, ox, oy, W0, H0);
+      ctx.drawImage(out, ox, oy, W0, H0);
     } catch (e) {
       this.warn(`キャラ ${c.role}(${c.id}) の描画に失敗: ${e.message}（${W}x${H}）`);
     }
@@ -20819,7 +20944,7 @@ class StageScene {
         }
         const cc = memo.copy.getContext("2d");
         cc.clearRect(0, 0, w, h);
-        cc.drawImage(res, 0, 0, w, h);
+        this.gl.blit(res, cc, 0, 0, w, h);
         memo.out = memo.copy;
       } else memo.out = null;
     }
@@ -20828,7 +20953,8 @@ class StageScene {
     if (p.angle) ctx.rotate((p.angle * Math.PI) / 180);
     ctx.globalAlpha = Math.max(0, Math.min(1, num(p.alpha, 1)));
     ctx.globalCompositeOperation = blendToCanvas(p.blend);
-    ctx.drawImage(out, -w / 2, -h / 2, w, h);
+    if (this.gl && out === this.gl.canvas) this.gl.blit(out, ctx, -w / 2, -h / 2, w, h);
+    else ctx.drawImage(out, -w / 2, -h / 2, w, h);
   }
   /** ステージスクリプトの getNamedProp(name) が返す、prop の操作窓口（x / y / alpha / visible / angle / scale / shader / animation / playAnim） */
   propApi(name) {
@@ -21119,12 +21245,13 @@ const { openModZip } = __m13;
 const { drawNoteSprite } = __m56;
 const { has: hasRemote, reset: resetRemote, refreshIndex: refreshRemoteIndex, stageScripts, noteKindScripts, ensureAtlas, fragsFor, fragKey } = __m14;
 const { StageScene } = __m57;
+const { Quality } = __m52;
 const PIXELS_PER_MS = 0.45;
 const WIN = { sick: 45, good: 90, bad: 135, shit: 160 };
 const NOTE_COLORS = ["#c24b99", "#00ffff", "#12fa05", "#f9393f"];
 const JUDGE_COLORS = { sick: "#7fe8ff", good: "#8dff8d", bad: "#ffd36b", shit: "#ff8f6b", miss: "#ff5577" };
 const LS_KEY = "funkinStudio.chart.playtest";
-const DEFAULTS = { startFrom: "playhead", speedMul: 1, down: false, showOpp: true, bot: false, hit: true, offset: 0, rate: 1, skin: "funkin", scripts: true, scene: true, keys: ["KeyD", "KeyF", "KeyJ", "KeyK"] };
+const DEFAULTS = { startFrom: "playhead", speedMul: 1, down: false, showOpp: true, showFps: false, quality: "auto", bot: false, hit: true, offset: 0, rate: 1, skin: "funkin", scripts: true, scene: true, keys: ["KeyD", "KeyF", "KeyJ", "KeyK"] };
 
 const scoreNote = (ms) => {
   const a = Math.abs(ms);
@@ -21190,6 +21317,8 @@ function createPlayTest(root, d) {
     speedMul: $("chtPlaySpeed"),
     down: $("chtPlayDown"),
     showOpp: $("chtPlayOpp"),
+    showFps: $("chtPlayFps"),
+    quality: $("chtPlayQuality"),
     bot: $("chtPlayBot"),
     hit: $("chtPlayHit"),
     offset: $("chtPlayOffset"),
@@ -21296,6 +21425,7 @@ function createPlayTest(root, d) {
       else opts[k] = el.value;
     }
     opts.speedMul = Math.max(0.1, opts.speedMul);
+    Quality.mode = opts.quality === "auto" ? "auto" : Number(opts.quality) || "auto";
     keyEls.forEach((el, i) => {
       const c = codeOf(el.value.trim().slice(-1));
       if (c) opts.keys[i] = c;
@@ -22023,6 +22153,33 @@ function createPlayTest(root, d) {
       ctx.fillText(String(Math.ceil((st.startMs - pos) / 1000 / d.audio.rate)), W / 2, H / 2);
     }
     }
+  // ---------------- FPS カウンター ----------------
+  const fpsMeter = { last: 0, ring: new Float32Array(120), n: 0, text: "", at: 0 };
+  function drawFps(c, W) {
+    const now = performance.now();
+    if (fpsMeter.last) {
+      fpsMeter.ring[fpsMeter.n++ % 120] = now - fpsMeter.last;
+    }
+    fpsMeter.last = now;
+    if (now - fpsMeter.at > 250 && fpsMeter.n > 5) {
+      fpsMeter.at = now;
+      const k = Math.min(120, fpsMeter.n),
+        a = [...fpsMeter.ring.subarray(0, k)];
+      const avg = a.reduce((x, y) => x + y, 0) / k;
+      const worst = [...a].sort((x, y) => y - x)[Math.floor(k * 0.01)] ?? Math.max(...a);
+      fpsMeter.text = `${(1000 / avg).toFixed(0)} FPS  ${avg.toFixed(1)}ms  1%low ${(1000 / worst).toFixed(0)}  画質 ${Math.round(Quality.scale * 100)}%`;
+    }
+    if (!opts.showFps || !fpsMeter.text) return;
+    c.save();
+    c.font = "bold 13px monospace";
+    const w = c.measureText(fpsMeter.text).width + 14;
+    c.fillStyle = "rgba(0,0,0,.65)";
+    c.fillRect(W - w - 52, 8, w, 22);
+    c.fillStyle = "#7CFC7C";
+    c.textBaseline = "middle";
+    c.fillText(fpsMeter.text, W - w - 45, 19);
+    c.restore();
+  }
   function draw() {
     const g = geom(),
       { W, H } = g;
@@ -22057,6 +22214,7 @@ function createPlayTest(root, d) {
         if (opts.showOpp) drawSide(g, g.oppX, [], "opponent", 0, false);
       }
     }
+    drawFps(mainCtx, W);
   }
   function loop() {
     raf = requestAnimationFrame(loop);

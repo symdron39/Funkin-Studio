@@ -13,7 +13,7 @@
      ・カメラの追従の速さ（lerp 0.04 / 60fps 相当） ・4 拍ごとのズーム量(0.015)と戻り方 ・sing から idle へ戻る時刻
      ・FocusCamera の ease（CLASSIC 以外は簡易な補間）   ・反転したキャラのアニメオフセットの符号
    ============================================================ */
-import { GLPost } from "./glpost.js";
+import { GLPost, Quality } from "./glpost.js";
 import { findSpriteAtlas, findAnimateAtlas } from "../states/stage/atlas.js";
 import { StageCharacter, atlasKindOf } from "../states/stage/stageCharacter.js";
 import { loadImage } from "../states/stage/sparrowAtlas.js";
@@ -843,27 +843,63 @@ export class StageScene {
     if (!(pl.w > 0 && pl.h > 0 && Number.isFinite(pl.feetX + pl.feetY))) return c.draw(ctx, label);
     const W0 = Math.max(64, pl.w * 1.8),
       H0 = Math.max(64, pl.h * 1.7);
-    const q = Math.min(1, 2048 / Math.max(W0, H0));
+    const q = Math.min(1, 1024 / Math.max(W0, H0)) * Quality.scale;
     const W = Math.max(1, Math.ceil(W0 * q)),
       H = Math.max(1, Math.ceil(H0 * q));
     const ox = pl.feetX - W0 / 2,
       oy = pl.feetY - H0 * 0.92; // 足元から上に 92%・下に 8%
-    if (!c.shadeTmp) c.shadeTmp = document.createElement("canvas");
-    if (c.shadeTmp.width !== W || c.shadeTmp.height !== H) {
-      c.shadeTmp.width = W;
-      c.shadeTmp.height = H;
-    }
-    const c2 = c.shadeTmp.getContext("2d");
-    c2.setTransform(1, 0, 0, 1, 0, 0);
-    c2.clearRect(0, 0, W, H);
-    c2.setTransform(q, 0, 0, q, -ox * q, -oy * q);
-    c.draw(c2, label);
-    this.gl ??= new GLPost();
     const sh = c.shader;
-    sh.onError ??= (m) => this.warn(`シェーダー（キャラ ${c.role}）: ${m}`);
-    const res = this.gl.ok && (sh.active ? sh.active() : true) ? this.gl.apply(c.shadeTmp, sh) : null;
+    // 結果の使い回し: 絵（フレーム）・向き・不透明度・大きさ・uniform が前回と同じなら、前回のシェーダー出力をそのまま描く
+    // （待機中や同じコマの間は、描き直しも GPU への転送も読み戻しも要らない。毎フレーム変わるなら 3 回続けて外れた時点で使い回しをやめる）
+    const frame = pl.loaded ? c.actor.frame() || c.sc.view.frame : null;
+    const sig = `${W}|${H}|${pl.flip ? 1 : 0}|${pl.k}|${c.alpha}|${pl.feetX},${pl.feetY}|${JSON.stringify(sh.uniforms ?? null)}|${sh.glsl?.length}`;
+    const memo = (c.shadeMemo ??= { sig: "", frame: null, out: null, miss: 0 });
+    let out = null;
+    if (memo.out && memo.sig === sig && memo.frame === frame && frame !== null) {
+      out = memo.out;
+      memo.miss = 0;
+    } else {
+      if (!c.shadeTmp) c.shadeTmp = document.createElement("canvas");
+      if (c.shadeTmp.width !== W || c.shadeTmp.height !== H) {
+        c.shadeTmp.width = W;
+        c.shadeTmp.height = H;
+      }
+      const c2 = c.shadeTmp.getContext("2d");
+      c2.setTransform(1, 0, 0, 1, 0, 0);
+      c2.clearRect(0, 0, W, H);
+      c2.setTransform(q, 0, 0, q, -ox * q, -oy * q);
+      c.draw(c2, label);
+      this.gl ??= new GLPost();
+      sh.onError ??= (m) => this.warn(`シェーダー（キャラ ${c.role}）: ${m}`);
+      const res = this.gl.ok && (sh.active ? sh.active() : true) ? this.gl.apply(c.shadeTmp, sh) : null;
+      const same = memo.sig === sig && memo.frame === frame;
+      memo.sig = sig;
+      memo.frame = frame;
+      memo.miss = same ? 0 : memo.miss + 1;
+      memo.out = null;
+      if (res && frame !== null && memo.miss < 3) {
+        // GL の出力は次に上書きされるので、使い回す分はコピーを持つ
+        if (!memo.copy) memo.copy = document.createElement("canvas");
+        if (memo.copy.width !== W || memo.copy.height !== H) {
+          memo.copy.width = W;
+          memo.copy.height = H;
+        }
+        const cc = memo.copy.getContext("2d");
+        cc.clearRect(0, 0, W, H);
+        this.gl.blit(res, cc, 0, 0, W, H);
+        memo.out = memo.copy;
+        out = memo.copy;
+      } else if (res) {
+        try {
+          this.gl.blit(res, ctx, ox, oy, W0, H0);
+        } catch (e) {
+          this.warn(`キャラ ${c.role}(${c.id}) の描画に失敗: ${e.message}（${W}x${H}）`);
+        }
+        return;
+      } else out = c.shadeTmp;
+    }
     try {
-      ctx.drawImage(res || c.shadeTmp, ox, oy, W0, H0);
+      ctx.drawImage(out, ox, oy, W0, H0);
     } catch (e) {
       this.warn(`キャラ ${c.role}(${c.id}) の描画に失敗: ${e.message}（${W}x${H}）`);
     }
@@ -919,7 +955,7 @@ export class StageScene {
         }
         const cc = memo.copy.getContext("2d");
         cc.clearRect(0, 0, w, h);
-        cc.drawImage(res, 0, 0, w, h);
+        this.gl.blit(res, cc, 0, 0, w, h);
         memo.out = memo.copy;
       } else memo.out = null;
     }
@@ -928,7 +964,8 @@ export class StageScene {
     if (p.angle) ctx.rotate((p.angle * Math.PI) / 180);
     ctx.globalAlpha = Math.max(0, Math.min(1, num(p.alpha, 1)));
     ctx.globalCompositeOperation = blendToCanvas(p.blend);
-    ctx.drawImage(out, -w / 2, -h / 2, w, h);
+    if (this.gl && out === this.gl.canvas) this.gl.blit(out, ctx, -w / 2, -h / 2, w, h);
+    else ctx.drawImage(out, -w / 2, -h / 2, w, h);
   }
   /** ステージスクリプトの getNamedProp(name) が返す、prop の操作窓口（x / y / alpha / visible / angle / scale / shader / animation / playAnim） */
   propApi(name) {

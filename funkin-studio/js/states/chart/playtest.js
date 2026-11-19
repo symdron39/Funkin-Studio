@@ -15,12 +15,13 @@ import { openModZip } from "../../services/ModPack.js";
 import { drawNoteSprite } from "../../runtime/noteStyle.js";
 import { has as hasRemote, reset as resetRemote, refreshIndex as refreshRemoteIndex, stageScripts, noteKindScripts, ensureAtlas, fragsFor, fragKey } from "../../services/FunkinAssets.js";
 import { StageScene } from "../../runtime/stageScene.js";
+import { Quality } from "../../runtime/glpost.js";
 const PIXELS_PER_MS = 0.45;
 const WIN = { sick: 45, good: 90, bad: 135, shit: 160 };
 const NOTE_COLORS = ["#c24b99", "#00ffff", "#12fa05", "#f9393f"];
 const JUDGE_COLORS = { sick: "#7fe8ff", good: "#8dff8d", bad: "#ffd36b", shit: "#ff8f6b", miss: "#ff5577" };
 const LS_KEY = "funkinStudio.chart.playtest";
-const DEFAULTS = { startFrom: "playhead", speedMul: 1, down: false, showOpp: true, bot: false, hit: true, offset: 0, rate: 1, skin: "funkin", scripts: true, scene: true, keys: ["KeyD", "KeyF", "KeyJ", "KeyK"] };
+const DEFAULTS = { startFrom: "playhead", speedMul: 1, down: false, showOpp: true, showFps: false, quality: "auto", bot: false, hit: true, offset: 0, rate: 1, skin: "funkin", scripts: true, scene: true, keys: ["KeyD", "KeyF", "KeyJ", "KeyK"] };
 
 const scoreNote = (ms) => {
   const a = Math.abs(ms);
@@ -86,6 +87,8 @@ export function createPlayTest(root, d) {
     speedMul: $("chtPlaySpeed"),
     down: $("chtPlayDown"),
     showOpp: $("chtPlayOpp"),
+    showFps: $("chtPlayFps"),
+    quality: $("chtPlayQuality"),
     bot: $("chtPlayBot"),
     hit: $("chtPlayHit"),
     offset: $("chtPlayOffset"),
@@ -192,6 +195,7 @@ export function createPlayTest(root, d) {
       else opts[k] = el.value;
     }
     opts.speedMul = Math.max(0.1, opts.speedMul);
+    Quality.mode = opts.quality === "auto" ? "auto" : Number(opts.quality) || "auto";
     keyEls.forEach((el, i) => {
       const c = codeOf(el.value.trim().slice(-1));
       if (c) opts.keys[i] = c;
@@ -919,6 +923,33 @@ export function createPlayTest(root, d) {
       ctx.fillText(String(Math.ceil((st.startMs - pos) / 1000 / d.audio.rate)), W / 2, H / 2);
     }
     }
+  // ---------------- FPS カウンター ----------------
+  const fpsMeter = { last: 0, ring: new Float32Array(120), n: 0, text: "", at: 0 };
+  function drawFps(c, W) {
+    const now = performance.now();
+    if (fpsMeter.last) {
+      fpsMeter.ring[fpsMeter.n++ % 120] = now - fpsMeter.last;
+    }
+    fpsMeter.last = now;
+    if (now - fpsMeter.at > 250 && fpsMeter.n > 5) {
+      fpsMeter.at = now;
+      const k = Math.min(120, fpsMeter.n),
+        a = [...fpsMeter.ring.subarray(0, k)];
+      const avg = a.reduce((x, y) => x + y, 0) / k;
+      const worst = [...a].sort((x, y) => y - x)[Math.floor(k * 0.01)] ?? Math.max(...a);
+      fpsMeter.text = `${(1000 / avg).toFixed(0)} FPS  ${avg.toFixed(1)}ms  1%low ${(1000 / worst).toFixed(0)}  画質 ${Math.round(Quality.scale * 100)}%`;
+    }
+    if (!opts.showFps || !fpsMeter.text) return;
+    c.save();
+    c.font = "bold 13px monospace";
+    const w = c.measureText(fpsMeter.text).width + 14;
+    c.fillStyle = "rgba(0,0,0,.65)";
+    c.fillRect(W - w - 52, 8, w, 22);
+    c.fillStyle = "#7CFC7C";
+    c.textBaseline = "middle";
+    c.fillText(fpsMeter.text, W - w - 45, 19);
+    c.restore();
+  }
   function draw() {
     const g = geom(),
       { W, H } = g;
@@ -953,6 +984,7 @@ export function createPlayTest(root, d) {
         if (opts.showOpp) drawSide(g, g.oppX, [], "opponent", 0, false);
       }
     }
+    drawFps(mainCtx, W);
   }
   function loop() {
     raf = requestAnimationFrame(loop);
