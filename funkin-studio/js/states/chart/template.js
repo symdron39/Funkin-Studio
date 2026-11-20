@@ -257,6 +257,7 @@ export const template = `
               <label><input id="chtPlayDown" type="checkbox" /> ダウンスクロール</label>
               <label><input id="chtPlayOpp" type="checkbox" /> 相手ノーツを表示</label>
               <label><input id="chtPlayFps" type="checkbox" /> FPS を表示</label>
+              <button id="chtPlayFpsCopy" type="button">FPS ログをコピー</button>
               <label>シェーダー画質
                 <select id="chtPlayQuality">
                   <option value="auto">自動</option><option value="1">100%</option><option value="0.75">75%</option><option value="0.5">50%</option><option value="0.35">35%</option>

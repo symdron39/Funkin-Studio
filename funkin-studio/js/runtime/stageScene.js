@@ -841,13 +841,19 @@ export class StageScene {
     const pl = c.place();
     // 大きさが決まらない（画像が届く前など）ときは、シェーダーなしでそのまま描く
     if (!(pl.w > 0 && pl.h > 0 && Number.isFinite(pl.feetX + pl.feetY))) return c.draw(ctx, label);
-    const W0 = Math.max(64, pl.w * 1.8),
-      H0 = Math.max(64, pl.h * 1.7);
+    // 余白: 周りのピクセルを読むシェーダー（ぼかし・モザイクなど）だけ大きく取る。色を変えるだけ（adjustColor など）は薄い余白で足りる
+    // （バッファの面積が 1/2〜1/3 になり、GPU への転送・読み戻しがその分だけ減る）
+    const sh0 = c.shader;
+    const spatial = sh0.spatial ?? (sh0._spatial ??= /openfl_TextureSize|textureSize/.test((sh0.glsl ?? "").replace(/uniform[^;]*;/g, "")) || ((sh0.glsl ?? "").match(/texture2D\s*\(/g) ?? []).length > 1);
+    const mw = spatial ? 1.8 : 1.12,
+      mh = spatial ? 1.7 : 1.1;
+    const W0 = Math.max(64, pl.w * mw),
+      H0 = Math.max(64, pl.h * mh);
     const q = Math.min(1, 1024 / Math.max(W0, H0)) * Quality.scale;
     const W = Math.max(1, Math.ceil(W0 * q)),
       H = Math.max(1, Math.ceil(H0 * q));
     const ox = pl.feetX - W0 / 2,
-      oy = pl.feetY - H0 * 0.92; // 足元から上に 92%・下に 8%
+      oy = pl.feetY - H0 * (spatial ? 0.92 : 0.96); // 足元から上に 92〜96%・下に残り
     const sh = c.shader;
     // 結果の使い回し: 絵（フレーム）・向き・不透明度・大きさ・uniform が前回と同じなら、前回のシェーダー出力をそのまま描く
     // （待機中や同じコマの間は、描き直しも GPU への転送も読み戻しも要らない。毎フレーム変わるなら 3 回続けて外れた時点で使い回しをやめる）

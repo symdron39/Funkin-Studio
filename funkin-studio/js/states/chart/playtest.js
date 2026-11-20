@@ -15,7 +15,7 @@ import { openModZip } from "../../services/ModPack.js";
 import { drawNoteSprite } from "../../runtime/noteStyle.js";
 import { has as hasRemote, reset as resetRemote, refreshIndex as refreshRemoteIndex, stageScripts, noteKindScripts, ensureAtlas, fragsFor, fragKey } from "../../services/FunkinAssets.js";
 import { StageScene } from "../../runtime/stageScene.js";
-import { Quality } from "../../runtime/glpost.js";
+import { Quality, GLPost } from "../../runtime/glpost.js";
 const PIXELS_PER_MS = 0.45;
 const WIN = { sick: 45, good: 90, bad: 135, shit: 160 };
 const NOTE_COLORS = ["#c24b99", "#00ffff", "#12fa05", "#f9393f"];
@@ -210,6 +210,15 @@ export function createPlayTest(root, d) {
     save();
   }
   for (const el of [...Object.values(optEls), ...keyEls]) el.addEventListener("change", readOpts);
+  $("chtPlayFpsCopy")?.addEventListener("click", async () => {
+    const txt = `GPU: ${GLPost.renderer || "(なし)"}\nUA: ${navigator.userAgent}\nquality=${opts.quality} scripts=${opts.scripts} scene=${opts.scene}\n` + fpsMeter.log.join("\n");
+    try {
+      await navigator.clipboard.writeText(txt);
+      d.say("FPS ログをコピーしました");
+    } catch {
+      prompt("FPS ログ（コピーしてください）", txt);
+    }
+  });
 
   // ---------------- 譜面の統計（メニューに表示） ----------------
   function chartInfo() {
@@ -330,6 +339,9 @@ export function createPlayTest(root, d) {
     d.audio.seek(startMs - 2000 * opts.rate); // 2秒のカウントイン（負の時間は音が遅れて始まる）
     d.audio.play();
     state = "playing";
+    fpsMeter.log = [];
+    fpsMeter.t0 = performance.now();
+    fpsMeter.logAt = fpsMeter.t0;
     card.hidden = true;
   }
   // ---------------- ステージとキャラクター ----------------
@@ -446,6 +458,9 @@ export function createPlayTest(root, d) {
     d.audio.seek(d.audio.position() - 1000); // 1秒戻してから再開（判定はまだ来ていないノーツだけ）
     d.audio.play();
     state = "playing";
+    fpsMeter.log = [];
+    fpsMeter.t0 = performance.now();
+    fpsMeter.logAt = fpsMeter.t0;
     card.hidden = true;
   }
   // ---------------- ノートスキンの読み込み ----------------
@@ -924,7 +939,7 @@ export function createPlayTest(root, d) {
     }
     }
   // ---------------- FPS カウンター ----------------
-  const fpsMeter = { last: 0, ring: new Float32Array(120), n: 0, text: "", at: 0 };
+  const fpsMeter = { last: 0, ring: new Float32Array(120), n: 0, text: "", at: 0, logAt: 0, log: [], t0: performance.now() };
   function drawFps(c, W) {
     const now = performance.now();
     if (fpsMeter.last) {
@@ -939,15 +954,25 @@ export function createPlayTest(root, d) {
       const worst = [...a].sort((x, y) => y - x)[Math.floor(k * 0.01)] ?? Math.max(...a);
       fpsMeter.text = `${(1000 / avg).toFixed(0)} FPS  ${avg.toFixed(1)}ms  1%low ${(1000 / worst).toFixed(0)}  画質 ${Math.round(Quality.scale * 100)}%`;
     }
+    // 5 秒ごとに FPS・メモリを記録（時間とともに落ちるかを後から見られる）
+    if (now - fpsMeter.logAt > 5000 && fpsMeter.n > 5) {
+      fpsMeter.logAt = now;
+      const m = performance.memory?.usedJSHeapSize;
+      fpsMeter.log.push(`${Math.round((now - fpsMeter.t0) / 1000)}s  ${fpsMeter.text}${m ? `  heap ${Math.round(m / 1e6)}MB` : ""}`);
+      if (fpsMeter.log.length > 200) fpsMeter.log.shift();
+    }
     if (!opts.showFps || !fpsMeter.text) return;
+    const gpu = GLPost.renderer ? `GPU: ${GLPost.renderer}` : "GPU: (WebGL 未使用)";
     c.save();
     c.font = "bold 13px monospace";
-    const w = c.measureText(fpsMeter.text).width + 14;
+    const w = Math.max(c.measureText(fpsMeter.text).width, c.measureText(gpu).width) + 14;
     c.fillStyle = "rgba(0,0,0,.65)";
-    c.fillRect(W - w - 52, 8, w, 22);
+    c.fillRect(W - w - 52, 8, w, 40);
     c.fillStyle = "#7CFC7C";
     c.textBaseline = "middle";
     c.fillText(fpsMeter.text, W - w - 45, 19);
+    c.fillStyle = /swiftshader|llvmpipe|software/i.test(gpu) ? "#ff8a8a" : "#9ad";
+    c.fillText(gpu, W - w - 45, 38);
     c.restore();
   }
   function draw() {

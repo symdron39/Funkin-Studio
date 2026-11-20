@@ -23,6 +23,11 @@ export class GLPost {
     } catch {}
     const gl = this.gl;
     if (!gl) return;
+    try {
+      // 描画に使われている GPU の名前（"SwiftShader" や "llvmpipe" ならソフトウェア描画で、シェーダーが極端に遅くなる）
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      GLPost.renderer = String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)).replace(/ANGLE \((.*)\)/, "$1").replace(/\s*\(0x[0-9a-f]+\)/gi, "").replace(/^Google, /, "").slice(0, 48);
+    } catch {}
     this.buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
@@ -164,6 +169,8 @@ export class GLPost {
  * 描画の品質の自動調整（シェーダーまわり）。フレームの間隔が長引いたらシェーダーに掛ける絵を縮小し、余裕があれば戻す。
  *   mode: "auto" | 1 | 0.75 | 0.5 | 0.35（固定）。scale が実際に使う倍率。
  */
+GLPost.renderer = "";
+
 export const Quality = {
   mode: "auto",
   scale: 1,

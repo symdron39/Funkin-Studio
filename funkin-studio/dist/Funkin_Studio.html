@@ -14751,6 +14751,7 @@ const template = `
               <label><input id="chtPlayDown" type="checkbox" /> ダウンスクロール</label>
               <label><input id="chtPlayOpp" type="checkbox" /> 相手ノーツを表示</label>
               <label><input id="chtPlayFps" type="checkbox" /> FPS を表示</label>
+              <button id="chtPlayFpsCopy" type="button">FPS ログをコピー</button>
               <label>シェーダー画質
                 <select id="chtPlayQuality">
                   <option value="auto">自動</option><option value="1">100%</option><option value="0.75">75%</option><option value="0.5">50%</option><option value="0.35">35%</option>
@@ -17223,6 +17224,11 @@ class GLPost {
     } catch {}
     const gl = this.gl;
     if (!gl) return;
+    try {
+      // 描画に使われている GPU の名前（"SwiftShader" や "llvmpipe" ならソフトウェア描画で、シェーダーが極端に遅くなる）
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      GLPost.renderer = String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)).replace(/ANGLE \((.*)\)/, "$1").replace(/\s*\(0x[0-9a-f]+\)/gi, "").replace(/^Google, /, "").slice(0, 48);
+    } catch {}
     this.buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
@@ -17364,6 +17370,8 @@ class GLPost {
  * 描画の品質の自動調整（シェーダーまわり）。フレームの間隔が長引いたらシェーダーに掛ける絵を縮小し、余裕があれば戻す。
  *   mode: "auto" | 1 | 0.75 | 0.5 | 0.35（固定）。scale が実際に使う倍率。
  */
+GLPost.renderer = "";
+
 const Quality = {
   mode: "auto",
   scale: 1,
@@ -20830,13 +20838,19 @@ class StageScene {
     const pl = c.place();
     // 大きさが決まらない（画像が届く前など）ときは、シェーダーなしでそのまま描く
     if (!(pl.w > 0 && pl.h > 0 && Number.isFinite(pl.feetX + pl.feetY))) return c.draw(ctx, label);
-    const W0 = Math.max(64, pl.w * 1.8),
-      H0 = Math.max(64, pl.h * 1.7);
+    // 余白: 周りのピクセルを読むシェーダー（ぼかし・モザイクなど）だけ大きく取る。色を変えるだけ（adjustColor など）は薄い余白で足りる
+    // （バッファの面積が 1/2〜1/3 になり、GPU への転送・読み戻しがその分だけ減る）
+    const sh0 = c.shader;
+    const spatial = sh0.spatial ?? (sh0._spatial ??= /openfl_TextureSize|textureSize/.test((sh0.glsl ?? "").replace(/uniform[^;]*;/g, "")) || ((sh0.glsl ?? "").match(/texture2D\s*\(/g) ?? []).length > 1);
+    const mw = spatial ? 1.8 : 1.12,
+      mh = spatial ? 1.7 : 1.1;
+    const W0 = Math.max(64, pl.w * mw),
+      H0 = Math.max(64, pl.h * mh);
     const q = Math.min(1, 1024 / Math.max(W0, H0)) * Quality.scale;
     const W = Math.max(1, Math.ceil(W0 * q)),
       H = Math.max(1, Math.ceil(H0 * q));
     const ox = pl.feetX - W0 / 2,
-      oy = pl.feetY - H0 * 0.92; // 足元から上に 92%・下に 8%
+      oy = pl.feetY - H0 * (spatial ? 0.92 : 0.96); // 足元から上に 92〜96%・下に残り
     const sh = c.shader;
     // 結果の使い回し: 絵（フレーム）・向き・不透明度・大きさ・uniform が前回と同じなら、前回のシェーダー出力をそのまま描く
     // （待機中や同じコマの間は、描き直しも GPU への転送も読み戻しも要らない。毎フレーム変わるなら 3 回続けて外れた時点で使い回しをやめる）
@@ -21245,7 +21259,7 @@ const { openModZip } = __m13;
 const { drawNoteSprite } = __m56;
 const { has: hasRemote, reset: resetRemote, refreshIndex: refreshRemoteIndex, stageScripts, noteKindScripts, ensureAtlas, fragsFor, fragKey } = __m14;
 const { StageScene } = __m57;
-const { Quality } = __m52;
+const { Quality, GLPost } = __m52;
 const PIXELS_PER_MS = 0.45;
 const WIN = { sick: 45, good: 90, bad: 135, shit: 160 };
 const NOTE_COLORS = ["#c24b99", "#00ffff", "#12fa05", "#f9393f"];
@@ -21440,6 +21454,15 @@ function createPlayTest(root, d) {
     save();
   }
   for (const el of [...Object.values(optEls), ...keyEls]) el.addEventListener("change", readOpts);
+  $("chtPlayFpsCopy")?.addEventListener("click", async () => {
+    const txt = `GPU: ${GLPost.renderer || "(なし)"}\nUA: ${navigator.userAgent}\nquality=${opts.quality} scripts=${opts.scripts} scene=${opts.scene}\n` + fpsMeter.log.join("\n");
+    try {
+      await navigator.clipboard.writeText(txt);
+      d.say("FPS ログをコピーしました");
+    } catch {
+      prompt("FPS ログ（コピーしてください）", txt);
+    }
+  });
 
   // ---------------- 譜面の統計（メニューに表示） ----------------
   function chartInfo() {
@@ -21560,6 +21583,9 @@ function createPlayTest(root, d) {
     d.audio.seek(startMs - 2000 * opts.rate); // 2秒のカウントイン（負の時間は音が遅れて始まる）
     d.audio.play();
     state = "playing";
+    fpsMeter.log = [];
+    fpsMeter.t0 = performance.now();
+    fpsMeter.logAt = fpsMeter.t0;
     card.hidden = true;
   }
   // ---------------- ステージとキャラクター ----------------
@@ -21676,6 +21702,9 @@ function createPlayTest(root, d) {
     d.audio.seek(d.audio.position() - 1000); // 1秒戻してから再開（判定はまだ来ていないノーツだけ）
     d.audio.play();
     state = "playing";
+    fpsMeter.log = [];
+    fpsMeter.t0 = performance.now();
+    fpsMeter.logAt = fpsMeter.t0;
     card.hidden = true;
   }
   // ---------------- ノートスキンの読み込み ----------------
@@ -22154,7 +22183,7 @@ function createPlayTest(root, d) {
     }
     }
   // ---------------- FPS カウンター ----------------
-  const fpsMeter = { last: 0, ring: new Float32Array(120), n: 0, text: "", at: 0 };
+  const fpsMeter = { last: 0, ring: new Float32Array(120), n: 0, text: "", at: 0, logAt: 0, log: [], t0: performance.now() };
   function drawFps(c, W) {
     const now = performance.now();
     if (fpsMeter.last) {
@@ -22169,15 +22198,25 @@ function createPlayTest(root, d) {
       const worst = [...a].sort((x, y) => y - x)[Math.floor(k * 0.01)] ?? Math.max(...a);
       fpsMeter.text = `${(1000 / avg).toFixed(0)} FPS  ${avg.toFixed(1)}ms  1%low ${(1000 / worst).toFixed(0)}  画質 ${Math.round(Quality.scale * 100)}%`;
     }
+    // 5 秒ごとに FPS・メモリを記録（時間とともに落ちるかを後から見られる）
+    if (now - fpsMeter.logAt > 5000 && fpsMeter.n > 5) {
+      fpsMeter.logAt = now;
+      const m = performance.memory?.usedJSHeapSize;
+      fpsMeter.log.push(`${Math.round((now - fpsMeter.t0) / 1000)}s  ${fpsMeter.text}${m ? `  heap ${Math.round(m / 1e6)}MB` : ""}`);
+      if (fpsMeter.log.length > 200) fpsMeter.log.shift();
+    }
     if (!opts.showFps || !fpsMeter.text) return;
+    const gpu = GLPost.renderer ? `GPU: ${GLPost.renderer}` : "GPU: (WebGL 未使用)";
     c.save();
     c.font = "bold 13px monospace";
-    const w = c.measureText(fpsMeter.text).width + 14;
+    const w = Math.max(c.measureText(fpsMeter.text).width, c.measureText(gpu).width) + 14;
     c.fillStyle = "rgba(0,0,0,.65)";
-    c.fillRect(W - w - 52, 8, w, 22);
+    c.fillRect(W - w - 52, 8, w, 40);
     c.fillStyle = "#7CFC7C";
     c.textBaseline = "middle";
     c.fillText(fpsMeter.text, W - w - 45, 19);
+    c.fillStyle = /swiftshader|llvmpipe|software/i.test(gpu) ? "#ff8a8a" : "#9ad";
+    c.fillText(gpu, W - w - 45, 38);
     c.restore();
   }
   function draw() {
