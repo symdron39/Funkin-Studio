@@ -375,3 +375,8 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 
 - 実機（Intel UHD 600 / Mesa, Chromebook）はハードウェア GL（SwiftShader ではない）。それでも 15FPS → 6FPS（168ms/フレーム）と低下し、ヒープは 52MB で平坦 → JS リークではなく、持続負荷による発熱での速度低下か GPU 待ちが疑わしい。
 - `Prof`（glpost.js）が GL 変換（`apply`）と読み戻し（`blit`）の時間と回数を集計。FPS 表示の 3 行目に「JS 処理 ms（GL変換 ms×回数 読戻 ms×回数）」を出す。フレーム全体 ms と JS 処理 ms がほぼ同じなら CPU 側、JS 処理 ms ≪ フレーム ms なら GPU 待ち / 発熱。ログにも載る。
+
+## v3.30.4 — FPS 表示の平均区間を修正 / 内訳を追加
+
+- **FPS の平均は直近 1 秒のみ**: 以前は直近 120 フレーム平均で、遅い（≈3FPS）と 120 フレーム＝約 40 秒ぶんになり、開始直後の軽いフレームが混ざって「15FPS → 3FPS に落ちる」ように見えていた。実機ログ（JS 処理が 310〜330ms で一定）から、実際は最初から約 3FPS で一定と判明。
+- 内訳の 4 行目: rt 全体 / 影キャラ / 素キャラ / 小物 の ms（`Prof`）。

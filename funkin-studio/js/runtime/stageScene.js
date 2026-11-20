@@ -13,7 +13,7 @@
      ・カメラの追従の速さ（lerp 0.04 / 60fps 相当） ・4 拍ごとのズーム量(0.015)と戻り方 ・sing から idle へ戻る時刻
      ・FocusCamera の ease（CLASSIC 以外は簡易な補間）   ・反転したキャラのアニメオフセットの符号
    ============================================================ */
-import { GLPost, Quality } from "./glpost.js";
+import { GLPost, Quality, Prof } from "./glpost.js";
 import { findSpriteAtlas, findAnimateAtlas } from "../states/stage/atlas.js";
 import { StageCharacter, atlasKindOf } from "../states/stage/stageCharacter.js";
 import { loadImage } from "../states/stage/sparrowAtlas.js";
@@ -818,14 +818,23 @@ export class StageScene {
       ctx.save();
       const sf = o.char ? o.char.scroll : o.tiled ? [o.tiled.scrollFactor.x, o.tiled.scrollFactor.y] : getScroll(o.prop.ref);
       this.world(ctx, z, scrollX, scrollY, sf);
-      if (o.tiled) this.drawTiled(ctx, o.tiled);
-      else if (o.char) {
+      const t0 = performance.now();
+      let bucket = "prop";
+      if (o.tiled) {
+        this.drawTiled(ctx, o.tiled);
+      } else if (o.char) {
         if (o.char.visible) {
           const label = (STAGE_KEY[o.char.role] ?? "CHAR").toUpperCase();
-          if (o.char.shader?.glsl && o.char.sc?.view) this.drawCharShaded(ctx, o.char, label);
-          else o.char.draw(ctx, label);
+          if (o.char.shader?.glsl && o.char.sc?.view) {
+            bucket = "charShade";
+            this.drawCharShaded(ctx, o.char, label);
+          } else {
+            bucket = "charPlain";
+            o.char.draw(ctx, label);
+          }
         }
       } else this.drawProp(ctx, o.prop);
+      Prof[bucket] += performance.now() - t0;
       ctx.restore();
     }
     ctx.restore();

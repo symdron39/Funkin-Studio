@@ -952,10 +952,17 @@ export function createPlayTest(root, d) {
       fpsMeter.at = now;
       const fr = Math.max(1, fpsMeter.frames);
       fpsMeter.prof = `JS ${(fpsMeter.busy / fr).toFixed(0)}ms (GL変換 ${(Prof.apply / fr).toFixed(0)}ms×${(Prof.applyN / fr).toFixed(1)} 読戻 ${(Prof.blit / fr).toFixed(0)}ms×${(Prof.blitN / fr).toFixed(1)})`;
+      fpsMeter.prof2 = `rt全体 ${(Prof.objs / fr).toFixed(0)} / 影キャラ ${(Prof.charShade / fr).toFixed(0)} 素キャラ ${(Prof.charPlain / fr).toFixed(0)} 小物 ${(Prof.prop / fr).toFixed(0)}ms`;
+      Prof.objs = Prof.charShade = Prof.charPlain = Prof.prop = 0;
       fpsMeter.busy = fpsMeter.frames = 0;
       Prof.apply = Prof.applyN = Prof.blit = Prof.blitN = 0;
-      const k = Math.min(120, fpsMeter.n),
-        a = [...fpsMeter.ring.subarray(0, k)];
+      // 直近 1 秒ぶん（最大 120 フレーム）だけで平均する。遅いときに古い（軽かった）フレームが混ざって実際より高く見えるのを防ぐ
+      const all = [];
+      for (let i = Math.min(120, fpsMeter.n); i >= 1; i--) all.push(fpsMeter.ring[(fpsMeter.n - i) % 120]);
+      let acc = 0,
+        a = [];
+      for (let i = all.length - 1; i >= 0 && acc < 1000; i--) (a.push(all[i]), (acc += all[i]));
+      const k = a.length;
       const avg = a.reduce((x, y) => x + y, 0) / k;
       const worst = [...a].sort((x, y) => y - x)[Math.floor(k * 0.01)] ?? Math.max(...a);
       fpsMeter.text = `${(1000 / avg).toFixed(0)} FPS  ${avg.toFixed(1)}ms  1%low ${(1000 / worst).toFixed(0)}  画質 ${Math.round(Quality.scale * 100)}%`;
@@ -964,16 +971,16 @@ export function createPlayTest(root, d) {
     if (now - fpsMeter.logAt > 5000 && fpsMeter.n > 5) {
       fpsMeter.logAt = now;
       const m = performance.memory?.usedJSHeapSize;
-      fpsMeter.log.push(`${Math.round((now - fpsMeter.t0) / 1000)}s  ${fpsMeter.text}  ${fpsMeter.prof ?? ""}${m ? `  heap ${Math.round(m / 1e6)}MB` : ""}`);
+      fpsMeter.log.push(`${Math.round((now - fpsMeter.t0) / 1000)}s  ${fpsMeter.text}  ${fpsMeter.prof ?? ""} | ${fpsMeter.prof2 ?? ""}${m ? `  heap ${Math.round(m / 1e6)}MB` : ""}`);
       if (fpsMeter.log.length > 200) fpsMeter.log.shift();
     }
     if (!opts.showFps || !fpsMeter.text) return;
     const gpu = GLPost.renderer ? `GPU: ${GLPost.renderer}` : "GPU: (WebGL 未使用)";
     c.save();
     c.font = "bold 13px monospace";
-    const w = Math.max(c.measureText(fpsMeter.text).width, c.measureText(gpu).width, c.measureText(fpsMeter.prof ?? "").width) + 14;
+    const w = Math.max(c.measureText(fpsMeter.text).width, c.measureText(gpu).width, c.measureText(fpsMeter.prof ?? "").width, c.measureText(fpsMeter.prof2 ?? "").width) + 14;
     c.fillStyle = "rgba(0,0,0,.65)";
-    c.fillRect(W - w - 52, 8, w, 58);
+    c.fillRect(W - w - 52, 8, w, 76);
     c.fillStyle = "#7CFC7C";
     c.textBaseline = "middle";
     c.fillText(fpsMeter.text, W - w - 45, 19);
@@ -981,6 +988,7 @@ export function createPlayTest(root, d) {
     c.fillText(gpu, W - w - 45, 38);
     c.fillStyle = "#ffd27c";
     c.fillText(fpsMeter.prof ?? "", W - w - 45, 57);
+    c.fillText(fpsMeter.prof2 ?? "", W - w - 45, 76);
     c.restore();
   }
   function draw() {
@@ -995,6 +1003,7 @@ export function createPlayTest(root, d) {
     };
     if (live && rt && rt.hasContent()) {
       // スクリプトの表示物 / フィルターがあるときだけ、カメラごとに重ねて描く
+      const tRt = performance.now();
       rt.render(mainCtx, W, H, window.devicePixelRatio || 1, {
         begin: (name, c) => {
           ctx = c;
@@ -1002,6 +1011,7 @@ export function createPlayTest(root, d) {
           else if (name === "camHUD") drawHud(g, pos);
         },
       });
+      Prof.objs += performance.now() - tRt;
       ctx = mainCtx;
       drawOverlay(g, pos);
     } else {

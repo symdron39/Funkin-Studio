@@ -13,7 +13,7 @@ export const GLSL_GRAYSCALE = `precision mediump float; varying vec2 uv; uniform
 void main(){ vec4 c = texture2D(tex, uv); float g = dot(c.rgb, vec3(0.299, 0.587, 0.114)); gl_FragColor = vec4(mix(c.rgb, vec3(g), amount), c.a); }`;
 
 /** 1 フレームぶんの GL 関連の所要時間（ms）と回数。FPS 表示が読んで 0 に戻す（原因が「JS の処理」か「GPU 待ち」かを切り分けるため） */
-export const Prof = { apply: 0, applyN: 0, blit: 0, blitN: 0 };
+export const Prof = { apply: 0, applyN: 0, blit: 0, blitN: 0, scene: 0, charPlain: 0, charShade: 0, prop: 0, notes: 0, objs: 0 };
 
 export class GLPost {
   constructor() {
