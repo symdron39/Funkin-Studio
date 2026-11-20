@@ -370,3 +370,8 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 - 描画の内訳（drawImage の呼び出し元別）: カメラフィルターの読み戻し（1280×659）が最大、次いでキャラのシェーダー結果の読み戻し。AnimateAtlas は毎フレーム別コマになるのでキャラの使い回しは効きにくく、**1 回あたりの面積を減らす**方向に切り替えた。
 - **キャラのシェーダー用バッファの余白をシェーダー別に**: 周りを読むもの（`openfl_TextureSize` を使う / texture2D が複数）は従来どおり広く、色を変えるだけのもの（adjustColor など）は 1.12×1.1 に。面積は約 1/3（1024×934 → 627×594 など）。
 - **診断**: FPS 表示に GPU 名（SwiftShader / llvmpipe = ソフトウェア描画は赤）を出す。5 秒ごとに FPS・ヒープを記録し、「FPS ログをコピー」で取り出せる。
+
+## v3.30.3 — FPS 表示に内訳（JS 処理 / GL 変換 / 読み戻し）
+
+- 実機（Intel UHD 600 / Mesa, Chromebook）はハードウェア GL（SwiftShader ではない）。それでも 15FPS → 6FPS（168ms/フレーム）と低下し、ヒープは 52MB で平坦 → JS リークではなく、持続負荷による発熱での速度低下か GPU 待ちが疑わしい。
+- `Prof`（glpost.js）が GL 変換（`apply`）と読み戻し（`blit`）の時間と回数を集計。FPS 表示の 3 行目に「JS 処理 ms（GL変換 ms×回数 読戻 ms×回数）」を出す。フレーム全体 ms と JS 処理 ms がほぼ同じなら CPU 側、JS 処理 ms ≪ フレーム ms なら GPU 待ち / 発熱。ログにも載る。

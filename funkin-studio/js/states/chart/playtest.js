@@ -15,7 +15,7 @@ import { openModZip } from "../../services/ModPack.js";
 import { drawNoteSprite } from "../../runtime/noteStyle.js";
 import { has as hasRemote, reset as resetRemote, refreshIndex as refreshRemoteIndex, stageScripts, noteKindScripts, ensureAtlas, fragsFor, fragKey } from "../../services/FunkinAssets.js";
 import { StageScene } from "../../runtime/stageScene.js";
-import { Quality, GLPost } from "../../runtime/glpost.js";
+import { Quality, GLPost, Prof } from "../../runtime/glpost.js";
 const PIXELS_PER_MS = 0.45;
 const WIN = { sick: 45, good: 90, bad: 135, shit: 160 };
 const NOTE_COLORS = ["#c24b99", "#00ffff", "#12fa05", "#f9393f"];
@@ -939,15 +939,21 @@ export function createPlayTest(root, d) {
     }
     }
   // ---------------- FPS カウンター ----------------
-  const fpsMeter = { last: 0, ring: new Float32Array(120), n: 0, text: "", at: 0, logAt: 0, log: [], t0: performance.now() };
-  function drawFps(c, W) {
+  const fpsMeter = { busy: 0, frames: 0, ap: 0, apN: 0, bl: 0, blN: 0, last: 0, ring: new Float32Array(120), n: 0, text: "", at: 0, logAt: 0, log: [], t0: performance.now() };
+  function drawFps(c, W, busy) {
     const now = performance.now();
     if (fpsMeter.last) {
       fpsMeter.ring[fpsMeter.n++ % 120] = now - fpsMeter.last;
     }
     fpsMeter.last = now;
+    fpsMeter.busy += busy;
+    fpsMeter.frames++;
     if (now - fpsMeter.at > 250 && fpsMeter.n > 5) {
       fpsMeter.at = now;
+      const fr = Math.max(1, fpsMeter.frames);
+      fpsMeter.prof = `JS ${(fpsMeter.busy / fr).toFixed(0)}ms (GL変換 ${(Prof.apply / fr).toFixed(0)}ms×${(Prof.applyN / fr).toFixed(1)} 読戻 ${(Prof.blit / fr).toFixed(0)}ms×${(Prof.blitN / fr).toFixed(1)})`;
+      fpsMeter.busy = fpsMeter.frames = 0;
+      Prof.apply = Prof.applyN = Prof.blit = Prof.blitN = 0;
       const k = Math.min(120, fpsMeter.n),
         a = [...fpsMeter.ring.subarray(0, k)];
       const avg = a.reduce((x, y) => x + y, 0) / k;
@@ -958,24 +964,27 @@ export function createPlayTest(root, d) {
     if (now - fpsMeter.logAt > 5000 && fpsMeter.n > 5) {
       fpsMeter.logAt = now;
       const m = performance.memory?.usedJSHeapSize;
-      fpsMeter.log.push(`${Math.round((now - fpsMeter.t0) / 1000)}s  ${fpsMeter.text}${m ? `  heap ${Math.round(m / 1e6)}MB` : ""}`);
+      fpsMeter.log.push(`${Math.round((now - fpsMeter.t0) / 1000)}s  ${fpsMeter.text}  ${fpsMeter.prof ?? ""}${m ? `  heap ${Math.round(m / 1e6)}MB` : ""}`);
       if (fpsMeter.log.length > 200) fpsMeter.log.shift();
     }
     if (!opts.showFps || !fpsMeter.text) return;
     const gpu = GLPost.renderer ? `GPU: ${GLPost.renderer}` : "GPU: (WebGL 未使用)";
     c.save();
     c.font = "bold 13px monospace";
-    const w = Math.max(c.measureText(fpsMeter.text).width, c.measureText(gpu).width) + 14;
+    const w = Math.max(c.measureText(fpsMeter.text).width, c.measureText(gpu).width, c.measureText(fpsMeter.prof ?? "").width) + 14;
     c.fillStyle = "rgba(0,0,0,.65)";
-    c.fillRect(W - w - 52, 8, w, 40);
+    c.fillRect(W - w - 52, 8, w, 58);
     c.fillStyle = "#7CFC7C";
     c.textBaseline = "middle";
     c.fillText(fpsMeter.text, W - w - 45, 19);
     c.fillStyle = /swiftshader|llvmpipe|software/i.test(gpu) ? "#ff8a8a" : "#9ad";
     c.fillText(gpu, W - w - 45, 38);
+    c.fillStyle = "#ffd27c";
+    c.fillText(fpsMeter.prof ?? "", W - w - 45, 57);
     c.restore();
   }
   function draw() {
+    const tDraw0 = performance.now();
     const g = geom(),
       { W, H } = g;
     const live = !!st && state !== "menu";
@@ -1009,7 +1018,7 @@ export function createPlayTest(root, d) {
         if (opts.showOpp) drawSide(g, g.oppX, [], "opponent", 0, false);
       }
     }
-    drawFps(mainCtx, W);
+    drawFps(mainCtx, W, performance.now() - tDraw0);
   }
   function loop() {
     raf = requestAnimationFrame(loop);

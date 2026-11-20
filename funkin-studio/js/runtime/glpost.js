@@ -12,6 +12,9 @@ const VERT_TL = "attribute vec2 p; varying vec2 uv; void main(){ uv = vec2(p.x *
 export const GLSL_GRAYSCALE = `precision mediump float; varying vec2 uv; uniform sampler2D tex; uniform float amount;
 void main(){ vec4 c = texture2D(tex, uv); float g = dot(c.rgb, vec3(0.299, 0.587, 0.114)); gl_FragColor = vec4(mix(c.rgb, vec3(g), amount), c.a); }`;
 
+/** 1 フレームぶんの GL 関連の所要時間（ms）と回数。FPS 表示が読んで 0 に戻す（原因が「JS の処理」か「GPU 待ち」かを切り分けるため） */
+export const Prof = { apply: 0, applyN: 0, blit: 0, blitN: 0 };
+
 export class GLPost {
   constructor() {
     this.canvas = document.createElement("canvas");
@@ -77,6 +80,15 @@ export class GLPost {
    * 読むときは必ず blit()（領域を切り出して描く）を使うこと。
    */
   apply(src, shader) {
+    const t0 = performance.now();
+    try {
+      return this._apply(src, shader);
+    } finally {
+      Prof.apply += performance.now() - t0;
+      Prof.applyN++;
+    }
+  }
+  _apply(src, shader) {
     const gl = this.gl;
     if (!gl) return null;
     const glsl = shader.glsl ?? GLSL_GRAYSCALE;
@@ -158,6 +170,15 @@ export class GLPost {
   }
   /** apply() の結果（左下の領域）を ctx に描く。(dx, dy, dw, dh) は描き先。res が GL の出力でなければ普通の drawImage */
   blit(res, ctx, dx, dy, dw, dh) {
+    const t0 = performance.now();
+    try {
+      return this._blit(res, ctx, dx, dy, dw, dh);
+    } finally {
+      Prof.blit += performance.now() - t0;
+      Prof.blitN++;
+    }
+  }
+  _blit(res, ctx, dx, dy, dw, dh) {
     if (res === this.canvas && this.sub) {
       const s = this.sub;
       ctx.drawImage(res, s.x, s.y, s.w, s.h, dx, dy, dw ?? s.w, dh ?? s.h);
