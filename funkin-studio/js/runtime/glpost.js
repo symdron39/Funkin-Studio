@@ -194,11 +194,25 @@ GLPost.renderer = "";
 
 export const Quality = {
   mode: "auto",
-  scale: 1,
+  scale: (() => {
+    try {
+      // 前回この端末で落ち着いた画質から始める（毎回 100% から下げ直すと、最初の数十秒がカクつくため）
+      const v = Number(localStorage.getItem("studio.quality.scale"));
+      return v >= 0.25 && v <= 1 ? v : 1;
+    } catch {
+      return 1;
+    }
+  })(),
   _last: 0,
   _slow: 0,
   _fast: 0,
-  /** フレームごとに 1 回呼ぶ（draw の先頭）。dt が極端に長い（タブ復帰・一時停止）ものは無視する */
+  /** 目標のフレーム時間（ms）。約 30FPS */
+  target: 34,
+  /**
+   * フレームごとに 1 回呼ぶ（draw の先頭）。
+   * シェーダーの重さは画素数（= 画質の 2 乗）にほぼ比例するので、遅いときは「目標 ÷ 実測」の平方根を掛けて一気に合わせる
+   * （実機 UHD 600: 100% で 330ms → 35% で 55ms）。タブ復帰・一時停止のような極端に長い間隔（1.5 秒超）は無視する。
+   */
   tick(now = performance.now()) {
     const dt = now - this._last;
     this._last = now;
@@ -206,19 +220,27 @@ export const Quality = {
       this.scale = Number(this.mode) || 1;
       return;
     }
-    if (dt > 250 || dt <= 0) return;
-    if (dt > 26) {
+    if (dt > 1500 || dt <= 0) return;
+    if (dt > this.target * 1.25) {
       this._fast = 0;
-      if (++this._slow >= 12) {
+      if (++this._slow >= 4) {
         this._slow = 0;
-        this.scale = Math.max(0.35, this.scale * 0.8);
+        this.set(Math.max(0.25, this.scale * Math.max(0.5, Math.sqrt(this.target / dt))));
       }
-    } else if (dt < 19) {
+    } else if (dt < this.target * 0.6) {
       this._slow = 0;
-      if (++this._fast >= 150) {
+      // 戻すのは、上げても目標内に収まる見込みのときだけ（上げ下げの往復を防ぐ）
+      const next = Math.min(1, this.scale * 1.15);
+      if (++this._fast >= 120 && dt * (next / this.scale) ** 2 < this.target) {
         this._fast = 0;
-        this.scale = Math.min(1, this.scale * 1.15);
+        this.set(next);
       }
-    }
+    } else this._slow = this._fast = 0;
+  },
+  set(v) {
+    this.scale = Math.round(v * 100) / 100;
+    try {
+      localStorage.setItem("studio.quality.scale", String(this.scale));
+    } catch {}
   },
 };

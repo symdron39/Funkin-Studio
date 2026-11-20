@@ -207,8 +207,11 @@ class AnimateFrame {
   }
   draw(ctx, x, y, ref, stageMatrix) {
     // 既定: このフレーム自身の枠の左上を (x, y) に置く。stageMatrix: ステージ原点を基準枠に対して固定する
-    const ox = stageMatrix && ref ? x - ref.bx : x - this.bx,
-      oy = stageMatrix && ref ? y - ref.by : y - this.by;
+    // stageMatrix === "tl": キャラ用。flixel-animate は「タイムライン全体（全フレームの和）の枠」の左上をスプライトの左上に置いて描く
+    //   （FlxAnimate.drawAnimate: matrix.translate(-bounds.x, -bounds.y)。bounds = timeline._bounds）
+    const tl = stageMatrix === "tl" ? this.atlas.timelineBounds() : null;
+    const ox = tl ? x - tl.x : stageMatrix && ref ? x - ref.bx : x - this.bx,
+      oy = tl ? y - tl.y : stageMatrix && ref ? y - ref.by : y - this.by;
     // スプライトごとに save / restore すると、数百枚あるフレームで非常に遅い。
     // 今の変換を1回だけ控えて、スプライトごとに setTransform（= 控えた変換 × 原点 × そのスプライトの行列）で描く
     const t = ctx.getTransform();
@@ -319,6 +322,32 @@ export class AnimateAtlas {
   }
 
   // ---- フレーム列 ----
+  /**
+   * タイムライン全体の枠 { x, y, w, h }（メインタイムラインの全フレームの枠の和。1 回だけ計算して覚える）。
+   * flixel-animate の Timeline._bounds（getWholeBounds）と同じ。AnimateAtlas のスプライトの frameWidth / frameHeight（= V-Slice の hitbox）はこれになり、
+   * 先頭フレームの枠ではない（updateTimelineBounds: sourceSize = bounds.size）。
+   */
+  timelineBounds() {
+    if (this._tl) return this._tl;
+    let total = 0;
+    const mk = (i) => new AnimateFrame(this, this.legacy ? { legacyName: this.animation.ANIMATION.SYMBOL_name, atlasFrame: i } : { symbol: "__MAIN__", atlasFrame: i });
+    if (this.legacy) total = legacyDuration(this.animation.ANIMATION?.TIMELINE);
+    else total = timelineLength(this.animation.AN?.TL?.L || []);
+    let x0 = Infinity,
+      y0 = Infinity,
+      x1 = -Infinity,
+      y1 = -Infinity;
+    for (let i = 0; i < Math.max(1, total); i++) {
+      const f = mk(i);
+      if (!f.list.length) continue;
+      const b = f.box;
+      x0 = Math.min(x0, b.x);
+      y0 = Math.min(y0, b.y);
+      x1 = Math.max(x1, b.x + b.w);
+      y1 = Math.max(y1, b.y + b.h);
+    }
+    return (this._tl = Number.isFinite(x0) ? { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) } : { x: 0, y: 0, w: 1, h: 1 });
+  }
   /** メインタイムラインの先頭フレーム（アニメを再生する前の姿。V-Slice の updateHitbox の基準） */
   first() {
     return this.legacy ? this._mk({ legacyName: this.animation.ANIMATION.SYMBOL_name, atlasFrame: 0 }) : this._mk({ symbol: "__MAIN__", atlasFrame: 0 });

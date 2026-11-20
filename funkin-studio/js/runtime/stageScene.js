@@ -134,6 +134,16 @@ class SceneChar {
   get hasDanceLR() {
     return !!this.actor?.has("danceLeft");
   }
+  /** character.json の animations からアニメ定義を引く（名前 → 定義。flipX / flipY の参照用） */
+  animData(name) {
+    const j = this.json;
+    if (!j?.animations) return null;
+    if (this._animJson !== j.animations) {
+      this._animJson = j.animations;
+      this._animMap = new Map(j.animations.map((a) => [a.name, a]));
+    }
+    return this._animMap.get(name) ?? null;
+  }
   /** sing で始まり -end で終わらないアニメの最中（実ソース BaseCharacter.isSinging） */
   get isSinging() {
     const n = this.actor?.name ?? "";
@@ -240,9 +250,44 @@ class SceneChar {
         f = this.actor.frame() || v.frame;
       ctx.scale(pl.k, pl.k);
       ctx.imageSmoothingEnabled = !this.json?.isPixel;
-      if (pl.flip) ctx.scale(-1, 1);
+      // アニメ個別の flipX / flipY（character.json の animations[].flipX）。FlxSprite.checkFlipX = スプライトの flipX ≠ 再生中アニメの flipX
+      const ad = this.animData(this.actor.name);
+      const fx = pl.flip !== !!ad?.flipX,
+        fy = !!ad?.flipY;
+      if (f.sp) {
+        // Sparrow / Packer: Flixel（FlxFrame.prepareMatrix）は「いま表示中のフレーム自身の枠（frameWidth / frameHeight）」の中で反転し、
+        // 枠の左上は常にスプライトの左上に置く。反転の軸 = 左上から frameWidth / 2 = 足元基準で (−refW/2 + frameWidth/2)。
+        // （基準フレームと幅が違うアニメ、特に Multi の別アトラスや sing 系で、足元中央を軸にすると (frameWidth − refW) ぶんずれる）
+        if (fx) {
+          const axis = -v.refW / 2 + f.w / 2;
+          ctx.translate(axis, 0);
+          ctx.scale(-1, 1);
+          ctx.translate(-axis, 0);
+        }
+        if (fy) {
+          const axis = -v.refH + f.h / 2;
+          ctx.translate(0, axis);
+          ctx.scale(1, -1);
+          ctx.translate(0, -axis);
+        }
+      } else {
+        // AnimateAtlas: flixel-animate は matrix.scale(-1, 1); translate(bounds.width, 0)（bounds = そのアトラスのタイムライン全体の枠）
+        const tb = f.atlas.timelineBounds();
+        if (fx) {
+          const axis = -v.refW / 2 + tb.w / 2;
+          ctx.translate(axis, 0);
+          ctx.scale(-1, 1);
+          ctx.translate(-axis, 0);
+        }
+        if (fy) {
+          const axis = -v.refH + tb.h / 2;
+          ctx.translate(0, axis);
+          ctx.scale(1, -1);
+          ctx.translate(0, -axis);
+        }
+      }
       // AnimateAtlas は「タイムラインの原点」を固定して描く（フレームごとに枠の左上へ寄せると、動くたびに絵が跳ねる）。基準枠は先頭フレーム
-      f.draw(ctx, -v.refW / 2, -v.refH, v.frame, f.sp ? v.stageMatrix : true);
+      f.draw(ctx, -v.refW / 2, -v.refH, v.frame, f.sp ? v.stageMatrix : "tl");
     } else {
       placeholder(ctx, -pl.w / 2, -pl.h, pl.w, pl.h, `${label}（${this.id || "?"} は未読み込み）`, PLACEHOLDER_COLOR[this.role]);
     }

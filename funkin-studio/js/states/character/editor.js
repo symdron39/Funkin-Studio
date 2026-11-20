@@ -37,6 +37,7 @@ import { Viewport, isTextEntry } from "../../ui/Viewport.js";
 import { HudPanels } from "../../ui/HudPanels.js";
 import { FnfShell } from "../../ui/FnfShell.js";
 import { parsePackerText } from "../stage/sparrowAtlas.js";
+import { AnimateAtlas } from "../stage/atlas.js";
 import { GENERATED_BY } from "../../core/appInfo.js";
 
 export function mountCharacterEditor(state) {
@@ -734,8 +735,33 @@ export function mountCharacterEditor(state) {
       ix = indices(a);
     return ix ? ix.map((i) => all[Number(i)]).filter(Boolean) : all;
   }
+  // タイムライン全体の枠 { x, y, w, h }（アトラス 1 つにつき 1 回だけ計算）。
+  // flixel-animate は AnimateAtlas の frameWidth / frameHeight と描画の基準をこの枠にする（先頭フレームの枠ではない）。stage/atlas.js の AnimateAtlas と共通
+  const tlCache = new WeakMap();
+  function timelineOf(data) {
+    if (!data?.animation || !data.atlas?.ATLAS?.SPRITES) return null;
+    let t = tlCache.get(data.animation); // Animation.json の JSON オブジェクトをキーにする（呼び出しごとに data を作り直しても使い回せる）
+    if (t === undefined) {
+      try {
+        t = new AnimateAtlas(data.animation, [{ json: data.atlas, image: data.image }]).timelineBounds();
+      } catch {
+        t = null;
+      }
+      tlCache.set(data.animation, t);
+    }
+    return t;
+  }
   function referenceFrameSize() {
-    if (format() !== "sparrow") return { w: 0, h: 0, label: "" };
+    {
+      // 基準アニメが AnimateAtlas のとき（Multi で別アトラスの Sparrow が混ざる場合も含む）は、タイムライン全体の枠が基準
+      const hasN = (n) => entries().some((x) => x.name === n);
+      const rn = hasN("danceLeft") ? (hasN("danceRight") ? "danceRight" : "danceLeft") : hasN("idle") ? "idle" : "";
+      const ra = rn ? entries().find((x) => x.name === rn) : null;
+      const d = ra ? atlasRegistry.get(ra.assetPath || doc?.assetPath) : atlasRegistry.get(currentAssetPath());
+      const tl = d && !d.atlas?.documentElement ? timelineOf(d) : null;
+      if (tl) return { w: tl.w, h: tl.h, tl, label: `${rn || "アトラス"}: タイムライン全体の枠` };
+    }
+    if (format() !== "sparrow" && !atlasRegistry.size) return { w: 0, h: 0, label: "" };
     const has = (n) => entries().some((x) => x.name === n);
     const name = has("danceLeft")
       ? has("danceRight")
@@ -785,7 +811,17 @@ export function mountCharacterEditor(state) {
       ctx.translate(x, y);
       ctx.scale(z * pose.scale, z * pose.scale);
       if (sp.atlasFrame !== undefined) {
-        if (pose.flip) ctx.scale(-1, 1);
+        // AnimateAtlas: タイムライン全体の枠の左上を、基準枠（hitbox）の左上 = (−基準幅/2, −基準高さ) に置く。反転は「このアトラスの枠の幅」の中で行う
+        const tl = timelineOf({ animation, atlas, image }) ?? { x: 0, y: 0, w: ref.w, h: ref.h };
+        if (ref.w) {
+          if (pose.flip) {
+            const axis = -ref.w / 2 + tl.w / 2;
+            ctx.translate(axis, 0);
+            ctx.scale(-1, 1);
+            ctx.translate(-axis, 0);
+          }
+          ctx.translate(-ref.w / 2 - tl.x, -ref.h - tl.y);
+        } else if (pose.flip) ctx.scale(-1, 1);
         if (animation?.ANIMATION) legacyDraw(sp.legacyName, sp.atlasFrame);
         else atlasDraw(a.animType === "symbol" ? getPrefix(a) : "__MAIN__", sp.atlasFrame);
       } else {

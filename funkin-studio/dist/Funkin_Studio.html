@@ -10509,8 +10509,567 @@ function paintSparrow(ctx, sp, img, x, y, w, h) {
 return { getImageCap, setImageCap, loadImage, parseSparrowXml, parsePackerText, sparrowFrames, sparrowSequenceOf, paintSparrow };
 })();
 
-/* ===== funkin-studio/js/states/character/editor.js ===== */
+/* ===== funkin-studio/js/states/stage/atlas.js ===== */
 const __m39 = (() => {
+/* ============================================================
+   stage/atlas.js — 絵の形式ごとの違いを「フレーム」にそろえる（Sparrow / Packer / AnimateAtlas）
+   ------------------------------------------------------------
+   Stage Editor が描く絵は、形式ごとにデータの形がまるで違う:
+     ・Sparrow / Packer … 1枚の PNG から四角を切り出す（XML / TXT が切り出す位置を持つ）
+     ・AnimateAtlas      … Animation.json の「タイムライン」が、spritemap の小さな四角を行列で並べて絵を作る
+   この違いを呼び出し側（props・キャラ）に見せないよう、どちらも同じ形の「フレーム」を返す:
+
+       frame = { w, h, bx, by, draw(ctx, x, y, ref, stageMatrix, tint) }
+         w, h   : フレームの枠の大きさ（V-Slice の frameWidth / frameHeight。ここから hitbox・足元・カメラ焦点が決まる）
+         bx, by : 枠の左上の、アトラス座標での位置（Sparrow は 0,0）
+         draw   : 枠の左上が (x, y) に来るように描く（Flixel と同じ）
+                  AnimateAtlas だけ stageMatrix=true のとき、ステージ原点を基準枠（ref）に固定して描く
+
+   二つの「アトラス」クラスは同じ口を持つ:   frames(anim, opts) → フレーム配列 / first() → 先頭フレーム
+
+   [出典] FlxAnimationUtil.addAtlasAnimation / addTextureAtlasAnimation（frames の選び方）、
+          Stage.hx（packer は frameIndices、animateatlas は frameLabel / symbol）、
+          MultiSparrowCharacter / MultiAnimateAtlasCharacter（アニメごとの assetPath と renderType）
+   ※ AnimateAtlas の描画ロジックは Character Editor（states/character/editor.js）と同じ。あちらは触らない方針のため重複している。
+   ============================================================ */
+const { loadImage, parseSparrowXml, parsePackerText, sparrowSequenceOf, paintSparrow } = __m38;
+const { rankFiles, topTies, assetNote, infoOf, infoOfDir, scorePath, originOf } = __m13;
+
+// ============================================================
+// 1. Sparrow / Packer（切り出す形式）
+// ============================================================
+class SpriteFrame {
+  constructor(sp, image) {
+    this.sp = sp;
+    this.image = image;
+    this.w = sp.frameWidth || sp.width;
+    this.h = sp.frameHeight || sp.height;
+    this.bx = 0;
+    this.by = 0;
+  }
+  /**
+   * tint（{ r, g, b }）を渡すと、その色を掛けて描く（Flixel の color = 乗算）。
+   * 色を掛けるのは「使うスプライト1枚分」だけ（小さなキャンバスを作って覚える）。
+   * アトラス全体を色付きで作り直すと、大きなアトラスでは数百ms 固まり、メモリも食うため。
+   */
+  draw(ctx, x, y, ref, stageMatrix, tint) {
+    const sp = this.sp;
+    const sw = sp.rotated ? sp.height : sp.width,
+      sh = sp.rotated ? sp.width : sp.height;
+    // frameX / frameY は「トリミングされた分」の負のオフセット
+    const dx = x - (sp.frameX || 0),
+      dy = y - (sp.frameY || 0);
+    if (!tint) return paintSparrow(ctx, sp, this.image, dx, dy, sw, sh);
+    ctx.drawImage(this._tinted(tint, sw, sh), dx, dy);
+  }
+  _tinted(tint, sw, sh) {
+    const key = `${tint.r},${tint.g},${tint.b}`;
+    this._tints ??= new Map();
+    let c = this._tints.get(key);
+    if (!c) {
+      c = document.createElement("canvas");
+      c.width = Math.max(1, sw);
+      c.height = Math.max(1, sh);
+      const g = c.getContext("2d");
+      paintSparrow(g, this.sp, this.image, 0, 0, sw, sh);
+      g.globalCompositeOperation = "multiply";
+      g.fillStyle = `rgb(${tint.r},${tint.g},${tint.b})`;
+      g.fillRect(0, 0, c.width, c.height);
+      g.globalCompositeOperation = "destination-in"; // 透明な部分は透明のまま（乗算で塗られた分を削る）
+      paintSparrow(g, this.sp, this.image, 0, 0, sw, sh);
+      this._tints.set(key, c);
+    }
+    return c;
+  }
+}
+
+class SpriteAtlas {
+  /** kind: "sparrow" | "packer" */
+  constructor(kind, image, sprites, label = "") {
+    this.kind = kind;
+    this.image = image;
+    this.sprites = sprites;
+    this.label = label;
+    this._cache = new Map();
+    this._seq = new Map(); // frames() の結果（再生中に毎フレーム探し直さないため）
+  }
+  frameOf(sp) {
+    let f = this._cache.get(sp);
+    if (!f) this._cache.set(sp, (f = new SpriteFrame(sp, this.image)));
+    return f;
+  }
+  /** ファイルの順のフレーム（Packer の frameIndices はこの番号） */
+  all() {
+    return this.sprites.map((s) => this.frameOf(s));
+  }
+  first() {
+    return this.sprites[0] ? this.frameOf(this.sprites[0]) : null;
+  }
+  /** animations の雛形（新しい prop を作るとき用）。連番を除いた名前ごとに1つ。Packer は frameIndices（ファイル順の番号）を持つ */
+  suggestAnimations() {
+    const groups = new Map();
+    this.sprites.forEach((sp, i) => {
+      const pre = sp.name.replace(/\d+$/, "");
+      if (!groups.has(pre)) groups.set(pre, []);
+      groups.get(pre).push(i);
+    });
+    return [...groups].map(([pre, ix]) => ({
+      name: pre.replace(/[\s_]+$/, "") || "anim",
+      ...(this.kind === "packer" ? { frameIndices: ix } : { prefix: pre }),
+      frameRate: 24,
+      looped: true,
+      offsets: [0, 0],
+    }));
+  }
+  /**
+   * アニメが再生するフレーム列。
+   *   通常                : prefix で始まるスプライト（連番順）→ frameIndices で絞る
+   *   indexOnly（packer の prop）: frameIndices をファイル順の番号としてそのまま使う（Stage.hx: animation.add(name, frameIndices)）
+   */
+  frames(anim, { indexOnly = false } = {}) {
+    const key = `${indexOnly ? "i" : "p"}|${anim?.prefix ?? anim?.name ?? ""}|${JSON.stringify(anim?.frameIndices ?? null)}`;
+    const hit = this._seq.get(key);
+    if (hit) return hit;
+    const seq = this._frames(anim, indexOnly);
+    this._seq.set(key, seq);
+    return seq;
+  }
+  _frames(anim, indexOnly) {
+    if (indexOnly) {
+      const all = this.all(),
+        ix = Array.isArray(anim?.frameIndices) && anim.frameIndices.length ? anim.frameIndices : null;
+      return ix ? ix.map((i) => all[Number(i)]).filter(Boolean) : all;
+    }
+    return sparrowSequenceOf(this.sprites, anim || {}).map((s) => this.frameOf(s));
+  }
+}
+
+// ============================================================
+// 2. AnimateAtlas（タイムラインを描く形式）
+// ============================================================
+const IDENT = [1, 0, 0, 1, 0, 0];
+/** 2×3 行列の積 m × n（canvas の transform(a,b,c,d,e,f) と同じ並び。n を先に適用する） */
+const mul = (m, n) => [
+  m[0] * n[0] + m[2] * n[1],
+  m[1] * n[0] + m[3] * n[1],
+  m[0] * n[2] + m[2] * n[3],
+  m[1] * n[2] + m[3] * n[3],
+  m[0] * n[4] + m[2] * n[5] + m[4],
+  m[1] * n[4] + m[3] * n[5] + m[5],
+];
+/** 回転して格納された spritemap の四角を戻す行列（translate(0, w) → rotate(-90°)） */
+const ROT = (w) => [0, -1, 1, 0, 0, w];
+
+function timelineLength(layers) {
+  return Math.max(0, ...layers.flatMap((l) => (l.FR || []).map((f) => (Number(f.I) || 0) + Math.max(1, Number(f.DU) || 1))));
+}
+function legacyDuration(timeline) {
+  return Math.max(1, ...(timeline?.LAYERS || []).flatMap((l) => (l.Frames || []).map((f) => (Number(f.index) || 0) + Math.max(1, Number(f.duration) || 1))));
+}
+
+class AnimateFrame {
+  /** spec: モダン { symbol: "__MAIN__" | シンボル名, atlasFrame } / レガシー { legacyName, atlasFrame } */
+  constructor(atlas, spec) {
+    this.atlas = atlas;
+    this.spec = spec;
+  }
+  /**
+   * このフレームを作る「スプライトと行列」の一覧 [{ sp, m }]。タイムラインをたどるのは重いので、初回だけ計算して使い回す
+   * （再生中に毎フレームたどり直すと、大きなアトラスでは画面が固まる原因になる）
+   */
+  get list() {
+    if (!this._list) {
+      const out = [];
+      this.atlas.traverse(this.spec, (sp, m) => out.push({ sp, m }));
+      this._list = out;
+    }
+    return this._list;
+  }
+  /** 枠（描画した全スプライトを囲む四角）。初回だけ計算してキャッシュする */
+  get box() {
+    if (!this._box) {
+      let x0 = Infinity,
+        y0 = Infinity,
+        x1 = -Infinity,
+        y1 = -Infinity;
+      for (const { sp, m } of this.list) {
+        for (const [px, py] of [[0, 0], [sp.w, 0], [0, sp.h], [sp.w, sp.h]]) {
+          const x = m[0] * px + m[2] * py + m[4],
+            y = m[1] * px + m[3] * py + m[5];
+          x0 = Math.min(x0, x);
+          y0 = Math.min(y0, y);
+          x1 = Math.max(x1, x);
+          y1 = Math.max(y1, y);
+        }
+      }
+      this._box = Number.isFinite(x0) ? { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) } : { x: 0, y: 0, w: 1, h: 1 };
+    }
+    return this._box;
+  }
+  get w() {
+    return this.box.w;
+  }
+  get h() {
+    return this.box.h;
+  }
+  get bx() {
+    return this.box.x;
+  }
+  get by() {
+    return this.box.y;
+  }
+  draw(ctx, x, y, ref, stageMatrix) {
+    // 既定: このフレーム自身の枠の左上を (x, y) に置く。stageMatrix: ステージ原点を基準枠に対して固定する
+    // stageMatrix === "tl": キャラ用。flixel-animate は「タイムライン全体（全フレームの和）の枠」の左上をスプライトの左上に置いて描く
+    //   （FlxAnimate.drawAnimate: matrix.translate(-bounds.x, -bounds.y)。bounds = timeline._bounds）
+    const tl = stageMatrix === "tl" ? this.atlas.timelineBounds() : null;
+    const ox = tl ? x - tl.x : stageMatrix && ref ? x - ref.bx : x - this.bx,
+      oy = tl ? y - tl.y : stageMatrix && ref ? y - ref.by : y - this.by;
+    // スプライトごとに save / restore すると、数百枚あるフレームで非常に遅い。
+    // 今の変換を1回だけ控えて、スプライトごとに setTransform（= 控えた変換 × 原点 × そのスプライトの行列）で描く
+    const t = ctx.getTransform();
+    const base = mul([t.a, t.b, t.c, t.d, t.e, t.f], [1, 0, 0, 1, ox, oy]);
+    for (const { sp, m } of this.list) {
+      const M = mul(base, m);
+      ctx.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
+      const k = sp.image.k || 1;
+      ctx.drawImage(sp.image, sp.x * k, sp.y * k, sp.w * k, sp.h * k, 0, 0, sp.w, sp.h);
+    }
+    ctx.setTransform(t);
+  }
+}
+
+class AnimateAtlas {
+  /** animation: Animation.json / parts: [{ json: spritemap の JSON, image }]（spritemap が複数でもよい） */
+  constructor(animation, parts, label = "") {
+    this.kind = "animate";
+    this.animation = animation;
+    this.label = label;
+    this.legacy = !!animation?.ANIMATION;
+    this._frames = new Map(); // フレームの枠は計算が重いので、同じフレームは作り回す
+    this._seq = new Map(); // frames() の結果
+    this._symMap = null;
+    this.sprites = new Map(); // spritemap のスプライト名 → { x, y, w, h, rotated, image }
+    for (const { json, image } of parts) {
+      for (const item of json?.ATLAS?.SPRITES || []) {
+        const s = item.SPRITE || item;
+        this.sprites.set(String(s.name), { x: s.x, y: s.y, w: s.w, h: s.h, rotated: !!s.rotated, image });
+      }
+    }
+    if (!this.sprites.size) throw Error("spritemap のスプライトが見つかりません（spritemap1.json などが必要です）");
+    if (!this.legacy && !animation?.AN) throw Error("Animation.json の形式が分かりません（AN / ANIMATION がありません）");
+  }
+
+  // ---- タイムラインの走査（描かずに、スプライトと行列を emit に渡す） ----
+  traverse(spec, emit) {
+    if (this.legacy) {
+      const root = this.animation.ANIMATION,
+        sym = (this.animation.SYMBOL_DICTIONARY?.Symbols || []).find((s) => s.SYMBOL_name === spec.legacyName);
+      const tl = root?.SYMBOL_name === spec.legacyName ? root.TIMELINE : sym?.TIMELINE;
+      if (tl) this._legacy(tl, spec.atlasFrame, IDENT, 0, emit);
+    } else this._modern(spec.symbol, spec.atlasFrame, IDENT, 0, emit);
+  }
+  _put(sp, m, emit) {
+    if (sp) emit(sp, sp.rotated ? mul(m, ROT(sp.w)) : m);
+  }
+  _symbol(name) {
+    // シンボルは数百個あることがあり、毎回の線形探索は遅いので、名前 → シンボルの表を1回だけ作る
+    if (!this._symMap) this._symMap = new Map((this.animation.SD?.S || []).map((x) => [x.SN, x]));
+    return this._symMap.get(name);
+  }
+  _modern(name, fr, m, depth, emit) {
+    if (depth > 20) return;
+    const sym = name === "__MAIN__" ? null : this._symbol(name);
+    if (name !== "__MAIN__" && !sym) return;
+    const layers = (sym ? sym.TL?.L : this.animation.AN?.TL?.L) || [];
+    for (let li = layers.length - 1; li >= 0; li--) {
+      let f = null;
+      for (const k of layers[li].FR || []) {
+        const i = Number(k.I) || 0;
+        if (i <= fr && fr < i + Math.max(1, Number(k.DU) || 1) && (!f || i > Number(f.I))) f = k;
+      }
+      if (!f) continue;
+      for (const e of f.E || []) {
+        const o = e.SI || e.ASI;
+        if (!o) continue;
+        const local = o.MX || (o.M3D?.length === 16 ? [o.M3D[0], o.M3D[1], o.M3D[4], o.M3D[5], o.M3D[12], o.M3D[13]] : null) || IDENT;
+        const M = mul(m, local);
+        if (e.ASI) this._put(this.sprites.get(String(o.N)), M, emit);
+        else {
+          const child = this._symbol(o.SN);
+          if (!child) continue;
+          const len = Math.max(1, timelineLength(child.TL?.L || []));
+          const first = Math.max(0, Number(o.FF) || 0),
+            elapsed = Math.max(0, fr - (Number(f.I) || 0));
+          const mode = String(o.LP || "LP").toUpperCase();
+          const cf = mode.includes("SF") || mode.includes("SINGLEFRAME") ? first : mode.includes("PO") || mode.includes("PLAYONCE") ? Math.min(first + elapsed, len - 1) : (first + elapsed) % len;
+          this._modern(o.SN, cf, M, depth + 1, emit);
+        }
+      }
+    }
+  }
+  _legacy(tl, t, m, depth, emit) {
+    if (depth > 25) return;
+    const layers = tl?.LAYERS || [];
+    const mat = (x) => (x ? [Number(x.m00) || 0, Number(x.m01) || 0, Number(x.m10) || 0, Number(x.m11) || 0, Number(x.m30) || 0, Number(x.m31) || 0] : IDENT);
+    for (let li = layers.length - 1; li >= 0; li--) {
+      const f = (layers[li].Frames || []).find((k) => t >= Number(k.index) && t < Number(k.index) + Math.max(1, Number(k.duration) || 1));
+      if (!f) continue;
+      for (const item of f.elements || []) {
+        if (item.ATLAS_SPRITE_instance) {
+          const si = item.ATLAS_SPRITE_instance;
+          this._put(this.sprites.get(String(si.name)), mul(m, mat(si.Matrix3D)), emit);
+        } else if (item.SYMBOL_Instance) {
+          const si = item.SYMBOL_Instance;
+          const child = (this.animation.SYMBOL_DICTIONARY?.Symbols || []).find((s) => s.SYMBOL_name === si.SYMBOL_name);
+          if (!child) continue;
+          const len = legacyDuration(child.TIMELINE),
+            first = Math.max(0, Number(si.firstFrame) || 0),
+            elapsed = Math.max(0, t - (Number(f.index) || 0));
+          const mode = String(si.loop || "loop").toLowerCase();
+          const cf = mode === "singleframe" ? first : mode === "playonce" ? Math.min(first + elapsed, len - 1) : (first + elapsed) % len;
+          this._legacy(child.TIMELINE, cf, mul(m, mat(si.Matrix3D)), depth + 1, emit);
+        }
+      }
+    }
+  }
+
+  // ---- フレーム列 ----
+  /**
+   * タイムライン全体の枠 { x, y, w, h }（メインタイムラインの全フレームの枠の和。1 回だけ計算して覚える）。
+   * flixel-animate の Timeline._bounds（getWholeBounds）と同じ。AnimateAtlas のスプライトの frameWidth / frameHeight（= V-Slice の hitbox）はこれになり、
+   * 先頭フレームの枠ではない（updateTimelineBounds: sourceSize = bounds.size）。
+   */
+  timelineBounds() {
+    if (this._tl) return this._tl;
+    let total = 0;
+    const mk = (i) => new AnimateFrame(this, this.legacy ? { legacyName: this.animation.ANIMATION.SYMBOL_name, atlasFrame: i } : { symbol: "__MAIN__", atlasFrame: i });
+    if (this.legacy) total = legacyDuration(this.animation.ANIMATION?.TIMELINE);
+    else total = timelineLength(this.animation.AN?.TL?.L || []);
+    let x0 = Infinity,
+      y0 = Infinity,
+      x1 = -Infinity,
+      y1 = -Infinity;
+    for (let i = 0; i < Math.max(1, total); i++) {
+      const f = mk(i);
+      if (!f.list.length) continue;
+      const b = f.box;
+      x0 = Math.min(x0, b.x);
+      y0 = Math.min(y0, b.y);
+      x1 = Math.max(x1, b.x + b.w);
+      y1 = Math.max(y1, b.y + b.h);
+    }
+    return (this._tl = Number.isFinite(x0) ? { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) } : { x: 0, y: 0, w: 1, h: 1 });
+  }
+  /** メインタイムラインの先頭フレーム（アニメを再生する前の姿。V-Slice の updateHitbox の基準） */
+  first() {
+    return this.legacy ? this._mk({ legacyName: this.animation.ANIMATION.SYMBOL_name, atlasFrame: 0 }) : this._mk({ symbol: "__MAIN__", atlasFrame: 0 });
+  }
+  _mk(spec) {
+    const key = `${spec.symbol ?? spec.legacyName}|${spec.atlasFrame}`;
+    let f = this._frames.get(key);
+    if (!f) this._frames.set(key, (f = new AnimateFrame(this, spec)));
+    return f;
+  }
+  /** animations の雛形（新しい prop を作るとき用）。モダンはフレームラベルごと、レガシーはシンボルごとに1つ */
+  suggestAnimations() {
+    const base = { frameRate: 24, looped: true, offsets: [0, 0] };
+    let names = [];
+    if (this.legacy) {
+      const root = this.animation.ANIMATION;
+      names = [root.SYMBOL_name, ...(this.animation.SYMBOL_DICTIONARY?.Symbols || []).map((s) => s.SYMBOL_name)].filter(Boolean);
+    } else {
+      for (const l of this.animation.AN?.TL?.L || []) for (const f of l.FR || []) if (f.N && !names.includes(f.N)) names.push(f.N);
+    }
+    if (!names.length) return [{ name: "idle", prefix: "idle", ...base }];
+    return names.map((n) => ({ name: n, prefix: n, ...(this.legacy ? {} : { animType: "frameLabel" }), ...base }));
+  }
+  /**
+   * アニメが再生するフレーム列（Character Editor の candidates / sequence と同じ規則）。
+   *   レガシー        : prefix と同名のシンボル全体
+   *   モダン          : animType が "symbol" ならそのシンボル全体 / それ以外はフレームラベルの区間（次のラベルの手前まで）
+   *   frameIndices    : 全体の中の番号で絞り込む
+   */
+  frames(anim) {
+    const key = JSON.stringify([anim?.prefix ?? anim?.name ?? "", anim?.animType ?? "", anim?.frameIndices ?? null]);
+    let seq = this._seq.get(key);
+    if (!seq) this._seq.set(key, (seq = this._framesOf(anim)));
+    return seq;
+  }
+  _framesOf(anim) {
+    const a = anim || {};
+    const pref = String(a.prefix ?? a.name ?? "");
+    let all = [];
+    if (this.legacy) {
+      const root = this.animation.ANIMATION;
+      const sym = (this.animation.SYMBOL_DICTIONARY?.Symbols || []).find((x) => x.SYMBOL_name === pref);
+      const tl = root.SYMBOL_name === pref ? root.TIMELINE : sym?.TIMELINE;
+      if (tl) all = Array.from({ length: legacyDuration(tl) }, (_, i) => this._mk({ legacyName: pref, atlasFrame: i }));
+    } else {
+      const isSymbol = String(a.animType || "").toLowerCase() === "symbol";
+      const sym = this._symbol(pref);
+      const layers = isSymbol ? sym?.TL?.L : this.animation.AN?.TL?.L;
+      if (layers) {
+        const total = timelineLength(layers);
+        let start = 0,
+          end = total,
+          ok = true;
+        if (!isSymbol) {
+          const labels = [];
+          for (const l of layers) for (const f of l.FR || []) if (f.N) labels.push({ name: f.N, start: Number(f.I) || 0 });
+          labels.sort((x, y) => x.start - y.start);
+          const match = labels.find((x) => x.name === pref);
+          if (String(a.animType || "").toLowerCase() === "framelabel" && !match) ok = false;
+          if (match) {
+            start = match.start;
+            end = Math.min(total, labels.find((x) => x.start > start)?.start ?? total);
+          }
+        }
+        if (ok) all = Array.from({ length: Math.max(0, end - start) }, (_, i) => this._mk({ symbol: isSymbol ? pref : "__MAIN__", atlasFrame: start + i }));
+      }
+    }
+    const ix = Array.isArray(a.frameIndices) && a.frameIndices.length ? a.frameIndices : null;
+    return ix ? ix.map((i) => all[Number(i)]).filter(Boolean) : all;
+  }
+}
+
+// ============================================================
+// 3. ファイルから作る
+// ============================================================
+// ファイルの置き場所の手がかり:
+//   フォルダごと選んだとき（PC）は webkitRelativePath に「フォルダ/…/ファイル名」が入る。
+//   スマホなど、ファイルを直接選ぶと空（= フラット）。フラットなら、置き場所は「同じ」とみなす。
+const relDir = (f) => (f.webkitRelativePath || "").split("/").slice(0, -1).join("/");
+const norm = (p) => String(p || "").replace(/^[^:/\\]+:/, "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
+const lastSeg = (p) => norm(p).split("/").pop();
+/** 拡張子を除いた名前（小文字） */
+const stem = (name) => String(name).replace(/^.*[\\/]/, "").replace(/\.[^.]*$/, "").toLowerCase();
+const isAnimationJsonName = (n) => /^animation\.json$/i.test(n);
+const isSpritemapJsonName = (n) => /^spritemap\d*\.json$/i.test(n);
+
+async function readJson(file) {
+  return JSON.parse((await file.text()).replace(/^﻿/, ""));
+}
+
+/**
+ * 1フォルダ分のファイル（Animation.json + spritemap*.json + 同名 PNG）から AnimateAtlas を作る。
+ * spritemap が複数あってもよい（スプライト名は全部まとめて引く）。
+ */
+async function buildAnimateAtlas(files, label = "") {
+  const list = [...files];
+  const animFile = list.find((f) => isAnimationJsonName(f.name));
+  if (!animFile) throw Error("Animation.json が見つかりません");
+  const animation = await readJson(animFile);
+  const parts = [];
+  for (const f of list) {
+    if (!/\.json$/i.test(f.name) || f === animFile) continue;
+    let json;
+    try {
+      json = await readJson(f);
+    } catch {
+      continue; // metadata.json など、読めなくても支障のないものは無視
+    }
+    if (!json?.ATLAS?.SPRITES) continue;
+    const png = list.find((g) => /\.png$/i.test(g.name) && stem(g.name) === stem(f.name) && relDir(g) === relDir(f));
+    if (!png) throw Error(`${f.name} と同名の PNG（${stem(f.name)}.png）が見つかりません`);
+    parts.push({ json, image: await loadImage(png) });
+  }
+  if (!parts.length) throw Error("spritemap（spritemap1.json と spritemap1.png など）が見つかりません");
+  return new AnimateAtlas(animation, parts, label || animFile.webkitRelativePath || animFile.name);
+}
+
+/** ファイル群の中の「Animation.json を含むフォルダ」ごとの組。[{ dir, files }] */
+function animateGroups(files) {
+  const list = [...files],
+    dirs = [...new Set(list.filter((f) => isAnimationJsonName(f.name)).map(relDir))];
+  return dirs.map((dir) => ({ dir, files: list.filter((f) => relDir(f) === dir) }));
+}
+
+/** ファイルの置き場所つきの名前（フォルダごと選んだときは「フォルダ/…/名前」、直接選んだときは名前だけ） */
+const relPath = (f) => f.webkitRelativePath || f.name;
+// ファイルが数千個あっても探せるよう、正規化した名前は1回だけ計算する
+const _pathCache = new WeakMap();
+const pathNoExt = (f) => {
+  let v = _pathCache.get(f);
+  if (v === undefined) _pathCache.set(f, (v = norm(relPath(f)).replace(/\.[^./]+$/, "")));
+  return v;
+};
+
+/**
+ * ファイルの山（pool）から、assetPath に合うファイルを探す。
+ *   ① 置き場所つきの名前の末尾が assetPath と一致する（mod のフォルダ全体を選んだときは、images/characters/bf.png のように完全に特定できる）
+ *   ② 無ければ、拡張子を除いた名前が assetPath の最後の1つと一致する（ファイルを直接選んだとき）
+ * extRe: 対象の拡張子（例 /\.png$/i）
+ */
+function matchFile(pool, assetPath, extRe, opts = {}) {
+  const ranked = rankFiles(pool, assetPath, extRe, opts);
+  if (!ranked.length) return null;
+  const ties = topTies(ranked);
+  if (ties.length > 1) {
+    assetNote(`「${assetPath}」に合うファイルが複数あります（${ties.slice(0, 3).map((t) => relPath(t.f)).join(" / ")}）。どれか決められないため ${relPath(ranked[0].f)} を使いました。違う場合は、アセット一覧の「選択」で指定してください。`);
+  }
+  return ranked[0].f;
+}
+
+/**
+ * assetPath（フォルダ）に対応する AnimateAtlas を、ファイルの山から探して作る。
+ *   1. フォルダ名が assetPath と合う組  2. 候補が1組だけならそれ（strict のときは 1 だけ）
+ * 見つからなければ Error（何をどう選べばよいか書く）
+ */
+async function findAnimateAtlas(files, assetPath, { strict = false, origin } = {}) {
+  const groups = animateGroups(files);
+  if (!groups.length) throw Error(`AnimateAtlas「${assetPath}」の Animation.json が見つかりません（spritemap1.json / spritemap1.png も一緒に）`);
+  // フォルダの置き場所を点数で比べる（同名フォルダが複数あっても、assetPath の階層まで合うものを選ぶ）
+  const scored = groups
+    .map((g) => {
+      const info = g.dir ? infoOfDir(g.dir) : null;
+      const base = info ? scorePath(info, assetPath, "images") : 0;
+      return { g, score: base && origin !== undefined && info.origin === origin ? base + 25 : base };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score);
+  if (scored.length > 1 && scored[0].score === scored[1].score) assetNote(`AnimateAtlas「${assetPath}」に合うフォルダが複数あります（${scored.slice(0, 3).map((x) => x.g.dir).join(" / ")}）。${scored[0].g.dir} を使いました。違う場合は、フォルダを直接選んでください。`);
+  const hit = scored[0]?.g;
+  const pick = hit || (!strict && groups.length === 1 ? groups[0] : null);
+  if (!pick) throw Error(`AnimateAtlas が ${groups.length} セットあり、「${assetPath}」がどれか分かりません。フォルダごと選ぶか、1セットずつ選んでください`);
+  return buildAnimateAtlas(pick.files, assetPath);
+}
+
+/**
+ * assetPath に対応する Sparrow / Packer アトラスを、ファイルの山から探して作る。
+ * PNG と (XML | TXT) を matchFile で探す。合うものが無くて PNG と定義が1つずつなら、それを使う。
+ */
+async function findSpriteAtlas(files, assetPath, kind, opts = {}) {
+  const list = [...files];
+  const png = matchFile(list, assetPath, /\.(png|webp|jpe?g)$/i, opts) || soleOf(list, /\.(png|webp|jpe?g)$/i, kind);
+  const defRe = kind === "packer" ? /\.txt$/i : /\.xml$/i;
+  // 定義(XML/TXT)は、選んだ PNG と同じフォルダ・同じ名前のものを最優先（別の mod の XML と組み合わさらないように）
+  const sibling = png && list.find((f) => defRe.test(f.name) && relDir(f) === relDir(png) && stem(f.name) === stem(png.name));
+  const def = sibling || matchFile(list, assetPath, defRe, { ...opts, origin: png ? originOf(png) : opts.origin }) || soleOf(list, defRe, kind);
+  const ext = kind === "packer" ? "TXT" : "XML";
+  const key = lastSeg(assetPath);
+  if (!png) throw Error(`「${assetPath}」の画像（${key}.png）が見つかりません`);
+  if (!def) throw Error(`「${assetPath}」の ${ext}（${key}.${ext.toLowerCase()}）が見つかりません`);
+  const text = await def.text();
+  const sprites = kind === "packer" ? parsePackerText(text) : parseSparrowXml(text);
+  return new SpriteAtlas(kind, await loadImage(png), sprites, `${png.name} + ${def.name}`);
+}
+/** 該当する種類のファイルが1つしか無ければそれ（spritemap の PNG は除く）。選んだ数が少ないときの救済 */
+function soleOf(list, re) {
+  const animDirs = new Set(list.filter((f) => isAnimationJsonName(f.name)).map(relDir));
+  const hits = list.filter((f) => re.test(f.name) && !(/^spritemap\d*\.png$/i.test(f.name) && animDirs.has(relDir(f))));
+  return hits.length === 1 ? hits[0] : null;
+}
+/** spritemapN.png（AnimateAtlas の部品）か。同じ場所に Animation.json があれば、そちらの部品として扱う */
+function isSpritemapPng(f, list) {
+  return /^spritemap\d*\.png$/i.test(f.name) && list.some((g) => isAnimationJsonName(g.name) && relDir(g) === relDir(f));
+}
+
+return { SpriteAtlas, AnimateAtlas, isAnimationJsonName, isSpritemapJsonName, buildAnimateAtlas, animateGroups, relPath, matchFile, findAnimateAtlas, findSpriteAtlas, isSpritemapPng };
+})();
+
+/* ===== funkin-studio/js/states/character/editor.js ===== */
+const __m40 = (() => {
 /* ============================================================
    states/character/editor.js — Character Editor（V-Slice の character.json / Offset 編集）のロジック
    ------------------------------------------------------------
@@ -10550,6 +11109,7 @@ const { Viewport, isTextEntry } = __m35;
 const { HudPanels } = __m36;
 const { FnfShell } = __m37;
 const { parsePackerText } = __m38;
+const { AnimateAtlas } = __m39;
 const { GENERATED_BY } = __m9;
 
 function mountCharacterEditor(state) {
@@ -11247,8 +11807,33 @@ function mountCharacterEditor(state) {
       ix = indices(a);
     return ix ? ix.map((i) => all[Number(i)]).filter(Boolean) : all;
   }
+  // タイムライン全体の枠 { x, y, w, h }（アトラス 1 つにつき 1 回だけ計算）。
+  // flixel-animate は AnimateAtlas の frameWidth / frameHeight と描画の基準をこの枠にする（先頭フレームの枠ではない）。stage/atlas.js の AnimateAtlas と共通
+  const tlCache = new WeakMap();
+  function timelineOf(data) {
+    if (!data?.animation || !data.atlas?.ATLAS?.SPRITES) return null;
+    let t = tlCache.get(data.animation); // Animation.json の JSON オブジェクトをキーにする（呼び出しごとに data を作り直しても使い回せる）
+    if (t === undefined) {
+      try {
+        t = new AnimateAtlas(data.animation, [{ json: data.atlas, image: data.image }]).timelineBounds();
+      } catch {
+        t = null;
+      }
+      tlCache.set(data.animation, t);
+    }
+    return t;
+  }
   function referenceFrameSize() {
-    if (format() !== "sparrow") return { w: 0, h: 0, label: "" };
+    {
+      // 基準アニメが AnimateAtlas のとき（Multi で別アトラスの Sparrow が混ざる場合も含む）は、タイムライン全体の枠が基準
+      const hasN = (n) => entries().some((x) => x.name === n);
+      const rn = hasN("danceLeft") ? (hasN("danceRight") ? "danceRight" : "danceLeft") : hasN("idle") ? "idle" : "";
+      const ra = rn ? entries().find((x) => x.name === rn) : null;
+      const d = ra ? atlasRegistry.get(ra.assetPath || doc?.assetPath) : atlasRegistry.get(currentAssetPath());
+      const tl = d && !d.atlas?.documentElement ? timelineOf(d) : null;
+      if (tl) return { w: tl.w, h: tl.h, tl, label: `${rn || "アトラス"}: タイムライン全体の枠` };
+    }
+    if (format() !== "sparrow" && !atlasRegistry.size) return { w: 0, h: 0, label: "" };
     const has = (n) => entries().some((x) => x.name === n);
     const name = has("danceLeft")
       ? has("danceRight")
@@ -11298,7 +11883,17 @@ function mountCharacterEditor(state) {
       ctx.translate(x, y);
       ctx.scale(z * pose.scale, z * pose.scale);
       if (sp.atlasFrame !== undefined) {
-        if (pose.flip) ctx.scale(-1, 1);
+        // AnimateAtlas: タイムライン全体の枠の左上を、基準枠（hitbox）の左上 = (−基準幅/2, −基準高さ) に置く。反転は「このアトラスの枠の幅」の中で行う
+        const tl = timelineOf({ animation, atlas, image }) ?? { x: 0, y: 0, w: ref.w, h: ref.h };
+        if (ref.w) {
+          if (pose.flip) {
+            const axis = -ref.w / 2 + tl.w / 2;
+            ctx.translate(axis, 0);
+            ctx.scale(-1, 1);
+            ctx.translate(-axis, 0);
+          }
+          ctx.translate(-ref.w / 2 - tl.x, -ref.h - tl.y);
+        } else if (pose.flip) ctx.scale(-1, 1);
         if (animation?.ANIMATION) legacyDraw(sp.legacyName, sp.atlasFrame);
         else atlasDraw(a.animType === "symbol" ? getPrefix(a) : "__MAIN__", sp.atlasFrame);
       } else {
@@ -11744,7 +12339,7 @@ return { mountCharacterEditor };
 })();
 
 /* ===== funkin-studio/js/states/CharacterEditorState.js ===== */
-const __m40 = (() => {
+const __m41 = (() => {
 /* ============================================================
    states/CharacterEditorState.js — Character Editor（V-Slice の character.json / Offset 編集）の画面
    ------------------------------------------------------------
@@ -11755,7 +12350,7 @@ const { mountModPicker } = __m24;
 const { characterList } = __m25;
 const { EditorState } = __m26;
 const { template } = __m34;
-const { mountCharacterEditor } = __m39;
+const { mountCharacterEditor } = __m40;
 
 class CharacterEditorState extends EditorState {
   static id = "character";
@@ -11779,7 +12374,7 @@ return { CharacterEditorState };
 })();
 
 /* ===== funkin-studio/js/states/stage/template.js ===== */
-const __m41 = (() => {
+const __m42 = (() => {
 /* ============================================================
    stage/template.js — Stage Editor 画面の HTML
    ------------------------------------------------------------
@@ -11994,7 +12589,7 @@ return { template };
 })();
 
 /* ===== funkin-studio/js/states/stage/stageData.js ===== */
-const __m42 = (() => {
+const __m43 = (() => {
 /* ============================================================
    stage/stageData.js — V-Slice の「ステージ JSON」（StageData.hx）を扱う純粋な関数群
    ------------------------------------------------------------
@@ -12183,536 +12778,6 @@ function serializeStage(doc, compact = true) {
 return { STAGE_VERSION, CHAR_IDS, CHAR_LABEL, clone, round3, defaultCharacter, defaultStage, normalizeStage, normalizeProp, newProp, newRect, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas, serializeStage };
 })();
 
-/* ===== funkin-studio/js/states/stage/atlas.js ===== */
-const __m43 = (() => {
-/* ============================================================
-   stage/atlas.js — 絵の形式ごとの違いを「フレーム」にそろえる（Sparrow / Packer / AnimateAtlas）
-   ------------------------------------------------------------
-   Stage Editor が描く絵は、形式ごとにデータの形がまるで違う:
-     ・Sparrow / Packer … 1枚の PNG から四角を切り出す（XML / TXT が切り出す位置を持つ）
-     ・AnimateAtlas      … Animation.json の「タイムライン」が、spritemap の小さな四角を行列で並べて絵を作る
-   この違いを呼び出し側（props・キャラ）に見せないよう、どちらも同じ形の「フレーム」を返す:
-
-       frame = { w, h, bx, by, draw(ctx, x, y, ref, stageMatrix, tint) }
-         w, h   : フレームの枠の大きさ（V-Slice の frameWidth / frameHeight。ここから hitbox・足元・カメラ焦点が決まる）
-         bx, by : 枠の左上の、アトラス座標での位置（Sparrow は 0,0）
-         draw   : 枠の左上が (x, y) に来るように描く（Flixel と同じ）
-                  AnimateAtlas だけ stageMatrix=true のとき、ステージ原点を基準枠（ref）に固定して描く
-
-   二つの「アトラス」クラスは同じ口を持つ:   frames(anim, opts) → フレーム配列 / first() → 先頭フレーム
-
-   [出典] FlxAnimationUtil.addAtlasAnimation / addTextureAtlasAnimation（frames の選び方）、
-          Stage.hx（packer は frameIndices、animateatlas は frameLabel / symbol）、
-          MultiSparrowCharacter / MultiAnimateAtlasCharacter（アニメごとの assetPath と renderType）
-   ※ AnimateAtlas の描画ロジックは Character Editor（states/character/editor.js）と同じ。あちらは触らない方針のため重複している。
-   ============================================================ */
-const { loadImage, parseSparrowXml, parsePackerText, sparrowSequenceOf, paintSparrow } = __m38;
-const { rankFiles, topTies, assetNote, infoOf, infoOfDir, scorePath, originOf } = __m13;
-
-// ============================================================
-// 1. Sparrow / Packer（切り出す形式）
-// ============================================================
-class SpriteFrame {
-  constructor(sp, image) {
-    this.sp = sp;
-    this.image = image;
-    this.w = sp.frameWidth || sp.width;
-    this.h = sp.frameHeight || sp.height;
-    this.bx = 0;
-    this.by = 0;
-  }
-  /**
-   * tint（{ r, g, b }）を渡すと、その色を掛けて描く（Flixel の color = 乗算）。
-   * 色を掛けるのは「使うスプライト1枚分」だけ（小さなキャンバスを作って覚える）。
-   * アトラス全体を色付きで作り直すと、大きなアトラスでは数百ms 固まり、メモリも食うため。
-   */
-  draw(ctx, x, y, ref, stageMatrix, tint) {
-    const sp = this.sp;
-    const sw = sp.rotated ? sp.height : sp.width,
-      sh = sp.rotated ? sp.width : sp.height;
-    // frameX / frameY は「トリミングされた分」の負のオフセット
-    const dx = x - (sp.frameX || 0),
-      dy = y - (sp.frameY || 0);
-    if (!tint) return paintSparrow(ctx, sp, this.image, dx, dy, sw, sh);
-    ctx.drawImage(this._tinted(tint, sw, sh), dx, dy);
-  }
-  _tinted(tint, sw, sh) {
-    const key = `${tint.r},${tint.g},${tint.b}`;
-    this._tints ??= new Map();
-    let c = this._tints.get(key);
-    if (!c) {
-      c = document.createElement("canvas");
-      c.width = Math.max(1, sw);
-      c.height = Math.max(1, sh);
-      const g = c.getContext("2d");
-      paintSparrow(g, this.sp, this.image, 0, 0, sw, sh);
-      g.globalCompositeOperation = "multiply";
-      g.fillStyle = `rgb(${tint.r},${tint.g},${tint.b})`;
-      g.fillRect(0, 0, c.width, c.height);
-      g.globalCompositeOperation = "destination-in"; // 透明な部分は透明のまま（乗算で塗られた分を削る）
-      paintSparrow(g, this.sp, this.image, 0, 0, sw, sh);
-      this._tints.set(key, c);
-    }
-    return c;
-  }
-}
-
-class SpriteAtlas {
-  /** kind: "sparrow" | "packer" */
-  constructor(kind, image, sprites, label = "") {
-    this.kind = kind;
-    this.image = image;
-    this.sprites = sprites;
-    this.label = label;
-    this._cache = new Map();
-    this._seq = new Map(); // frames() の結果（再生中に毎フレーム探し直さないため）
-  }
-  frameOf(sp) {
-    let f = this._cache.get(sp);
-    if (!f) this._cache.set(sp, (f = new SpriteFrame(sp, this.image)));
-    return f;
-  }
-  /** ファイルの順のフレーム（Packer の frameIndices はこの番号） */
-  all() {
-    return this.sprites.map((s) => this.frameOf(s));
-  }
-  first() {
-    return this.sprites[0] ? this.frameOf(this.sprites[0]) : null;
-  }
-  /** animations の雛形（新しい prop を作るとき用）。連番を除いた名前ごとに1つ。Packer は frameIndices（ファイル順の番号）を持つ */
-  suggestAnimations() {
-    const groups = new Map();
-    this.sprites.forEach((sp, i) => {
-      const pre = sp.name.replace(/\d+$/, "");
-      if (!groups.has(pre)) groups.set(pre, []);
-      groups.get(pre).push(i);
-    });
-    return [...groups].map(([pre, ix]) => ({
-      name: pre.replace(/[\s_]+$/, "") || "anim",
-      ...(this.kind === "packer" ? { frameIndices: ix } : { prefix: pre }),
-      frameRate: 24,
-      looped: true,
-      offsets: [0, 0],
-    }));
-  }
-  /**
-   * アニメが再生するフレーム列。
-   *   通常                : prefix で始まるスプライト（連番順）→ frameIndices で絞る
-   *   indexOnly（packer の prop）: frameIndices をファイル順の番号としてそのまま使う（Stage.hx: animation.add(name, frameIndices)）
-   */
-  frames(anim, { indexOnly = false } = {}) {
-    const key = `${indexOnly ? "i" : "p"}|${anim?.prefix ?? anim?.name ?? ""}|${JSON.stringify(anim?.frameIndices ?? null)}`;
-    const hit = this._seq.get(key);
-    if (hit) return hit;
-    const seq = this._frames(anim, indexOnly);
-    this._seq.set(key, seq);
-    return seq;
-  }
-  _frames(anim, indexOnly) {
-    if (indexOnly) {
-      const all = this.all(),
-        ix = Array.isArray(anim?.frameIndices) && anim.frameIndices.length ? anim.frameIndices : null;
-      return ix ? ix.map((i) => all[Number(i)]).filter(Boolean) : all;
-    }
-    return sparrowSequenceOf(this.sprites, anim || {}).map((s) => this.frameOf(s));
-  }
-}
-
-// ============================================================
-// 2. AnimateAtlas（タイムラインを描く形式）
-// ============================================================
-const IDENT = [1, 0, 0, 1, 0, 0];
-/** 2×3 行列の積 m × n（canvas の transform(a,b,c,d,e,f) と同じ並び。n を先に適用する） */
-const mul = (m, n) => [
-  m[0] * n[0] + m[2] * n[1],
-  m[1] * n[0] + m[3] * n[1],
-  m[0] * n[2] + m[2] * n[3],
-  m[1] * n[2] + m[3] * n[3],
-  m[0] * n[4] + m[2] * n[5] + m[4],
-  m[1] * n[4] + m[3] * n[5] + m[5],
-];
-/** 回転して格納された spritemap の四角を戻す行列（translate(0, w) → rotate(-90°)） */
-const ROT = (w) => [0, -1, 1, 0, 0, w];
-
-function timelineLength(layers) {
-  return Math.max(0, ...layers.flatMap((l) => (l.FR || []).map((f) => (Number(f.I) || 0) + Math.max(1, Number(f.DU) || 1))));
-}
-function legacyDuration(timeline) {
-  return Math.max(1, ...(timeline?.LAYERS || []).flatMap((l) => (l.Frames || []).map((f) => (Number(f.index) || 0) + Math.max(1, Number(f.duration) || 1))));
-}
-
-class AnimateFrame {
-  /** spec: モダン { symbol: "__MAIN__" | シンボル名, atlasFrame } / レガシー { legacyName, atlasFrame } */
-  constructor(atlas, spec) {
-    this.atlas = atlas;
-    this.spec = spec;
-  }
-  /**
-   * このフレームを作る「スプライトと行列」の一覧 [{ sp, m }]。タイムラインをたどるのは重いので、初回だけ計算して使い回す
-   * （再生中に毎フレームたどり直すと、大きなアトラスでは画面が固まる原因になる）
-   */
-  get list() {
-    if (!this._list) {
-      const out = [];
-      this.atlas.traverse(this.spec, (sp, m) => out.push({ sp, m }));
-      this._list = out;
-    }
-    return this._list;
-  }
-  /** 枠（描画した全スプライトを囲む四角）。初回だけ計算してキャッシュする */
-  get box() {
-    if (!this._box) {
-      let x0 = Infinity,
-        y0 = Infinity,
-        x1 = -Infinity,
-        y1 = -Infinity;
-      for (const { sp, m } of this.list) {
-        for (const [px, py] of [[0, 0], [sp.w, 0], [0, sp.h], [sp.w, sp.h]]) {
-          const x = m[0] * px + m[2] * py + m[4],
-            y = m[1] * px + m[3] * py + m[5];
-          x0 = Math.min(x0, x);
-          y0 = Math.min(y0, y);
-          x1 = Math.max(x1, x);
-          y1 = Math.max(y1, y);
-        }
-      }
-      this._box = Number.isFinite(x0) ? { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) } : { x: 0, y: 0, w: 1, h: 1 };
-    }
-    return this._box;
-  }
-  get w() {
-    return this.box.w;
-  }
-  get h() {
-    return this.box.h;
-  }
-  get bx() {
-    return this.box.x;
-  }
-  get by() {
-    return this.box.y;
-  }
-  draw(ctx, x, y, ref, stageMatrix) {
-    // 既定: このフレーム自身の枠の左上を (x, y) に置く。stageMatrix: ステージ原点を基準枠に対して固定する
-    const ox = stageMatrix && ref ? x - ref.bx : x - this.bx,
-      oy = stageMatrix && ref ? y - ref.by : y - this.by;
-    // スプライトごとに save / restore すると、数百枚あるフレームで非常に遅い。
-    // 今の変換を1回だけ控えて、スプライトごとに setTransform（= 控えた変換 × 原点 × そのスプライトの行列）で描く
-    const t = ctx.getTransform();
-    const base = mul([t.a, t.b, t.c, t.d, t.e, t.f], [1, 0, 0, 1, ox, oy]);
-    for (const { sp, m } of this.list) {
-      const M = mul(base, m);
-      ctx.setTransform(M[0], M[1], M[2], M[3], M[4], M[5]);
-      const k = sp.image.k || 1;
-      ctx.drawImage(sp.image, sp.x * k, sp.y * k, sp.w * k, sp.h * k, 0, 0, sp.w, sp.h);
-    }
-    ctx.setTransform(t);
-  }
-}
-
-class AnimateAtlas {
-  /** animation: Animation.json / parts: [{ json: spritemap の JSON, image }]（spritemap が複数でもよい） */
-  constructor(animation, parts, label = "") {
-    this.kind = "animate";
-    this.animation = animation;
-    this.label = label;
-    this.legacy = !!animation?.ANIMATION;
-    this._frames = new Map(); // フレームの枠は計算が重いので、同じフレームは作り回す
-    this._seq = new Map(); // frames() の結果
-    this._symMap = null;
-    this.sprites = new Map(); // spritemap のスプライト名 → { x, y, w, h, rotated, image }
-    for (const { json, image } of parts) {
-      for (const item of json?.ATLAS?.SPRITES || []) {
-        const s = item.SPRITE || item;
-        this.sprites.set(String(s.name), { x: s.x, y: s.y, w: s.w, h: s.h, rotated: !!s.rotated, image });
-      }
-    }
-    if (!this.sprites.size) throw Error("spritemap のスプライトが見つかりません（spritemap1.json などが必要です）");
-    if (!this.legacy && !animation?.AN) throw Error("Animation.json の形式が分かりません（AN / ANIMATION がありません）");
-  }
-
-  // ---- タイムラインの走査（描かずに、スプライトと行列を emit に渡す） ----
-  traverse(spec, emit) {
-    if (this.legacy) {
-      const root = this.animation.ANIMATION,
-        sym = (this.animation.SYMBOL_DICTIONARY?.Symbols || []).find((s) => s.SYMBOL_name === spec.legacyName);
-      const tl = root?.SYMBOL_name === spec.legacyName ? root.TIMELINE : sym?.TIMELINE;
-      if (tl) this._legacy(tl, spec.atlasFrame, IDENT, 0, emit);
-    } else this._modern(spec.symbol, spec.atlasFrame, IDENT, 0, emit);
-  }
-  _put(sp, m, emit) {
-    if (sp) emit(sp, sp.rotated ? mul(m, ROT(sp.w)) : m);
-  }
-  _symbol(name) {
-    // シンボルは数百個あることがあり、毎回の線形探索は遅いので、名前 → シンボルの表を1回だけ作る
-    if (!this._symMap) this._symMap = new Map((this.animation.SD?.S || []).map((x) => [x.SN, x]));
-    return this._symMap.get(name);
-  }
-  _modern(name, fr, m, depth, emit) {
-    if (depth > 20) return;
-    const sym = name === "__MAIN__" ? null : this._symbol(name);
-    if (name !== "__MAIN__" && !sym) return;
-    const layers = (sym ? sym.TL?.L : this.animation.AN?.TL?.L) || [];
-    for (let li = layers.length - 1; li >= 0; li--) {
-      let f = null;
-      for (const k of layers[li].FR || []) {
-        const i = Number(k.I) || 0;
-        if (i <= fr && fr < i + Math.max(1, Number(k.DU) || 1) && (!f || i > Number(f.I))) f = k;
-      }
-      if (!f) continue;
-      for (const e of f.E || []) {
-        const o = e.SI || e.ASI;
-        if (!o) continue;
-        const local = o.MX || (o.M3D?.length === 16 ? [o.M3D[0], o.M3D[1], o.M3D[4], o.M3D[5], o.M3D[12], o.M3D[13]] : null) || IDENT;
-        const M = mul(m, local);
-        if (e.ASI) this._put(this.sprites.get(String(o.N)), M, emit);
-        else {
-          const child = this._symbol(o.SN);
-          if (!child) continue;
-          const len = Math.max(1, timelineLength(child.TL?.L || []));
-          const first = Math.max(0, Number(o.FF) || 0),
-            elapsed = Math.max(0, fr - (Number(f.I) || 0));
-          const mode = String(o.LP || "LP").toUpperCase();
-          const cf = mode.includes("SF") || mode.includes("SINGLEFRAME") ? first : mode.includes("PO") || mode.includes("PLAYONCE") ? Math.min(first + elapsed, len - 1) : (first + elapsed) % len;
-          this._modern(o.SN, cf, M, depth + 1, emit);
-        }
-      }
-    }
-  }
-  _legacy(tl, t, m, depth, emit) {
-    if (depth > 25) return;
-    const layers = tl?.LAYERS || [];
-    const mat = (x) => (x ? [Number(x.m00) || 0, Number(x.m01) || 0, Number(x.m10) || 0, Number(x.m11) || 0, Number(x.m30) || 0, Number(x.m31) || 0] : IDENT);
-    for (let li = layers.length - 1; li >= 0; li--) {
-      const f = (layers[li].Frames || []).find((k) => t >= Number(k.index) && t < Number(k.index) + Math.max(1, Number(k.duration) || 1));
-      if (!f) continue;
-      for (const item of f.elements || []) {
-        if (item.ATLAS_SPRITE_instance) {
-          const si = item.ATLAS_SPRITE_instance;
-          this._put(this.sprites.get(String(si.name)), mul(m, mat(si.Matrix3D)), emit);
-        } else if (item.SYMBOL_Instance) {
-          const si = item.SYMBOL_Instance;
-          const child = (this.animation.SYMBOL_DICTIONARY?.Symbols || []).find((s) => s.SYMBOL_name === si.SYMBOL_name);
-          if (!child) continue;
-          const len = legacyDuration(child.TIMELINE),
-            first = Math.max(0, Number(si.firstFrame) || 0),
-            elapsed = Math.max(0, t - (Number(f.index) || 0));
-          const mode = String(si.loop || "loop").toLowerCase();
-          const cf = mode === "singleframe" ? first : mode === "playonce" ? Math.min(first + elapsed, len - 1) : (first + elapsed) % len;
-          this._legacy(child.TIMELINE, cf, mul(m, mat(si.Matrix3D)), depth + 1, emit);
-        }
-      }
-    }
-  }
-
-  // ---- フレーム列 ----
-  /** メインタイムラインの先頭フレーム（アニメを再生する前の姿。V-Slice の updateHitbox の基準） */
-  first() {
-    return this.legacy ? this._mk({ legacyName: this.animation.ANIMATION.SYMBOL_name, atlasFrame: 0 }) : this._mk({ symbol: "__MAIN__", atlasFrame: 0 });
-  }
-  _mk(spec) {
-    const key = `${spec.symbol ?? spec.legacyName}|${spec.atlasFrame}`;
-    let f = this._frames.get(key);
-    if (!f) this._frames.set(key, (f = new AnimateFrame(this, spec)));
-    return f;
-  }
-  /** animations の雛形（新しい prop を作るとき用）。モダンはフレームラベルごと、レガシーはシンボルごとに1つ */
-  suggestAnimations() {
-    const base = { frameRate: 24, looped: true, offsets: [0, 0] };
-    let names = [];
-    if (this.legacy) {
-      const root = this.animation.ANIMATION;
-      names = [root.SYMBOL_name, ...(this.animation.SYMBOL_DICTIONARY?.Symbols || []).map((s) => s.SYMBOL_name)].filter(Boolean);
-    } else {
-      for (const l of this.animation.AN?.TL?.L || []) for (const f of l.FR || []) if (f.N && !names.includes(f.N)) names.push(f.N);
-    }
-    if (!names.length) return [{ name: "idle", prefix: "idle", ...base }];
-    return names.map((n) => ({ name: n, prefix: n, ...(this.legacy ? {} : { animType: "frameLabel" }), ...base }));
-  }
-  /**
-   * アニメが再生するフレーム列（Character Editor の candidates / sequence と同じ規則）。
-   *   レガシー        : prefix と同名のシンボル全体
-   *   モダン          : animType が "symbol" ならそのシンボル全体 / それ以外はフレームラベルの区間（次のラベルの手前まで）
-   *   frameIndices    : 全体の中の番号で絞り込む
-   */
-  frames(anim) {
-    const key = JSON.stringify([anim?.prefix ?? anim?.name ?? "", anim?.animType ?? "", anim?.frameIndices ?? null]);
-    let seq = this._seq.get(key);
-    if (!seq) this._seq.set(key, (seq = this._framesOf(anim)));
-    return seq;
-  }
-  _framesOf(anim) {
-    const a = anim || {};
-    const pref = String(a.prefix ?? a.name ?? "");
-    let all = [];
-    if (this.legacy) {
-      const root = this.animation.ANIMATION;
-      const sym = (this.animation.SYMBOL_DICTIONARY?.Symbols || []).find((x) => x.SYMBOL_name === pref);
-      const tl = root.SYMBOL_name === pref ? root.TIMELINE : sym?.TIMELINE;
-      if (tl) all = Array.from({ length: legacyDuration(tl) }, (_, i) => this._mk({ legacyName: pref, atlasFrame: i }));
-    } else {
-      const isSymbol = String(a.animType || "").toLowerCase() === "symbol";
-      const sym = this._symbol(pref);
-      const layers = isSymbol ? sym?.TL?.L : this.animation.AN?.TL?.L;
-      if (layers) {
-        const total = timelineLength(layers);
-        let start = 0,
-          end = total,
-          ok = true;
-        if (!isSymbol) {
-          const labels = [];
-          for (const l of layers) for (const f of l.FR || []) if (f.N) labels.push({ name: f.N, start: Number(f.I) || 0 });
-          labels.sort((x, y) => x.start - y.start);
-          const match = labels.find((x) => x.name === pref);
-          if (String(a.animType || "").toLowerCase() === "framelabel" && !match) ok = false;
-          if (match) {
-            start = match.start;
-            end = Math.min(total, labels.find((x) => x.start > start)?.start ?? total);
-          }
-        }
-        if (ok) all = Array.from({ length: Math.max(0, end - start) }, (_, i) => this._mk({ symbol: isSymbol ? pref : "__MAIN__", atlasFrame: start + i }));
-      }
-    }
-    const ix = Array.isArray(a.frameIndices) && a.frameIndices.length ? a.frameIndices : null;
-    return ix ? ix.map((i) => all[Number(i)]).filter(Boolean) : all;
-  }
-}
-
-// ============================================================
-// 3. ファイルから作る
-// ============================================================
-// ファイルの置き場所の手がかり:
-//   フォルダごと選んだとき（PC）は webkitRelativePath に「フォルダ/…/ファイル名」が入る。
-//   スマホなど、ファイルを直接選ぶと空（= フラット）。フラットなら、置き場所は「同じ」とみなす。
-const relDir = (f) => (f.webkitRelativePath || "").split("/").slice(0, -1).join("/");
-const norm = (p) => String(p || "").replace(/^[^:/\\]+:/, "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLowerCase();
-const lastSeg = (p) => norm(p).split("/").pop();
-/** 拡張子を除いた名前（小文字） */
-const stem = (name) => String(name).replace(/^.*[\\/]/, "").replace(/\.[^.]*$/, "").toLowerCase();
-const isAnimationJsonName = (n) => /^animation\.json$/i.test(n);
-const isSpritemapJsonName = (n) => /^spritemap\d*\.json$/i.test(n);
-
-async function readJson(file) {
-  return JSON.parse((await file.text()).replace(/^﻿/, ""));
-}
-
-/**
- * 1フォルダ分のファイル（Animation.json + spritemap*.json + 同名 PNG）から AnimateAtlas を作る。
- * spritemap が複数あってもよい（スプライト名は全部まとめて引く）。
- */
-async function buildAnimateAtlas(files, label = "") {
-  const list = [...files];
-  const animFile = list.find((f) => isAnimationJsonName(f.name));
-  if (!animFile) throw Error("Animation.json が見つかりません");
-  const animation = await readJson(animFile);
-  const parts = [];
-  for (const f of list) {
-    if (!/\.json$/i.test(f.name) || f === animFile) continue;
-    let json;
-    try {
-      json = await readJson(f);
-    } catch {
-      continue; // metadata.json など、読めなくても支障のないものは無視
-    }
-    if (!json?.ATLAS?.SPRITES) continue;
-    const png = list.find((g) => /\.png$/i.test(g.name) && stem(g.name) === stem(f.name) && relDir(g) === relDir(f));
-    if (!png) throw Error(`${f.name} と同名の PNG（${stem(f.name)}.png）が見つかりません`);
-    parts.push({ json, image: await loadImage(png) });
-  }
-  if (!parts.length) throw Error("spritemap（spritemap1.json と spritemap1.png など）が見つかりません");
-  return new AnimateAtlas(animation, parts, label || animFile.webkitRelativePath || animFile.name);
-}
-
-/** ファイル群の中の「Animation.json を含むフォルダ」ごとの組。[{ dir, files }] */
-function animateGroups(files) {
-  const list = [...files],
-    dirs = [...new Set(list.filter((f) => isAnimationJsonName(f.name)).map(relDir))];
-  return dirs.map((dir) => ({ dir, files: list.filter((f) => relDir(f) === dir) }));
-}
-
-/** ファイルの置き場所つきの名前（フォルダごと選んだときは「フォルダ/…/名前」、直接選んだときは名前だけ） */
-const relPath = (f) => f.webkitRelativePath || f.name;
-// ファイルが数千個あっても探せるよう、正規化した名前は1回だけ計算する
-const _pathCache = new WeakMap();
-const pathNoExt = (f) => {
-  let v = _pathCache.get(f);
-  if (v === undefined) _pathCache.set(f, (v = norm(relPath(f)).replace(/\.[^./]+$/, "")));
-  return v;
-};
-
-/**
- * ファイルの山（pool）から、assetPath に合うファイルを探す。
- *   ① 置き場所つきの名前の末尾が assetPath と一致する（mod のフォルダ全体を選んだときは、images/characters/bf.png のように完全に特定できる）
- *   ② 無ければ、拡張子を除いた名前が assetPath の最後の1つと一致する（ファイルを直接選んだとき）
- * extRe: 対象の拡張子（例 /\.png$/i）
- */
-function matchFile(pool, assetPath, extRe, opts = {}) {
-  const ranked = rankFiles(pool, assetPath, extRe, opts);
-  if (!ranked.length) return null;
-  const ties = topTies(ranked);
-  if (ties.length > 1) {
-    assetNote(`「${assetPath}」に合うファイルが複数あります（${ties.slice(0, 3).map((t) => relPath(t.f)).join(" / ")}）。どれか決められないため ${relPath(ranked[0].f)} を使いました。違う場合は、アセット一覧の「選択」で指定してください。`);
-  }
-  return ranked[0].f;
-}
-
-/**
- * assetPath（フォルダ）に対応する AnimateAtlas を、ファイルの山から探して作る。
- *   1. フォルダ名が assetPath と合う組  2. 候補が1組だけならそれ（strict のときは 1 だけ）
- * 見つからなければ Error（何をどう選べばよいか書く）
- */
-async function findAnimateAtlas(files, assetPath, { strict = false, origin } = {}) {
-  const groups = animateGroups(files);
-  if (!groups.length) throw Error(`AnimateAtlas「${assetPath}」の Animation.json が見つかりません（spritemap1.json / spritemap1.png も一緒に）`);
-  // フォルダの置き場所を点数で比べる（同名フォルダが複数あっても、assetPath の階層まで合うものを選ぶ）
-  const scored = groups
-    .map((g) => {
-      const info = g.dir ? infoOfDir(g.dir) : null;
-      const base = info ? scorePath(info, assetPath, "images") : 0;
-      return { g, score: base && origin !== undefined && info.origin === origin ? base + 25 : base };
-    })
-    .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score);
-  if (scored.length > 1 && scored[0].score === scored[1].score) assetNote(`AnimateAtlas「${assetPath}」に合うフォルダが複数あります（${scored.slice(0, 3).map((x) => x.g.dir).join(" / ")}）。${scored[0].g.dir} を使いました。違う場合は、フォルダを直接選んでください。`);
-  const hit = scored[0]?.g;
-  const pick = hit || (!strict && groups.length === 1 ? groups[0] : null);
-  if (!pick) throw Error(`AnimateAtlas が ${groups.length} セットあり、「${assetPath}」がどれか分かりません。フォルダごと選ぶか、1セットずつ選んでください`);
-  return buildAnimateAtlas(pick.files, assetPath);
-}
-
-/**
- * assetPath に対応する Sparrow / Packer アトラスを、ファイルの山から探して作る。
- * PNG と (XML | TXT) を matchFile で探す。合うものが無くて PNG と定義が1つずつなら、それを使う。
- */
-async function findSpriteAtlas(files, assetPath, kind, opts = {}) {
-  const list = [...files];
-  const png = matchFile(list, assetPath, /\.(png|webp|jpe?g)$/i, opts) || soleOf(list, /\.(png|webp|jpe?g)$/i, kind);
-  const defRe = kind === "packer" ? /\.txt$/i : /\.xml$/i;
-  // 定義(XML/TXT)は、選んだ PNG と同じフォルダ・同じ名前のものを最優先（別の mod の XML と組み合わさらないように）
-  const sibling = png && list.find((f) => defRe.test(f.name) && relDir(f) === relDir(png) && stem(f.name) === stem(png.name));
-  const def = sibling || matchFile(list, assetPath, defRe, { ...opts, origin: png ? originOf(png) : opts.origin }) || soleOf(list, defRe, kind);
-  const ext = kind === "packer" ? "TXT" : "XML";
-  const key = lastSeg(assetPath);
-  if (!png) throw Error(`「${assetPath}」の画像（${key}.png）が見つかりません`);
-  if (!def) throw Error(`「${assetPath}」の ${ext}（${key}.${ext.toLowerCase()}）が見つかりません`);
-  const text = await def.text();
-  const sprites = kind === "packer" ? parsePackerText(text) : parseSparrowXml(text);
-  return new SpriteAtlas(kind, await loadImage(png), sprites, `${png.name} + ${def.name}`);
-}
-/** 該当する種類のファイルが1つしか無ければそれ（spritemap の PNG は除く）。選んだ数が少ないときの救済 */
-function soleOf(list, re) {
-  const animDirs = new Set(list.filter((f) => isAnimationJsonName(f.name)).map(relDir));
-  const hits = list.filter((f) => re.test(f.name) && !(/^spritemap\d*\.png$/i.test(f.name) && animDirs.has(relDir(f))));
-  return hits.length === 1 ? hits[0] : null;
-}
-/** spritemapN.png（AnimateAtlas の部品）か。同じ場所に Animation.json があれば、そちらの部品として扱う */
-function isSpritemapPng(f, list) {
-  return /^spritemap\d*\.png$/i.test(f.name) && list.some((g) => isAnimationJsonName(g.name) && relDir(g) === relDir(f));
-}
-
-return { SpriteAtlas, AnimateAtlas, isAnimationJsonName, isSpritemapJsonName, buildAnimateAtlas, animateGroups, relPath, matchFile, findAnimateAtlas, findSpriteAtlas, isSpritemapPng };
-})();
-
 /* ===== funkin-studio/js/states/stage/stageCharacter.js ===== */
 const __m44 = (() => {
 /* ============================================================
@@ -12740,7 +12805,7 @@ const __m44 = (() => {
    ■ 左右反転: BF は !flipX、DAD / GF は flipX（Stage.addCharacter）。反転は「表示中フレーム自身の枠」の中で行う。
    ■ カメラ焦点: originalPosition + (幅/2, 高さ/2) + キャラの cameraOffsets + ステージ側の cameraOffsets
    ============================================================ */
-const { findSpriteAtlas, findAnimateAtlas } = __m43;
+const { findSpriteAtlas, findAnimateAtlas } = __m39;
 const { originOf } = __m13;
 
 const RENDER_TYPES = ["sparrow", "packer", "multisparrow", "animateatlas", "multianimateatlas"];
@@ -12843,6 +12908,9 @@ class StageCharacter {
     const first = ref ? atlas.frames(ref)[0] : null;
     const frame = first || atlas.first();
     if (!frame) throw Error("アトラスにフレームがありません");
+    // 基準枠（hitbox）: Sparrow は基準フレームの frameWidth / frameHeight。
+    // AnimateAtlas はタイムライン全体の枠（flixel-animate の frameWidth / frameHeight = timeline._bounds のサイズ）で、先頭フレームの枠ではない
+    const tl = frame.atlas?.timelineBounds ? frame.atlas.timelineBounds() : null;
     const ao = ref?.offsets || [0, 0];
     const settings = ref?.atlasSettings || this.json.atlasSettings || {};
     return {
@@ -12851,8 +12919,8 @@ class StageCharacter {
       assetPath: path,
       renderType: String(this.json.renderType || "sparrow").toLowerCase(),
       stageMatrix: !!settings.applyStageMatrix,
-      refW: frame.w,
-      refH: frame.h,
+      refW: tl ? tl.w : frame.w,
+      refH: tl ? tl.h : frame.h,
       label: first ? `${ref.name} の先頭フレーム` : kind === "animate" ? "メインタイムラインの先頭" : "アトラス先頭",
       anim: [Number(ao[0]) || 0, Number(ao[1]) || 0],
       global: [Number(this.json.offsets?.[0]) || 0, Number(this.json.offsets?.[1]) || 0],
@@ -12897,8 +12965,14 @@ class StageCharacter {
   paint(ctx, flip) {
     const v = this.view;
     ctx.save();
-    if (flip) ctx.scale(-1, 1);
-    v.frame.draw(ctx, -v.refW / 2, -v.refH, v.frame, v.stageMatrix);
+    if (flip) {
+      // 反転の軸 = 左上から（そのフレームの枠の幅 / 2）。Animate のフレームは基準アトラスの枠 = 足元中央
+      const axis = -v.refW / 2 + (v.frame.sp ? v.frame.w : v.frame.atlas.timelineBounds().w) / 2;
+      ctx.translate(axis, 0);
+      ctx.scale(-1, 1);
+      ctx.translate(-axis, 0);
+    }
+    v.frame.draw(ctx, -v.refW / 2, -v.refH, v.frame, v.frame.sp ? v.stageMatrix : "tl");
     ctx.restore();
   }
 }
@@ -12933,10 +13007,10 @@ const { registryPath } = __m13;
 const { Viewport, isTextEntry } = __m35;
 const { HudPanels } = __m36;
 const { FnfShell } = __m37;
-const { defaultStage, normalizeStage, newProp, newRect, serializeStage, clone, round3, CHAR_IDS, CHAR_LABEL, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas } = __m42;
+const { defaultStage, normalizeStage, newProp, newRect, serializeStage, clone, round3, CHAR_IDS, CHAR_LABEL, isSolid, isAnimated, getScale, setScale, getScroll, baseName, parseColor, toRgbaCss, toHex6, blendToCanvas } = __m43;
 const { loadImage, parseSparrowXml, parsePackerText, getImageCap, setImageCap } = __m38;
 const { normAsset, infoOf, infoOfDir, setAssetNoteSink, openModZip, summarize } = __m13;
-const { SpriteAtlas, animateGroups, buildAnimateAtlas, isSpritemapPng, matchFile, relPath, findAnimateAtlas } = __m43;
+const { SpriteAtlas, animateGroups, buildAnimateAtlas, isSpritemapPng, matchFile, relPath, findAnimateAtlas } = __m39;
 const { StageCharacter } = __m44;
 
 const SEL_COLOR = "#ffb020"; // 選択枠の色
@@ -14461,7 +14535,7 @@ const __m46 = (() => {
    Character Editor と違い、HUD の Undo / Redo ボタンをそのまま使う（undo() / redo() を持つ画面は HUD のボタンが押せる）。
    ============================================================ */
 const { EditorState } = __m26;
-const { template } = __m41;
+const { template } = __m42;
 const { mountStageEditor } = __m45;
 
 class StageEditorState extends EditorState {
@@ -17395,11 +17469,25 @@ GLPost.renderer = "";
 
 const Quality = {
   mode: "auto",
-  scale: 1,
+  scale: (() => {
+    try {
+      // 前回この端末で落ち着いた画質から始める（毎回 100% から下げ直すと、最初の数十秒がカクつくため）
+      const v = Number(localStorage.getItem("studio.quality.scale"));
+      return v >= 0.25 && v <= 1 ? v : 1;
+    } catch {
+      return 1;
+    }
+  })(),
   _last: 0,
   _slow: 0,
   _fast: 0,
-  /** フレームごとに 1 回呼ぶ（draw の先頭）。dt が極端に長い（タブ復帰・一時停止）ものは無視する */
+  /** 目標のフレーム時間（ms）。約 30FPS */
+  target: 34,
+  /**
+   * フレームごとに 1 回呼ぶ（draw の先頭）。
+   * シェーダーの重さは画素数（= 画質の 2 乗）にほぼ比例するので、遅いときは「目標 ÷ 実測」の平方根を掛けて一気に合わせる
+   * （実機 UHD 600: 100% で 330ms → 35% で 55ms）。タブ復帰・一時停止のような極端に長い間隔（1.5 秒超）は無視する。
+   */
   tick(now = performance.now()) {
     const dt = now - this._last;
     this._last = now;
@@ -17407,20 +17495,28 @@ const Quality = {
       this.scale = Number(this.mode) || 1;
       return;
     }
-    if (dt > 250 || dt <= 0) return;
-    if (dt > 26) {
+    if (dt > 1500 || dt <= 0) return;
+    if (dt > this.target * 1.25) {
       this._fast = 0;
-      if (++this._slow >= 12) {
+      if (++this._slow >= 4) {
         this._slow = 0;
-        this.scale = Math.max(0.35, this.scale * 0.8);
+        this.set(Math.max(0.25, this.scale * Math.max(0.5, Math.sqrt(this.target / dt))));
       }
-    } else if (dt < 19) {
+    } else if (dt < this.target * 0.6) {
       this._slow = 0;
-      if (++this._fast >= 150) {
+      // 戻すのは、上げても目標内に収まる見込みのときだけ（上げ下げの往復を防ぐ）
+      const next = Math.min(1, this.scale * 1.15);
+      if (++this._fast >= 120 && dt * (next / this.scale) ** 2 < this.target) {
         this._fast = 0;
-        this.scale = Math.min(1, this.scale * 1.15);
+        this.set(next);
       }
-    }
+    } else this._slow = this._fast = 0;
+  },
+  set(v) {
+    this.scale = Math.round(v * 100) / 100;
+    try {
+      localStorage.setItem("studio.quality.scale", String(this.scale));
+    } catch {}
   },
 };
 
@@ -20032,10 +20128,10 @@ const __m57 = (() => {
      ・FocusCamera の ease（CLASSIC 以外は簡易な補間）   ・反転したキャラのアニメオフセットの符号
    ============================================================ */
 const { GLPost, Quality, Prof } = __m52;
-const { findSpriteAtlas, findAnimateAtlas } = __m43;
+const { findSpriteAtlas, findAnimateAtlas } = __m39;
 const { StageCharacter, atlasKindOf } = __m44;
 const { loadImage } = __m38;
-const { normalizeStage, isSolid, isAnimated, getScale, getScroll, parseColor, toRgbaCss, blendToCanvas, defaultCharacter } = __m42;
+const { normalizeStage, isSolid, isAnimated, getScale, getScroll, parseColor, toRgbaCss, blendToCanvas, defaultCharacter } = __m43;
 const { originOf, infoOf } = __m13;
 const { easeByName } = __m54;
 
@@ -20152,6 +20248,16 @@ class SceneChar {
   get hasDanceLR() {
     return !!this.actor?.has("danceLeft");
   }
+  /** character.json の animations からアニメ定義を引く（名前 → 定義。flipX / flipY の参照用） */
+  animData(name) {
+    const j = this.json;
+    if (!j?.animations) return null;
+    if (this._animJson !== j.animations) {
+      this._animJson = j.animations;
+      this._animMap = new Map(j.animations.map((a) => [a.name, a]));
+    }
+    return this._animMap.get(name) ?? null;
+  }
   /** sing で始まり -end で終わらないアニメの最中（実ソース BaseCharacter.isSinging） */
   get isSinging() {
     const n = this.actor?.name ?? "";
@@ -20258,9 +20364,44 @@ class SceneChar {
         f = this.actor.frame() || v.frame;
       ctx.scale(pl.k, pl.k);
       ctx.imageSmoothingEnabled = !this.json?.isPixel;
-      if (pl.flip) ctx.scale(-1, 1);
+      // アニメ個別の flipX / flipY（character.json の animations[].flipX）。FlxSprite.checkFlipX = スプライトの flipX ≠ 再生中アニメの flipX
+      const ad = this.animData(this.actor.name);
+      const fx = pl.flip !== !!ad?.flipX,
+        fy = !!ad?.flipY;
+      if (f.sp) {
+        // Sparrow / Packer: Flixel（FlxFrame.prepareMatrix）は「いま表示中のフレーム自身の枠（frameWidth / frameHeight）」の中で反転し、
+        // 枠の左上は常にスプライトの左上に置く。反転の軸 = 左上から frameWidth / 2 = 足元基準で (−refW/2 + frameWidth/2)。
+        // （基準フレームと幅が違うアニメ、特に Multi の別アトラスや sing 系で、足元中央を軸にすると (frameWidth − refW) ぶんずれる）
+        if (fx) {
+          const axis = -v.refW / 2 + f.w / 2;
+          ctx.translate(axis, 0);
+          ctx.scale(-1, 1);
+          ctx.translate(-axis, 0);
+        }
+        if (fy) {
+          const axis = -v.refH + f.h / 2;
+          ctx.translate(0, axis);
+          ctx.scale(1, -1);
+          ctx.translate(0, -axis);
+        }
+      } else {
+        // AnimateAtlas: flixel-animate は matrix.scale(-1, 1); translate(bounds.width, 0)（bounds = そのアトラスのタイムライン全体の枠）
+        const tb = f.atlas.timelineBounds();
+        if (fx) {
+          const axis = -v.refW / 2 + tb.w / 2;
+          ctx.translate(axis, 0);
+          ctx.scale(-1, 1);
+          ctx.translate(-axis, 0);
+        }
+        if (fy) {
+          const axis = -v.refH + tb.h / 2;
+          ctx.translate(0, axis);
+          ctx.scale(1, -1);
+          ctx.translate(0, -axis);
+        }
+      }
       // AnimateAtlas は「タイムラインの原点」を固定して描く（フレームごとに枠の左上へ寄せると、動くたびに絵が跳ねる）。基準枠は先頭フレーム
-      f.draw(ctx, -v.refW / 2, -v.refH, v.frame, f.sp ? v.stageMatrix : true);
+      f.draw(ctx, -v.refW / 2, -v.refH, v.frame, f.sp ? v.stageMatrix : "tl");
     } else {
       placeholder(ctx, -pl.w / 2, -pl.h, pl.w, pl.h, `${label}（${this.id || "?"} は未読み込み）`, PLACEHOLDER_COLOR[this.role]);
     }
@@ -25465,7 +25606,7 @@ const { OtherMenuState } = __m21;
 const { ContributorsState } = __m23;
 const { AnimateEditorState } = __m30;
 const { SparrowEditorState } = __m33;
-const { CharacterEditorState } = __m40;
+const { CharacterEditorState } = __m41;
 const { StageEditorState } = __m46;
 const { ChartEditorState } = __m60;
 const { NoteEditorState } = __m63;

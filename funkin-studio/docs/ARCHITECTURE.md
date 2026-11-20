@@ -380,3 +380,22 @@ python funkin-studio/build.py      # → funkin-studio/dist/Funkin_Studio.html
 
 - **FPS の平均は直近 1 秒のみ**: 以前は直近 120 フレーム平均で、遅い（≈3FPS）と 120 フレーム＝約 40 秒ぶんになり、開始直後の軽いフレームが混ざって「15FPS → 3FPS に落ちる」ように見えていた。実機ログ（JS 処理が 310〜330ms で一定）から、実際は最初から約 3FPS で一定と判明。
 - 内訳の 4 行目: rt 全体 / 影キャラ / 素キャラ / 小物 の ms（`Prof`）。
+
+## v3.30.5 — 自動画質を実機データに合わせて作り直し
+
+- 実機（Chromebook / Intel UHD 600）: 画質 100% = 330ms/フレーム（3FPS, GL変換 ≈200ms）、35% = 約 55ms（17FPS 安定）。シェーダーのコストは画素数（画質²）にほぼ比例（約 8 倍の画素差で約 6 倍）。
+- 旧 `Quality` 自動は「フレーム間隔 250ms 超は無視」だったため、100% で 330ms の端末では一度も反応しなかった。
+- 新: 目標 34ms（約 30FPS）。遅いとき 4 フレームで `scale *= √(目標/実測)`（下限 0.25、1 回で最大 ×0.5）。戻すのは「上げても目標内に収まる見込み」のときだけ（往復防止）。落ち着いた値は localStorage（studio.quality.scale）に保存し、次回その値から始める。
+
+## v3.30.6 — プレイテストのキャラ反転位置を V-Slice に合わせる
+
+- **原因（Sparrow / Packer）**: Flixel は反転（flipX）を「いま表示中のフレーム自身の枠（frameWidth）」の中で行い、枠の左上は常にスプライトの左上に置く（`FlxFrame.prepareMatrix`）。プレイテストは足元中央（= 基準フレームの中心）を軸に反転していたため、基準フレームと幅の違うアニメ（sing 系・Multi の別アトラス）が反転キャラ（BF など）で `k × (frameWidth − refW)` ずれていた。Character Editor は元から正しい（`axis = −refW/2 + frameWidth/2`）ので、エディタと実行で食い違っていた。
+- 修正: `SceneChar.draw` が同じ軸で反転。あわせて **アニメ個別の flipX / flipY**（`animations[].flipX`、`checkFlipX` = スプライト flipX ≠ アニメ flipX）も反映（以前はプレイテストで無視）。
+- **未検証（AnimateAtlas）**: flixel-animate は反転を `matrix.scale(-1,1); translate(bounds.width, 0)`（bounds = アトラスのタイムライン全体の枠 `timeline._bounds`）で行う。こちらは「基準フレームの中心」を軸にしており、反転キャラ＋ AnimateAtlas では差が出る可能性がある。bounds の算出元（Timeline クラス）の実ソースが手元に無く、実データで確かめるまでは変更していない。
+
+## v3.30.7 — AnimateAtlas の枠（hitbox）をタイムライン全体の枠に（Darnell の Sparrow が右下にずれる件）
+
+- **原因**: flixel-animate（`FlxAnimate` / `FlxAnimateController.updateTimelineBounds` / `Timeline._bounds`）では、AnimateAtlas スプライトの `frameWidth / frameHeight` は **メインタイムライン全フレームの枠の和（`getWholeBounds`）** で、描画もその枠の左上（`matrix.translate(-bounds.x, -bounds.y)`）をスプライトの左上に置く。V-Slice の hitbox・足元（幅/2, 高さ）・カメラ焦点はこの寸法で決まる。こちらは先頭フレームの枠を使っていたため、Animate が基準の Multi に Sparrow が混ざると、Sparrow だけ基準の寸法差ぶん右下にずれた（Darnell: 先頭フレーム 382×485 / タイムライン全体 739×736）。
+- 修正: `AnimateAtlas.timelineBounds()`（atlas.js）を追加。`StageCharacter.build` は Animate の refW/refH をそれにし、`AnimateFrame.draw(..., "tl")` でタイムライン枠の左上を基準枠の左上に置く（Stage Editor / プレイテスト / Character Editor で共通）。反転は `matrix.scale(-1,1); translate(bounds.width, 0)` と同じく、そのアトラスの枠の幅の中で行う。
+- 確認: Darnell の idle（Animate）と hey（Sparrow, offsets [-53,-68]）が重なるようになった（従来は約 +180px / +250px ずれ）。
+- 影響: Animate キャラの絶対位置とカメラ焦点が V-Slice 準拠に変わる（先頭フレームとタイムライン全体の枠が違うほど変化が大きい）。Character Editor は未実機確認。`applyStageMatrix: true`（sourceSize に matrix.a を掛ける）は未対応。

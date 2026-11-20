@@ -126,6 +126,9 @@ export class StageCharacter {
     const first = ref ? atlas.frames(ref)[0] : null;
     const frame = first || atlas.first();
     if (!frame) throw Error("アトラスにフレームがありません");
+    // 基準枠（hitbox）: Sparrow は基準フレームの frameWidth / frameHeight。
+    // AnimateAtlas はタイムライン全体の枠（flixel-animate の frameWidth / frameHeight = timeline._bounds のサイズ）で、先頭フレームの枠ではない
+    const tl = frame.atlas?.timelineBounds ? frame.atlas.timelineBounds() : null;
     const ao = ref?.offsets || [0, 0];
     const settings = ref?.atlasSettings || this.json.atlasSettings || {};
     return {
@@ -134,8 +137,8 @@ export class StageCharacter {
       assetPath: path,
       renderType: String(this.json.renderType || "sparrow").toLowerCase(),
       stageMatrix: !!settings.applyStageMatrix,
-      refW: frame.w,
-      refH: frame.h,
+      refW: tl ? tl.w : frame.w,
+      refH: tl ? tl.h : frame.h,
       label: first ? `${ref.name} の先頭フレーム` : kind === "animate" ? "メインタイムラインの先頭" : "アトラス先頭",
       anim: [Number(ao[0]) || 0, Number(ao[1]) || 0],
       global: [Number(this.json.offsets?.[0]) || 0, Number(this.json.offsets?.[1]) || 0],
@@ -180,8 +183,14 @@ export class StageCharacter {
   paint(ctx, flip) {
     const v = this.view;
     ctx.save();
-    if (flip) ctx.scale(-1, 1);
-    v.frame.draw(ctx, -v.refW / 2, -v.refH, v.frame, v.stageMatrix);
+    if (flip) {
+      // 反転の軸 = 左上から（そのフレームの枠の幅 / 2）。Animate のフレームは基準アトラスの枠 = 足元中央
+      const axis = -v.refW / 2 + (v.frame.sp ? v.frame.w : v.frame.atlas.timelineBounds().w) / 2;
+      ctx.translate(axis, 0);
+      ctx.scale(-1, 1);
+      ctx.translate(-axis, 0);
+    }
+    v.frame.draw(ctx, -v.refW / 2, -v.refH, v.frame, v.frame.sp ? v.stageMatrix : "tl");
     ctx.restore();
   }
 }
